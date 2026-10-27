@@ -1,0 +1,151 @@
+# Bias Mitigation - /scrutinize Judge Layer
+
+**Consumed by:** `.claude/skills/scrutinize/SKILL.md` (Phase 2, 2.5)
+**Last Updated:** 2026-09-11
+**Last Verified:** 2026-09-11
+
+Mechanical mitigations for documented LLM-as-judge biases. Closes R7 from the 2026-05-27 meta-review of /scrutinize.
+
+The 2026 literature is unambiguous: prompt-level instructions ("be unbiased, don't prefer longer answers") reach about half of the bias they attempt to mitigate. Mechanical mitigations (shuffle on every pairwise call, rotate judge family across queries, length-controlled scoring) outperform prompt fixes consistently. This reference defines those mechanical layers and how /scrutinize wires them.
+
+## The five documented biases
+
+| Bias | Measured magnitude | Reference |
+|---|---|---|
+| Position bias | 10-15pt winrate swing depending on slot order | Zheng et al. 2024 (MT-Bench) |
+| Verbosity bias | 15-30pt inflated preference for longer outputs | Wang et al. 2023 |
+| Self-preference | ~5-10pt for own-family outputs | Panickssery et al. 2024 |
+| Style / sycophancy | Variable (model + topic dependent) | Wu & Aji 2024 |
+| Chain-of-thought bias | Variable, direction-dependent | Shankar et al. 2024 |
+
+The /scrutinize architecture as of v1.2 had zero mechanical mitigations active. This reference adds three: judge-family rotation, position randomisation, and length-controlled scoring.
+
+## Mitigation 1 - Adversarial family split
+
+**The rule:** the LLM judge layer puts the adversarial roles in different model families. The Advocate and the Skeptic sit in one family, the Meta-Judge in another, and each run seats one of the six ordered pairs a three-family roster admits. Which pair is a property of the run id, not a choice made per call. The deterministic layer (`scripts/artifact-evaluator.py`) stays Claude-only - it is not a judge, it is a static-analysis pass.
+
+**The roster (CEO decision, 2026-07-25, escapes removed 2026-08-09, third family added 2026-09-11):**
+
+| Slot | Model | Notes |
+|---|---|---|
+| 1 | Claude, the running session's model | primary Anthropic family; dispatched in-session. **Never pinned to a version.** The judge IS the session, so it is always the latest Opus the session runs on, and a new Opus reaches the judge layer the day it ships with no edit here. A version literal anywhere in this skill freezes it on the day someone typed it, and since the 2026-09-21 test-suite split no live test catches one. |
+| 2 | Kimi, reasoning pin | resolved at call time by `get_model("kimi_reasoning")` over the local CLIProxyAPI proxy, so a new flagship is `.venv/bin/python scripts/council-models.py --set kimi_reasoning=<new>` and no code changes. Distinct training pedigree, distinct RLHF, a reasoning model that always thinks. |
+| 3 | ChatGPT, reasoning pin | resolved at call time by `get_model("chatgpt_reasoning")` over the same local CLIProxyAPI proxy, so a new flagship is `.venv/bin/python scripts/council-models.py --set chatgpt_reasoning=<new>` and no code changes. A third training pedigree and a third RLHF, distinct from both other slots. Added to the judge layer 2026-09-11. |
+
+Three families, and that is the whole roster. The CEO cut the other families from the standing council on 2026-07-25 and kept Kimi k3; on 2026-08-09 the judge layer's escape hatches to them were removed too, on the reasoning that a knob nobody turns is not optionality, it is drift waiting to be mistaken for capability. ChatGPT arrived on 2026-09-11 as a judge family in its own right rather than as a restored escape hatch: it is seated by the same run-derived assignment as the other two and there is no flag to turn it on. `scripts/gemini-consult.py` and `scripts/grok-consult.py` still exist for `/council`; the judge layer does not reach them.
+
+**How the split works:**
+
+- For Phase 2.5a single-pass refutation: the Nth finding goes to family `slot[(N-1) mod len(roster)]`, three families as of 2026-09-11, so judges cycle Claude, k3, ChatGPT and back to Claude.
+- For Phase 2.5b two-agent debate: three families would let all three roles differ, but the assignment does not spread them. The Advocate and the Skeptic stay in one family by design and only the Meta-Judge is forced out of it, so the binding rule is the same one the two-family roster carried. **The Skeptic and the Meta-Judge must never be the same family**, because the Meta-Judge ruling on its own family's refusal to refute is the exact self-preference this mitigation exists to block. The widened roster changed which pair gets seated, not the rule: `scripts/scrutinize-dispatch.assign_families()` picks from the six ordered pairs of distinct families, so the rule now holds by construction instead of by a default someone has to remember to swap.
+- For Phase 2 identification (initial finding emission): default Claude, since the primary reviewer is the running session. The split begins at Phase 2.5, and the assignment is derived from the run id by `assignment_for_run()` in `scripts/scrutinize-dispatch.py`, so it is a property of the run rather than a choice made per call.
+
+**Config knobs (CEO overrides):**
+
+| Env var or flag | Effect |
+|---|---|
+| `SCRUTINIZE_JUDGE_SPLIT=fixed-claude` | Collapse the split, use Claude for every judge call. Prose-only knob; no code reads it. |
+| `SCRUTINIZE_JUDGE_SPLIT=split` (default) | Adversarial split per the table above: the run's assignment seats the Advocate and the Skeptic in one family and the Meta-Judge in another. |
+| `scripts/scrutinize-dispatch.py --family {claude\|kimi\|chatgpt}` | Pin the family for ONE judge call, overriding the run's assignment. It is a dispatcher argument, not a `/scrutinize` flag; nothing pins a family for a whole pass. The roster is those three families, and there is nothing else to reach. |
+| `.venv/bin/python scripts/council-models.py --set kimi_reasoning=<id>` | Bump the Kimi judge pin. Distinct from the `kimi` fast pin other callers get; the judge layer must not run a coding pin. There is deliberately NO Claude equivalent - see slot 1. |
+| `.venv/bin/python scripts/council-models.py --set chatgpt_reasoning=<id>` | Bump the ChatGPT judge pin, the same way and for the same reason. It is registered as its own key even while it matches the `chatgpt` council pin, so the judge tier can move without dragging the council's with it. |
+
+**Invocation pattern.** The k3 judge is dispatched with an explicit model pin:
+
+```bash
+.venv/bin/python scripts/kimi-consult.py --mode independent --model k3 \
+  --reasoning-effort high --max-tokens 12000 \
+  --question '<the refutation brief>' --context '<finding, location, evidence>'
+```
+
+The ChatGPT judge takes its pin from the config rather than from a literal, so it carries no `--model` at all:
+
+```bash
+.venv/bin/python scripts/chatgpt-consult.py --mode independent \
+  --reasoning-effort high --max-tokens 12000 \
+  --question '<the refutation brief>' --context '<finding, location, evidence>'
+```
+
+MEASURED 2026-09-11 against the live proxy: `gpt-6-astra` accepts `reasoning_effort`, and the proxy validates it, rejecting an unknown level with `400 ... valid levels: low, medium, high, xhigh, max`. The dispatcher asks for `high` per family, because the accepted vocabularies are not identical across the two external sides.
+
+Never substitute `kimi-for-coding` when k3 is unavailable. A fast coding pin standing in for the reasoning voice produces a judge that looks external and reasons shallowly, which is worse than an honestly recorded absence. Claude judges run in-session, because the session is already Claude and calling out of process buys nothing. Every external call, k3 and ChatGPT alike, goes through `scripts/scrutinize-dispatch.py`, never by hand: the dispatcher owns the family assignment and writes the record row, so compliance is a property of the plumbing rather than of the reviewing model's intent.
+
+**Degradation is recorded, never assumed.** If the proxy is down, or `cliproxy models` does not list the pin the assignment called for, run the judge on a family that IS reachable and write the REASON into the `## Judge layer` section: which call was intended for which family, and what made it unavailable. A pass that quietly runs every judge on Claude and reports "fixed-claude applies" without saying why has skipped the mitigation and hidden it in the same breath. Measured on 2026-07-25: a `--relentless` pass on a plan target ran every judge on Claude, dropped the Advocate role entirely, and recorded only that the rotation "was not exercised". That is the failure this paragraph exists to prevent.
+
+**Logging:** every scrutiny pass logs which family was used per phase to the saved report under a "Judge layer" section:
+
+```text
+## Judge layer
+- Phase 2 identifier: claude (session model)
+- Phase 2.5a refutations: claude x2, k3 x2, chatgpt x1
+- Phase 2.5b debate (B1): Advocate=k3, Skeptic=k3, Judge=chatgpt
+- Phase 2.5b debate (H2): Advocate=k3, Skeptic=k3, Judge=chatgpt
+```
+
+Both debate lines carry the same three names on purpose. The assignment belongs to the run, so every debate inside one pass is seated the same way, and a report whose debates disagree about it is reporting something the dispatcher did not do.
+
+This is part of the audit trail that supports the human-agreement benchmark (R11).
+
+## Mitigation 2 - Position randomisation
+
+**The rule:** when /scrutinize compares two alternatives - for example, when Phase 2.5b's Meta-Judge sees Advocate's argument vs Skeptic's argument - the order in which they are presented is shuffled on every call.
+
+**Why:** position bias swings winrate 10-15 points in pairwise judging. Shuffling on every call removes the bias mechanically. Prompt-level "ignore order" instructions are documented to fail.
+
+**Mechanics:**
+
+- Generate a per-call random bit `swap = random.random() < 0.5`.
+- If `swap` is true, present Skeptic first, Advocate second; otherwise the natural order.
+- Log the swap in the saved report so a human auditor can trace per-call ordering.
+- The Meta-Judge prompt always says "Argument A: ... Argument B: ..." without revealing which is Advocate vs Skeptic. The skill maps A/B back to roles when computing the verdict.
+
+**Out of scope:** position randomisation does not apply to Phase 2 identification (single-output finding emission) or Phase 2.5a single-pass refutation (single-output judgement). It applies only to pairwise comparisons.
+
+## Mitigation 3 - Length-controlled scoring
+
+**The rule:** when /scrutinize compares two outputs by quality - again, primarily Phase 2.5b's Advocate vs Skeptic - apply a verbosity regression. Subtract the length contribution from each output's score before the Meta-Judge sees them.
+
+**Why:** verbosity bias is 15-30pt of inflated preference for length. Mechanical correction is Dubois et al. 2024's length-controlled win rates: estimate the length-coefficient on a calibration set, then subtract `coef * (length_diff)` from the longer output's apparent quality.
+
+**Mechanics (lightweight implementation):**
+
+- Cap both Advocate and Skeptic outputs at 200 words (the brief already requires this). This is a "soft" length cap that mostly eliminates the bias by construction.
+- If outputs exceed 200 words anyway, truncate before passing to Meta-Judge.
+- Defer formal length-controlled scoring (regression coefficient on a calibration set) to v2 - the simple word cap captures most of the gain.
+
+## Cost shape
+
+The k3 side draws on a subscription quota rather than per-token billing, so its marginal cost is latency, not spend. Nothing here has measured the ChatGPT side's billing shape, so do not read that sentence as covering it. The earlier arithmetic here priced a rotation on providers this roster no longer runs and has been removed rather than restated: an unmeasured saving quoted to one decimal place is worse than no number.
+
+The split defends itself on BLOCKER/HIGH findings, where a confidently wrong verdict halts real work. For LOW/NIT it can be pinned to one family.
+
+## Sensitive-session behaviour
+
+When a session is DECLARED sensitive, neither external side is dispatched: an
+external judge call would carry finding text, file paths and evidence to a
+third-party model, which is precisely what the flag exists to prevent. The pass falls back to
+Phase 2.5a on Claude alone (`SCRUTINIZE_JUDGE_SPLIT=fixed-claude`) and announces
+the degradation in the approval block header.
+
+**Declared, not defaulted, and the distinction is load-bearing.** The gate lives
+in `scripts/scrutinize-dispatch.py` and calls `sensitivity_is_declared()`. It must
+never call `is_sensitive()`, which is fail-closed: an unset `SENSITIVE_MODE`
+resolves sensitive, so a gate asking it would refuse every proxy call on an
+ordinary machine and disable two of the three families permanently. That is not a
+hypothetical - the 2026-08-09 scrutiny pass ran without its k3 side for exactly
+that reason, on a machine where nobody had declared anything. A person who typed
+`SENSITIVE_MODE=on` knows something no default knows; an unset variable is the
+machine's default and must not be read as a declaration.
+
+Either way the refusal is recorded, not merely obeyed: the dispatcher writes a
+`degraded` row naming the cause and exits non-zero, and `--validate` fails a
+report that declares a skipped refutation with no such row.
+
+## Validation
+
+Two checks must pass before a scrutiny pass closes:
+
+1. **Judge-layer log present:** the saved report has a `## Judge layer` section listing the family used per phase. Measured 2026-08-09: that heading appears in 12 of 75 saved reports, which is why the mandate now has a machine-checkable sibling - every judge call also writes a `verdict` row through the dispatcher, and `scripts/scrutinize-record.py --validate` reconciles the report's `Refutation:` header against those rows.
+2. **Position-swap log present** (only if Phase 2.5b ran): the report records the per-call swap bit. If absent, the pass is logged as `position-randomisation: incomplete`.
+
+Incomplete bias-mitigation runs are valid outputs (the skill still produced findings) but are flagged in the saved report so the human-agreement benchmark can exclude them from calibration.

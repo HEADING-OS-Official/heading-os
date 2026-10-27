@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Install the Conversation Chronicle build as a systemd-user timer on Linux/WSL2.
+#
+# Usage:
+#   scripts/install-chronicle-timer.sh
+#   HEADING_OS_TZ=America/New_York scripts/install-chronicle-timer.sh   # pin a TZ
+#   PYTHON=/path/to/python scripts/install-chronicle-timer.sh   # override interpreter
+#
+# Renders scripts/templates/systemd/chronicle.{service,timer} (substituting
+# {{WORKSPACE}}, {{PYTHON}}, {{TZ}}) into ~/.config/systemd/user/, then enables a
+# DAILY timer (03:00 in the configured timezone, Persistent) that runs an
+# INCREMENTAL `scripts/chronicle.py build`, summarizing only new sessions into the
+# dated chronicle. The hourly memory-index refresh (at :15) embeds the day's new
+# business entries into recall on its next pass.
+#
+# Safe to automate: the chronicle NEVER writes to the brain and NEVER sends
+# anything (unlike `/odin collect`, which stays manual). Personal tagging fails
+# toward "personal", so an unattended run can only over-wall, never over-expose.
+#
+# This mirrors scripts/install-memory-index-timer.sh (same template+sed render
+# convention). It defaults PYTHON to the workspace .venv interpreter: the build
+# imports the workspace package chain and a systemd unit does not inherit the
+# interactive shell profile, so the venv python must be named explicitly.
+#
+# For unattended boot:  loginctl enable-linger "$USER"  (done automatically below)
+
+set -euo pipefail
+
+# HELM only. The systemd unit templates substitute the workspace path into
+# WorkingDirectory= and ExecStart=, so running this from a YARD worktree
+# points a LIVE daemon at a checkout that is deleted two days later.
+source "$(dirname "$0")/lib/require-main-clone.sh"
+require_main_clone
+
+# Workspace root = directory containing this script's parent (i.e. scripts/../).
+WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Interpreter for the unit's ExecStart=, resolved by the one owner:
+# explicit PYTHON wins, else the pinned .venv, else PATH. MEASURED 2026-09-06:
+# seven installed units ran on /usr/bin/python3, whose numpy and pyyaml are
+# luck rather than a contract, and everything they respawn through
+# sys.executable inherited it.
+source "$(dirname "$0")/lib/resolve-python.sh"
+source "$(dirname "$0")/lib/render-units.sh"
+PYTHON="$(resolve_python "$WORKSPACE")"
+
+# Unit timezone: HEADING_OS_TZ, else the workspace resolver, else UTC.
+TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
+
+TEMPLATE_DIR="$WORKSPACE/scripts/templates/systemd"
+DEST_DIR="$HOME/.config/systemd/user"
+
+if [[ -z "$PYTHON" ]]; then
+    echo "No python interpreter found (set PYTHON=...)." >&2
+    exit 4
+fi
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl not found - systemd user units require systemd >= 226." >&2
+    echo "On WSL2 enable systemd via /etc/wsl.conf:" >&2
+    echo "  [boot]" >&2
+    echo "  systemd=true" >&2
+    exit 5
+fi
+
+# Sanity-check the interpreter can import the build's workspace package chain
+# before wiring a timer that would otherwise fail silently into journald nightly.
+if ! "$PYTHON" -c "import sys; sys.path.insert(0, '$WORKSPACE'); import scripts.calibrate" >/dev/null 2>&1; then
+    echo "[error] $PYTHON cannot import scripts.calibrate -- the chronicle build will fail." >&2
+    echo "        Point PYTHON at the workspace .venv." >&2
+    exit 7
+fi
+
+# ollama (gemma3:4b) is the summarizer, and since 2026-08-23 it is a PIN: a
+# nightly fire with no reachable host now FAILS rather than summarizing on a
+# slower local copy, because there is no local copy any more. Warn, do not
+# block -- the host can be down at install time and up at 03:00.
+# The probe asks scripts/inference-guard.py, so this check and the runtime path
+# read the same configuration instead of a second hardcoded address.
+if ! (cd "$WORKSPACE" && "$PYTHON" scripts/inference-guard.py check >/dev/null 2>&1); then
+    echo "  [warn] no ollama answering right now -- install proceeds, but a nightly" >&2
+    echo "         fire will fail until one is up. Check: scripts/inference-guard.py check" >&2
+fi
+
+for unit in chronicle.service chronicle.timer; do
+    if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
+        echo "Template not found: $TEMPLATE_DIR/$unit" >&2
+        exit 3
+    fi
+done
+
+mkdir -p "$DEST_DIR"
+
+for unit in chronicle.service chronicle.timer; do
+    render_unit "$TEMPLATE_DIR/$unit" "$DEST_DIR/$unit" \
+        "$WORKSPACE" "$PYTHON" "$TZ_VALUE"
+done
+
+# Validate the RENDERED calendar expression before enabling, so a too-old systemd
+# that rejects a timezone suffix fails here with an explanation rather than
+# opaquely at enable time.
+RENDERED_CAL="$(grep -m1 '^OnCalendar=' "$DEST_DIR/chronicle.timer" | sed 's|^OnCalendar=||')"
+if ! systemd-analyze calendar "$RENDERED_CAL" >/dev/null 2>&1; then
+    echo "[warn] this systemd rejects the calendar expression: $RENDERED_CAL" >&2
+    echo "       Drop the trailing timezone from $DEST_DIR/chronicle.timer and set" >&2
+    echo "       the host timezone to ${TZ_VALUE}, then re-run." >&2
+    exit 6
+fi
+
+systemctl --user daemon-reload
+systemctl --user enable --now chronicle.timer
+
+# Load-bearing: without linger a user timer stays silent after an unattended
+# reboot. Nothing else holds the WSL session up since HOS-7 (2026-09-21).
+if ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
+    loginctl enable-linger "$USER" 2>/dev/null \
+        || echo "  [hint] run once for unattended boot: loginctl enable-linger $USER"
+fi
+
+echo "  [ok] systemd user timer installed and enabled: chronicle.timer"
+echo "       interpreter: ${PYTHON}"
+echo ""
+echo "  Next fire:"
+systemctl --user list-timers chronicle.timer --no-pager || true
+echo ""
+echo "  Status:  systemctl --user status chronicle.timer"
+echo "  Logs:    journalctl --user -u chronicle.service -f"
+echo "  Test:    systemctl --user start chronicle.service   # run a build now"
+echo "  Disable: systemctl --user disable --now chronicle.timer"

@@ -1,0 +1,17 @@
+[Unit]
+Description=Daemon liveness watchdog (classify every expected heartbeat, alert on a missed beat)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/daemon-watchdog.py --once
+# Exit 1 means "a daemon is silent or missing". That is the finding, and the
+# alert routed through scripts/utils/alert.py is how the operator hears of it,
+# so it is not a unit failure. Any other non-zero exit is a broken install and
+# stays `failed`.
+SuccessExitStatus=0 1
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

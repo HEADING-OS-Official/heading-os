@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""council-models-notify.py -- daily timer entrypoint: nudge on stale /council pins.
+
+Thin orchestrator (no LLM, no config write). On each fire it runs the read-only
+freshness check across every council provider -- the roster is
+`council_models.COUNCIL_PROVIDERS`, so a voice added there is checked here the
+same day and nothing has to be re-typed -- and, when a pin is BROKEN, pushes a
+one-line nudge with the exact bump command to the CEO's Telegram alert channel.
+When every pin is current it sends nothing.
+
+Not naggy: it dedups on the actionable finding set, so an unchanged finding is
+announced ONCE, not every day. The nudge re-fires only when the
+finding set changes (a new model appears, or a pin breaks). `/prime` and a
+manual `python scripts/council-models.py --check` remain the backstop for a
+still-pending bump. Adoption is always the CEO's one-command `--set`.
+
+Recipient is read from the gitignored engine .env, never hardcoded here:
+    COUNCIL_MODELS_TELEGRAM_TARGET -> OPS_RADAR_TELEGRAM_TARGET
+    -> ODIN_CADENCE_TELEGRAM_TARGET -> unconfigured (no send)
+
+Delivery is via the dedicated notifications bot (scripts/utils/telegram_notify.py).
+
+A transient failure (probe or send) is logged and SWALLOWED (exit 0) so the
+oneshot systemd unit is never left `failed`. Invoked by
+scripts/templates/systemd/council-models-check.service (daily timer). Also
+runnable by hand:
+    python3 scripts/council-models-notify.py            # send only on a changed finding
+    python3 scripts/council-models-notify.py --force     # send even if unchanged (test)
+
+Tests: none live. A fence parser that recognised one line ending and not the
+other was pinned until the 2026-09-21 test-suite split. CRLF input still has to
+survive every reader this script reaches; nothing goes red when it stops doing so.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Workspace import bootstrap (per development-standards.md)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.utils.workspace import get_workspace_root  # noqa: E402
+from scripts.utils.paths import load_env  # noqa: E402
+from scripts.utils.data_path import data_write_dir  # noqa: E402
+from scripts.utils import telegram_notify  # noqa: E402
+
+# The one file this service keeps in the runtime store, under
+# `runtime:council-models-notify/state`. It was `get_outputs_dir() /
+# "operations/council/..."` until 2026-09-22; `_state_path()` carries why that
+# changed and what was waited on.
+STATE_FILENAME = "freshness-nudge-state.json"
+# Unconfigured default when no env target is set -- never a send attempt
+# (Telegram's own-account "me"/Saved Messages sentinel is not a valid
+# fallback anywhere in this system).
+DEFAULT_RECIPIENT = ""
+
+
+def _log(msg: str) -> None:
+    print(f"[council-models-notify] {msg}", file=sys.stderr)
+
+
+def _signature(findings: list[dict]) -> list[str]:
+    """Stable, sorted signature of the actionable findings (dedup key)."""
+    from scripts.utils.council_freshness import is_actionable
+
+    return sorted(
+        f"{f['provider']}:{f['status']}:{f.get('candidate') or '-'}"
+        for f in findings
+        if is_actionable(f)
+    )
+
+
+def _state_path() -> Path:
+    """The nudge's dedup key: `freshness-nudge-state.json` under the runtime
+    address `runtime:council-models-notify/state`.
+
+    Machine state, rebuilt from the findings each run, so its loss only
+    re-announces a nudge. The one reader and the one writer
+    (`_load_last_signature`, `_save_signature`) both resolve through here. A
+    registry without that row raises `DataPathError`; `main`'s boundary logs it
+    and exits 0, and `/prime` backstops the skipped nudge.
+    """
+    return data_write_dir("runtime:council-models-notify/state") / STATE_FILENAME
+
+
+def _load_last_signature() -> list[str]:
+    try:
+        with open(_state_path(), encoding="utf-8") as f:
+            state = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (json.JSONDecodeError, OSError) as e:
+        _log(f"could not read nudge state ({e}); treating as no prior nudge")
+        return []
+    # `json.load` answers with any JSON value. The `.get` used to sit on the
+    # line above, inside a handler that catches neither the AttributeError a
+    # bare `null` or array gives nor the TypeError a non-iterable "signature"
+    # gives - so a state file of the wrong shape crashed the oneshot unit the
+    # module docstring says is never left failed.
+    if not isinstance(state, dict) or not isinstance(state.get("signature"), list):
+        _log("nudge state is not a signature record; treating as no prior nudge")
+        return []
+    return [str(item) for item in state["signature"]]
+
+
+def _save_signature(signature: list[str]) -> bool:
+    """Persist the dedup key. Logs and returns False rather than raising.
+
+    The module docstring promises a transient failure is "logged and SWALLOWED
+    (exit 0) so the oneshot systemd unit is never left `failed`", and this
+    function was the one path that could break it: an unwritable or full
+    outputs directory raised OSError straight out of `main`, past the only
+    handler in the file, and `Type=oneshot` with no SuccessExitStatus turns a
+    non-zero exit into a failed unit. The failure is also harmless to swallow -
+    a lost signature makes the next run re-announce a finding it already sent,
+    which is the direction this system is supposed to fail in.
+    """
+    path = _state_path()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"signature": signature}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except OSError as e:
+        _log(f"could not save nudge state ({e}); the next run may repeat this nudge")
+        return False
+    return True
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Nudge Telegram when a /council model pin is stale.")
+    ap.add_argument("--force", action="store_true",
+                    help="Send even when the finding set is unchanged (delivery test).")
+    args = ap.parse_args()
+    # The one boundary that makes the module docstring's promise true. Only
+    # `assess()` was wrapped, and everything after it was not: `nudge_line`
+    # runs unguarded, `_signature` indexes `f['provider']` and `f['status']` on
+    # whatever assess returned, and `telegram_notify.notify` reaches the
+    # network, where raising is ordinary rather than exceptional. Any of those
+    # propagated out, the process exited non-zero, and the Type=oneshot unit
+    # was left `failed` -- which is the exact outcome the docstring says cannot
+    # happen. Argparse stays OUTSIDE, so `--help` and a bad flag still behave
+    # like a CLI. A missed nudge is non-critical: `/prime` is the backstop, and
+    # it is named as such three times in this file.
+    try:
+        return _run(args)
+    except Exception as exc:  # noqa: BLE001 - boundary; see above
+        _log(f"nudge run failed ({type(exc).__name__}: {exc}); exiting 0")
+        return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    root = get_workspace_root()
+    load_env(root)  # make .env (API keys + *_TELEGRAM_TARGET) visible under systemd
+
+    # Import after load_env so the freshness probes see the API keys.
+    from scripts.utils import council_freshness as freshness
+
+    try:
+        findings = freshness.assess()
+    except Exception as exc:  # noqa: BLE001 - boundary; a missed nudge is non-critical
+        _log(f"freshness check failed to run ({type(exc).__name__}: {exc}); exiting 0")
+        return 0
+
+    line = freshness.nudge_line(findings)
+    if not line:
+        _log("all council pins current -- no nudge")
+        _save_signature([])  # reset so the next new finding re-fires
+        return 0
+
+    signature = _signature(findings)
+    if not args.force and signature == _load_last_signature():
+        _log("finding set unchanged since last nudge -- suppressing (use --force to override)")
+        return 0
+
+    recipient = (
+        os.environ.get("COUNCIL_MODELS_TELEGRAM_TARGET")
+        or os.environ.get("OPS_RADAR_TELEGRAM_TARGET")
+        or os.environ.get("ODIN_CADENCE_TELEGRAM_TARGET")
+        or DEFAULT_RECIPIENT
+    )
+    # An empty target means no send is ever attempted.
+    if not recipient:
+        _log("no telegram target configured (COUNCIL_MODELS_TELEGRAM_TARGET, "
+             "OPS_RADAR_TELEGRAM_TARGET, ODIN_CADENCE_TELEGRAM_TARGET all "
+             "unset) -- nudge not sent; /prime will backstop")
+        return 0
+    if not telegram_notify.notify(recipient, line):
+        _log("nudge not delivered (see telegram_notify log); /prime will backstop")
+        return 0
+
+    _save_signature(signature)
+    _log(f"nudge delivered to {recipient}: {line}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

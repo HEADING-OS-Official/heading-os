@@ -1,0 +1,6 @@
+{
+  "_comment": "Frozen @pytest.mark.live_data_root sites for scripts/check-live-data-root.py. Shrink-only: --write-baseline removes entries that no longer exist and never adds new ones. A new exemption is argued and approved, not frozen by re-running the writer. This file replaced a ceiling on a child-process count that moved with the scheduler; the record of that ceiling is kept in config/overlay-reachability-baseline.json and is never deleted.",
+  "_history": "Every entry this file once froze, and the five notes that argued for them, named test files the 2026-09-21 test-suite split (HOS-54) removed from this repository. MEASURED 2026-09-28: none of the named files is tracked, and scripts/check-live-data-root.py --check reads 15 test files and finds 0 marker sites, so the list is empty and the notes described nothing that exists. The notes were removed on 2026-09-28 (HOS-162) and kept verbatim in the data repository under registry name record:trace/report; git history carries them too. A new exemption still has to be argued beside its own marker and approved, not frozen by re-running the writer.",
+  "frozen": [],
+  "measured": "2026-09-21"
+}

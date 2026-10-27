@@ -1,0 +1,13 @@
+[Unit]
+Description=Hourly Hindsight deployment health check (and 10 min after start)
+
+[Timer]
+# 10 min after start gives the tunnel and the first backup pull time to come up, so a
+# fresh boot does not report a problem that clears itself a minute later.
+OnCalendar=hourly
+OnStartupSec=10min
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

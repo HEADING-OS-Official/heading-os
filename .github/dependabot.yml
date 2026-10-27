@@ -1,0 +1,72 @@
+# Dependabot — automated dependency CVE alerts + update PRs.
+# Activates once the engine repo is public (or with GitHub Advanced Security on a
+# private repo). Complements the local pip-audit pre-commit hook: pip-audit is the
+# point-in-time gate at commit time; Dependabot is the continuous watch that opens
+# a PR the moment a new CVE lands on a pinned dependency.
+#
+# pip VERSION updates are OFF (2026-08-08, CEO decision). The canonical dependency
+# refresh path is `uv` against pyproject.toml, and requirements.txt is a generated
+# export, so a Dependabot pip version PR is never merged here — it only spends CI
+# minutes and mail. Each pip ecosystem therefore carries
+# `open-pull-requests-limit: 0`, which GitHub documents as "disable version updates
+# for this package manager". SECURITY updates are unaffected by that setting and
+# keep flowing, which is the part that was ever wanted. github-actions version
+# updates stay ON: the SHA pins (F-1.5) would silently rot without them.
+# To re-enable a pip ecosystem, restore its previous limit (10 / 5).
+#
+# Schema: https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+
+updates:
+  # Root Python deps: requirements.txt, requirements-dev.txt, pyproject.toml.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # 0 = version updates off (was 10). Security updates unaffected.
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+    # Collapse minor/patch bumps into one PR per run to cut review noise; majors
+    # (potential breaking changes) still come as individual PRs.
+    groups:
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # Transitive majors that cannot be satisfied without breaking their parent.
+    # markitdown 0.1.6 pins magika<1; a parent pins wrapt<2. Dependabot kept
+    # reopening these as unmergeable PRs (closed 2026-07-06 as #6/#8). Ignore the
+    # blocked majors until the parent relaxes; minor/patch still flow.
+    ignore:
+      - dependency-name: "magika"
+        versions: [">=1.0.0"]
+      - dependency-name: "wrapt"
+        versions: [">=2.0.0"]
+      # Transitive deps whose version uv resolves FROM a parent, not independently:
+      # pydantic-core is lockstep with pydantic; onnxruntime/mammoth/mpmath are held
+      # by magika/markitdown/sympy. Dependabot reads the flat requirements.txt export
+      # and proposes leaf bumps uv cannot satisfy (closed 2026-07-06 as #21). Ignore
+      # the version-update noise; security updates and the pip-audit gate still apply.
+      # Root cause (Dependabot bumping a generated export) is tracked for a decision.
+      - dependency-name: "pydantic-core"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "onnxruntime"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "mammoth"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "mpmath"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+
+  # GitHub Actions: keep the SHA-pinned action versions (F-1.5) fresh via PRs,
+  # so pinning by commit does not silently rot. Dependabot updates the SHA and
+  # the trailing `# vX` comment together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"

@@ -1,0 +1,7 @@
+{
+  "gemini": "gemini-3.8-flash-high",
+  "grok": "grok-4.6",
+  "kimi": "kimi-for-coding",
+  "chatgpt": "gpt-6-astra",
+  "kimi_reasoning": "k3.1-pro"
+}

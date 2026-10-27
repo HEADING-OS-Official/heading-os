@@ -1,0 +1,18 @@
+[Unit]
+Description=Check that every interactive Claude Code session reached Hindsight (hindsight-sync.py capture-check)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Reads only: the plugin's settings (no value from it is printed), the session transcripts'
+# first records, and one GET per session against the bank. A missing interactive session
+# exits 1 and shows as `failed`; the report is in the journal. 25 hours, not 24, so a
+# daily run that fires late by its randomized delay leaves no gap between two windows.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/hindsight-sync.py capture-check --hours 25
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+Nice=10
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=900

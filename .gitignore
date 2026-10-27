@@ -1,0 +1,361 @@
+# Every entry below says why it is ignored: SECRET (credentials or tokens),
+# OPERATIONAL DATA (private or per-machine state that must never reach this
+# public repository), or REBUILDABLE (a cache or build output regenerated on
+# demand). An entry with no reason is one the next reader un-ignores. Git reads
+# no trailing comment on a pattern line, so each reason sits on its own line.
+
+# SECRET: credentials. The template is tracked, empty structure only.
+.env
+.env.*
+!.env.example
+
+# OPERATIONAL DATA: the live platform settings. Each OS has a TRACKED template
+# (settings.local.linux.json / .macos.json / .windows.json); the live file is
+# machine-local (absolute paths, per-machine permission grants) and MERGES the
+# template on each setup run.
+.claude/settings.local.json
+# OPERATIONAL DATA: backups and the atomic-write temp file from
+# scripts/merge-platform-settings.py; copies of the live file above. Since
+# 2026-10-16 setup-platform.sh sends the backup to the data repository
+# (runtime:settings-backup/state); this covers a clone with no data repository.
+.claude/settings.local.json.bak-*
+.claude/settings.local.json.tmp
+
+# REBUILDABLE: Python bytecode.
+__pycache__/
+*.pyc
+*.pyo
+
+# REBUILDABLE: pytest-cov artifacts.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# OPERATIONAL DATA: OS metadata files.
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# OPERATIONAL DATA: clipboard images (transient screenshots via cv command).
+outputs/clipboard/
+
+# OPERATIONAL DATA: Telegram group backup artifacts (JSON dumps, downloaded
+# media, throwaway helper scripts).
+outputs/telegram-groups-backup/
+
+# SECRET: browser cookies imported via /setup-browser-cookies.
+outputs/browser/cookies.json
+
+# OPERATIONAL DATA: Chromium profile caches from Playwright and CDP automation.
+outputs/browser/chrome-profile/
+outputs/**/.profile/
+
+# OPERATIONAL DATA: LinkedIn scrape artifacts (authenticated DOM dumps, may
+# contain PII).
+outputs/browser/linkedin-*.html
+outputs/browser/linkedin-*.md
+outputs/browser/linkedin-*.json
+outputs/browser/li-debug.*
+
+# SECRET: service sessions (auth tokens, runtime state).
+.sessions/
+
+# OPERATIONAL DATA: editor swap and backup files, editor and agent tool state.
+*.swp
+*.swo
+*~
+.zed/
+.agent/
+.agents/
+.kiro/
+
+# OPERATIONAL DATA: MobaXterm workspace artifacts (legacy, kept as safeguard).
+Desktop
+LauncherFolder
+MyDocuments
+slash/
+
+# OPERATIONAL DATA: per-instance operator identity (name, slug, voice, email).
+# The engine ships scripts/operator.example.yaml; the engine-local
+# config/operator.yaml is the fallback on a clone with no data repository.
+config/operator.yaml
+
+# OPERATIONAL DATA: which inference host serves THIS machine. Every address in
+# it is a fact about one computer; the engine ships
+# config/inference-hosts.example.yaml, and an absent live file is a valid setup.
+config/inference-hosts.yaml
+
+# OPERATIONAL DATA: per-clone identity and heartbeat, and leftover clones of the
+# retired corporate and CRM-central repositories (executive model removed
+# 2026-09-25), which old clones may still hold.
+.workspace-identity.json
+.heartbeat.json
+.corporate-repo/
+.crm-central-repo/
+
+# OPERATIONAL DATA: Firecrawl cache under the data overlay (scraped web
+# content, potentially sensitive).
+outputs/browser/firecrawl-cache/
+
+# REBUILDABLE: DocParse cache. No trailing slash: the cache-store gate asks git
+# about that exact spelling (2026-09-14).
+.cache/docparse
+
+# VACATED 2026-09-25 (HOS-5 section 7): no engine code writes any entry in this
+# block any more; each writer uses the data repository's runtime store, and
+# scripts/dev/engine-dir-writes.py refuses a new one. Still ignored because
+# existing checkouts hold old contents until HELM moves them.
+# OPERATIONAL DATA: sentinel state, logs and PID; sync state.
+.sentinel/
+.sync/
+# OPERATIONAL DATA: scraped web content, potentially sensitive.
+.cache/firecrawl/
+# REBUILDABLE: the 24h Models API cache.
+.cache/claude-models.json
+# OPERATIONAL DATA: this machine's day-mode marker and full-run verdict, and the
+# revision its nightly last ran on; a committed copy would hand every other
+# clone a green run that never happened there.
+.cache/day-mode/
+.cache/nightly-refresh/
+# REBUILDABLE: per-checkout test verdicts, keyed by a digest of the tree.
+.cache/test-verdicts.db
+.cache/test-verdicts.db-journal
+.cache/test-verdicts.db-wal
+.cache/test-verdicts.db-shm
+# OPERATIONAL DATA: content-gate verdicts; the key derives from a token set
+# harvested from the private overlay.
+.cache/content-verdicts.db
+.cache/content-verdicts.db-journal
+.cache/content-verdicts.db-wal
+.cache/content-verdicts.db-shm
+# OPERATIONAL DATA: checkout scratch.
+.tmp/
+# OPERATIONAL DATA: daemon PIDs, logs and sentinels (sync-exchange),
+# and the retired bridge daemon's token, port and telemetry.
+.sync-exchange/
+.daemon-state/
+# OPERATIONAL DATA: hook state; its content hashes read as high-entropy strings.
+.claude/state/
+# OPERATIONAL DATA: per-machine logs and state; the recall-op log can hold
+# private query text and paths.
+.logs/
+.state/
+# OPERATIONAL DATA: safe-push live status files.
+.push-state/
+
+# OPERATIONAL DATA: per-machine data directory of paths.py (data_dir).
+.data/
+
+# REBUILDABLE: Puppeteer's browser cache (scripts/marp_render.py). It resolves to
+# `$PUPPETEER_CACHE_DIR`, else `~/.cache/puppeteer`; a relative
+# PUPPETEER_CACHE_DIR would land a ~400 MB browser under the repo root, where
+# `git add -A` would commit it. No trailing slash: `git check-ignore` cannot tell
+# that a path which does not exist would be a directory.
+.cache/puppeteer
+
+# OPERATIONAL DATA: HEADING OS 2 judgement verdicts, keyed by the operator's real
+# overlay paths. The writer retired 2026-09-20; the rule outlives it on purpose,
+# because a machine that ran it still holds the store. No trailing slash, for
+# the same reason as the entry above.
+.cache/heading-os-2-judgement
+
+# OPERATIONAL DATA: auto-generated sync state (calendar, email, linkedin).
+outputs/_sync/
+
+# REBUILDABLE: MARP renders, regenerable from source; the sources stay tracked.
+outputs/deliverables/presentations/*.pdf
+outputs/deliverables/presentations/*.html
+outputs/deliverables/presentations/*.png
+!outputs/deliverables/presentations/marp-source/
+!outputs/deliverables/presentations/marp-source/**
+
+# OPERATIONAL DATA: scheduled tasks runtime state.
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+
+# OPERATIONAL DATA: the commit message a YARD prepares for HELM to commit, when
+# it is written inside the checkout. Untracked and unignored it would read as a
+# data artifact sitting in the engine clone (2026-09-21).
+.commit-message-*.txt
+
+# OPERATIONAL DATA: browser preference backups (high-entropy browser data).
+outputs/operations/system/backups/
+
+# OPERATIONAL DATA: email intelligence transient runtime files (Exchange
+# message IDs).
+outputs/operations/email-intelligence/_*
+outputs/operations/email-intelligence/state.json
+
+# OPERATIONAL DATA: Office lock/owner files.
+~$*
+
+# OPERATIONAL DATA: DocParse raw outputs (may contain sensitive scraped data).
+outputs/intel/docparse/
+
+# OPERATIONAL DATA: sensitive closed-project archives, never tracked in any git
+# history.
+outputs/projects/
+
+# SECRET: Atticus book-writing backups (contain JWT session tokens).
+**/atticus-backup-*.json
+
+# OPERATIONAL DATA: the removed secure vault; never committed.
+_secure/
+
+# OPERATIONAL DATA: setup wizard state (PII, per-machine).
+.setup/
+
+# REBUILDABLE: migration mirror clones (full git history, regenerable from origin).
+outputs/operations/migrations/*.git/
+
+# OPERATIONAL DATA: CRM aggregation outputs (the aggregator was removed with the
+# executive model on 2026-09-25, so any copy is stale).
+crm/aggregated/
+
+# OPERATIONAL DATA: skill scratch (drafts, helper scripts, intermediate artifacts).
+outputs/_tmp/
+outputs/_temp/
+outputs/_yt_tmp/
+scripts/_scratch/
+
+# OPERATIONAL DATA: Superpowers plugin runtime state.
+.superpowers/
+
+# OPERATIONAL DATA: design records, plans, specs and ADRs. The engine is public,
+# but how it was built is not; they live in the data repository (registry name
+# `spec-docs`), never in the engine clone.
+docs/superpowers/
+docs/design/
+
+# OPERATIONAL DATA: git worktrees created inside the checkout.
+.worktrees/
+.claude/worktrees/
+
+# OPERATIONAL DATA: the operator's own threads, never committed.
+threads/personal/
+threads/archive/**/personal/
+
+
+# OPERATIONAL DATA: outreach send log, pipeline touch log and inbox dismiss log
+# (private notes about recipients and deals, Exchange conversation IDs).
+outputs/operations/fundraising/**/_send-log.jsonl
+outputs/operations/pipeline/_touch-log.jsonl
+outputs/operations/email-intelligence/_dismiss-log.jsonl
+
+# OPERATIONAL DATA: CRM migration staging and backup (one-shot).
+crm/.migration-staging/
+crm/.migration-backup/
+
+# OPERATIONAL DATA: eval-drift daemon runtime (PID, rotated log, stop sentinel).
+.eval-drift/
+
+# OPERATIONAL DATA: a launcher the retired Windows bridge installer generated;
+# old clones may still hold one, with machine paths in it.
+scripts/launch-bridge-daemon.bat
+
+# REBUILDABLE: service-host state mirror, regenerated frequently.
+datastore/operations/service-mirror/
+
+# OPERATIONAL DATA: daemon runtime state files (per-machine, continuously
+# rewritten). The surrounding directories still hold tracked content.
+datastore/operations/eval-drift/errors.log
+datastore/operations/eval-drift/state.json
+# REBUILDABLE: fundraising build intermediates.
+outputs/operations/fundraising/**/_build/
+
+# OPERATIONAL DATA: Marp skill scratch sources (dot-prefixed per-run temps).
+.*.marp-src-*.md
+
+# REBUILDABLE: local associative-memory index, engine-side code index, and the
+# CodeGraph index (`codegraph init` recreates it).
+.memory-index/
+.memory-index-code/
+.codegraph/
+
+# REBUILDABLE: Odin collect recency marker (absence widens the --since window).
+knowledge/odin-brain/.last-collect
+
+# OPERATIONAL DATA: Action Queue card store and audit log (private draft bodies
+# and recipient addresses).
+outputs/operations/action-queue/queue.json
+outputs/operations/action-queue/disposition-log.jsonl
+
+# OPERATIONAL DATA: quarantined wreck files. `scripts/utils/quarantine.py` always
+# writes into a `.quarantine/` directory beside the original, so one rule covers
+# every state file it ever quarantines (2026-08-29).
+**/.quarantine/
+
+# OPERATIONAL DATA: dead-letter queue records (recipient and body payloads).
+outputs/operations/dead-letter
+
+# OPERATIONAL DATA: /implement run artifacts (per-run tmp and trajectory logs).
+outputs/operations/implement/_tmp/*
+!outputs/operations/implement/_tmp/.gitkeep
+outputs/operations/implement/_trajectory_*.jsonl
+
+# OPERATIONAL DATA: per-skill personal customization overrides; the shared
+# layer ({skill}.toml) is committed, the personal layer stays local.
+config/skill-custom/*.user.toml
+
+# OPERATIONAL DATA: memlog working-memory files backing long-running skills.
+**/.memlog.md
+
+# OPERATIONAL DATA: eval-capture staged drafts written inside the engine before
+# 2026-10-16; eval-flag.py now stages them under the registry name
+# skill-eval-drafts, and this keeps any older copy out of git.
+**/evals/outcomes/_staged/
+
+# OPERATIONAL DATA: data directories never belong in the engine; data lives in
+# the data repository, resolved by registry name.
+/threads/
+/crm/
+/outputs/
+/knowledge/
+/context/
+/plans/
+/datastore/
+/_archive/
+
+# OPERATIONAL DATA: legacy two-layer trees from the retired executive model. Old
+# clones may still hold them; nothing in the engine reads them.
+/corporate/
+/personal/
+
+# SECRET: proprietary licensed fonts, not redistributable in a public repo.
+# Adopters supply their own; the marp theme degrades to a system fallback.
+.claude/skills/marp/themes/fonts/GT-Standard-*.woff2
+.claude/skills/marp/themes/fonts/31CHorizontalT03-*.woff2
+
+# REBUILDABLE: plugin and marketplace build output (scripts/dev/build-plugins.py).
+/dist/
+
+# OPERATIONAL DATA: Canopus freeze state from the lifecycle retired 2026-08-07.
+# Nothing writes it, but old clones still hold it; deleting this line once
+# staged a 115 KB history file into this public repository. Remove it only after
+# the leftovers are gone from every clone.
+.canopus/
+
+# OPERATIONAL DATA: the per-worktree bootstrap receipt and the two pytest logs
+# yard-bootstrap.sh writes (scripts/herdr/heading-os-yard/). Worthless in any
+# other checkout. Literal names on purpose: `.claude/` is mostly tracked source.
+.claude/.yard-bootstrap-status
+.claude/.yard-bootstrap-tree-clean.log
+.claude/.yard-bootstrap-canary.log
+
+# OPERATIONAL DATA: scratch slash-commands minted by the skill-creator plugin's
+# eval harness inside the tracked `.claude/commands/`. Its run_eval.py unlinks
+# and sweeps them; this is the belt for a SIGKILL.
+.claude/commands/*-skill-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].md
+
+# REBUILDABLE: Hugging Face model and tokenizer downloads.
+.cache/huggingface
+
+# OPERATIONAL DATA: the content-guard probe file the gate tests wrote inside this
+# repository. Ignored so a probe left by a killed run can never be committed.
+tests/_precommit_guard_probe-*
+
+# REBUILDABLE: what Claude Code writes into a mod's folder on each load (API
+# type declarations and a tsconfig.json extending them; 2026-10-10).
+scripts/claude-mods/*/.claude-plugin/types/
+scripts/claude-mods/*/tsconfig.json

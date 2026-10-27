@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily check for a renewed Porkbun certificate (05:15, configured timezone, and 10 min after start)
+
+[Timer]
+# Porkbun renews on its own schedule, which its documentation does not state, so
+# the check runs daily; an unchanged certificate costs one API call and one ssh
+# `status`. OnStartupSec covers a laptop that was off at 05:15, and Persistent
+# runs a missed calendar fire on the next boot.
+OnCalendar=*-*-* 05:15:00 {{TZ}}
+OnStartupSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

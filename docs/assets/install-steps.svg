@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 210" width="880" height="210" role="img" aria-labelledby="t d">
+  <title id="t">Install in three steps</title>
+  <desc id="d">Step one, get ready: a Claude subscription, a GitHub account and the basic tools. Step two, run the installer. Step three, introduce yourself to the assistant and start your day.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#5b6b7c"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #0f2a44; }
+    .n { font-size: 22px; font-weight: 700; fill: #ffffff; }
+    .h { font-size: 17px; font-weight: 700; }
+    .s { font-size: 12.5px; fill: #44566a; }
+  </style>
+  <rect x="0" y="0" width="880" height="210" rx="18" fill="#f6f8fa"/>
+
+  <g>
+    <rect x="30" y="30" width="250" height="150" rx="14" fill="#ffffff" stroke="#c9d6e3"/>
+    <circle cx="70" cy="70" r="22" fill="#0f2a44"/>
+    <text x="70" y="78" text-anchor="middle" class="n">1</text>
+    <text x="104" y="77" class="h">Get ready</text>
+    <text x="50" y="118" class="s">A Claude subscription</text>
+    <text x="50" y="138" class="s">(Claude Max recommended),</text>
+    <text x="50" y="158" class="s">a GitHub account, basic tools</text>
+  </g>
+  <line x1="284" y1="105" x2="310" y2="105" stroke="#5b6b7c" stroke-width="2.5" marker-end="url(#a)"/>
+
+  <g>
+    <rect x="315" y="30" width="250" height="150" rx="14" fill="#ffffff" stroke="#c9d6e3"/>
+    <circle cx="355" cy="70" r="22" fill="#0f2a44"/>
+    <text x="355" y="78" text-anchor="middle" class="n">2</text>
+    <text x="389" y="77" class="h">Run the installer</text>
+    <text x="335" y="118" class="s">Two commands. It sets up</text>
+    <text x="335" y="138" class="s">the engine and creates your</text>
+    <text x="335" y="158" class="s">private vault for you</text>
+  </g>
+  <line x1="569" y1="105" x2="595" y2="105" stroke="#5b6b7c" stroke-width="2.5" marker-end="url(#a)"/>
+
+  <g>
+    <rect x="600" y="30" width="250" height="150" rx="14" fill="#d97757"/>
+    <circle cx="640" cy="70" r="22" fill="#ffffff"/>
+    <text x="640" y="78" text-anchor="middle" class="n" style="fill:#d97757">3</text>
+    <text x="674" y="77" class="h" style="fill:#ffffff">Introduce yourself</text>
+    <text x="620" y="118" class="s" style="fill:#fff3ec">The setup interview learns</text>
+    <text x="620" y="138" class="s" style="fill:#fff3ec">your voice and your business,</text>
+    <text x="620" y="158" class="s" style="fill:#fff3ec">then you start your first day</text>
+  </g>
+</svg>

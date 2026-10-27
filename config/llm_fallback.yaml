@@ -1,0 +1,80 @@
+# LLM fallback configuration - Track A (failover) of the LLM-fit logging project.
+# See the plan 2026-05-24-llm-fit-logging-three-tracks.md, in the 2026 archive
+# of `plans` in the private data overlay.
+#
+# Maps Anthropic model tier to an ordered fallback chain. When the primary
+# (Anthropic) call fails with a retriable error (5xx, 429, timeout, connection
+# reset), llm_fallback.call_anthropic_with_fallback() cascades through the
+# named vendors using the existing council wrappers imported as libraries (NOT
+# subprocess). The wrappers all route through CLIProxyAPI (see the
+# proxy-transport migration plan) rather than calling each vendor's API
+# directly. `llm_fallback` deliberately pins the kimi step to the
+# `kimi-for-coding` proxy model (fast, quota-light, the same pin as
+# config/council-models.json) and passes `reasoning_effort` for no vendor at
+# all: a failover step wants an answer at the lowest latency the vendor offers.
+#
+# ONLY TRUSTED VENDORS, since 2026-10-12. The callers are sentinel and
+# email-intelligence, whose prompts carry email bodies and calendar subjects,
+# which are ceo-only. The operator's named remote trust list admits Moonshot
+# Kimi and OpenAI ChatGPT Astra here (his answer of 2026-10-12: "yes, Kimi and
+# Astra", translated); Gemini and Grok are not on it and left every chain. The yaml is not
+# the guard: `llm_fallback.TRUSTED_FALLBACK_VENDORS` refuses any other vendor in
+# code, so a chain edited back to gemini is refused at call time and logged,
+# never sent.
+#
+# Permanent errors (401/403 auth fail, 400 bad request) are NOT retried -
+# fallback would just waste budget on a request the next vendor would also
+# reject.
+#
+# Tier resolution: caller passes the full Anthropic model string (e.g.
+# "claude-haiku-4-5-20251001"). Module derives tier by substring match against
+# `claude_models.FAMILIES`, so every family the resolver knows needs a tier here:
+#   "haiku"  -> haiku
+#   "sonnet" -> sonnet
+#   "opus"   -> opus
+#   "fable"  -> fable
+#
+# The fable tier (2026-09-27) copies the opus chain: both are heavy-reasoning
+# families (`claude_models.THINKING_FAMILIES`). A proposal, not a measurement.
+#
+# Vendor strings are case-sensitive identifiers expected by llm_fallback:
+#   kimi-for-coding -> consult_kimi()
+#   gpt-6-astra     -> consult_chatgpt()
+#
+# Kimi leads every chain and ChatGPT follows it. Not a benchmark ranking:
+# ChatGPT joined haiku on 2026-10-12 because the trust boundary outranks the
+# cost of a rare failover. Re-rank when someone actually measures.
+
+tiers:
+  haiku:
+    chain:
+      - vendor: kimi
+        model: kimi-for-coding
+      - vendor: chatgpt
+        model: gpt-6-astra
+  sonnet:
+    chain:
+      - vendor: kimi
+        model: kimi-for-coding
+      - vendor: chatgpt
+        model: gpt-6-astra
+  opus:
+    chain:
+      - vendor: kimi
+        model: kimi-for-coding
+      - vendor: chatgpt
+        model: gpt-6-astra
+  fable:
+    chain:
+      - vendor: kimi
+        model: kimi-for-coding
+      - vendor: chatgpt
+        model: gpt-6-astra
+
+# Errors that trigger fallback (retriable). Other errors re-raise immediately.
+# Class names match the anthropic Python SDK exception hierarchy.
+retriable_anthropic_errors:
+  - APIConnectionError
+  - APITimeoutError
+  - RateLimitError       # 429 - transient capacity, fallback vendor may not be throttled
+  - InternalServerError  # 5xx

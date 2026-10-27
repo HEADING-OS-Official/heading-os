@@ -1,0 +1,30 @@
+{
+  "_about": "Reviewed exemptions for scripts/dev/outside-workspace-writes.py (HOS-5 section 7, defect 5). Format: scripts/utils/statement_exemptions.py. Each entry covers ONE finding: a statement that names the system temp directory without writing a Workspace artifact there. An entry that matches nothing is refused.",
+  "entries": [
+    {
+      "path": ".claude/hooks/_dispatch.py",
+      "statement": "_YARD_DELETION_TEMP_ROOTS = (Path(\"/tmp\"), Path(\"/var/tmp\"))",
+      "reason": "read only as prefixes a deletion target is compared against; nothing is created or written at either path, and the literalness is the guard's point (the paragraph above it)"
+    },
+    {
+      "path": ".claude/hooks/_dispatch.py",
+      "statement": "_YARD_DELETION_TEMP_ROOTS = (Path(\"/tmp\"), Path(\"/var/tmp\"))",
+      "reason": "the second of the two literals on that one statement, /var/tmp, compared as a prefix and never written to by this hook"
+    },
+    {
+      "path": "scripts/utils/sandbox.py",
+      "statement": "argv += [\"--tmpfs\", \"/tmp\"]",
+      "reason": "a bubblewrap argument mounting a private in-memory tmpfs at /tmp INSIDE the sandbox; nothing reaches the host's /tmp and nothing survives the sandbox"
+    },
+    {
+      "path": "scripts/dev/outside-workspace-writes.py",
+      "statement": "SYSTEM_TEMP_ROOTS = (\"/tmp\", \"/var/tmp\")",
+      "reason": "this gate's own vocabulary: the two roots it compares string constants against to find a write into the system temp directory, never a path it writes"
+    },
+    {
+      "path": "scripts/dev/outside-workspace-writes.py",
+      "statement": "SYSTEM_TEMP_ROOTS = (\"/tmp\", \"/var/tmp\")",
+      "reason": "the second literal of the same statement, /var/tmp, held only so the gate can recognise it in other files"
+    }
+  ]
+}

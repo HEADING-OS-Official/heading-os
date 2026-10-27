@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# heading-os-data-test-gate
+#
+# Versioned pre-push gate for a DATA overlay repository. Installed into
+# <data-repo>/.git/hooks/pre-push by `python scripts/install-git-hooks.py`.
+#
+# Two things this hook has to get right that the engine's does not:
+#
+#   1. It REPLACES the stock git-lfs pre-push hook, and a data overlay really does
+#      track LFS objects. So it delegates to `git lfs pre-push` at the end. Drop
+#      that line and pushes stop uploading LFS content.
+#   2. An overlay with no tracked test file passes, and says so out loud.
+#
+# Never bypass with --no-verify.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Git writes one ref line per pushed ref on stdin. Read once, replayed to the
+# content scan and to git-lfs, as the engine hook does.
+REFS="$(cat)"
+replay_refs() {
+    if [ -n "$REFS" ]; then
+        printf '%s\n' "$REFS"
+    fi
+}
+
+# The engine's interpreter, STAMPED IN at install time by
+# scripts/install-git-hooks.py (resolved with get_workspace_root()), never
+# guessed from a sibling directory name. A bare `python3` fallback can run the
+# tests green without the pinned dependencies (2026-08-21), hence the warning.
+ENGINE="@@ENGINE_ROOT@@"
+if [ -x "$ENGINE/.venv/bin/python" ]; then
+    PY="$ENGINE/.venv/bin/python"
+else
+    PY="python3"
+    echo "data overlay test gate: no engine venv at '$ENGINE' - falling back to" \
+         "$(command -v python3 || echo python3), which is NOT the pinned" \
+         "toolchain. Re-arm with: python scripts/install-git-hooks.py" >&2
+fi
+
+# The push-path secret scan (engine audit A-1.1, 2026-10-16): a plain
+# `git push` runs the scan push-all.py runs before its commit; push-all's own
+# push is not scanned twice. A refusal stops the push here.
+if ! replay_refs | "$PY" "$ENGINE/scripts/push-all.py" --pre-push-scan data --repo "$ROOT"; then
+    echo "data overlay content scan refused the push" >&2
+    exit 1
+fi
+
+# Which directories hold this overlay's tests is ASKED of git, never assumed
+# from a directory (2026-09-20: an emptied tests/ shell blocked every push).
+# Only files inside a `tests/` component count, and nothing under the archive
+# tree: it holds archived copies of repositories whose own tests/ import engine
+# modules that are gone (2026-09-25). The archive tree is resolved by its
+# registry name, never spelled.
+TEST_FILES="$(git -C "$ROOT" ls-files 'test_*.py' '*/test_*.py' 2>/dev/null \
+    | grep -E '(^|/)tests/' || true)"
+ARCHIVE="$("$PY" "$ENGINE/scripts/data-path.py" --data-root "$ROOT" path archive-root 2>/dev/null || true)"
+ARCHIVE_REL="${ARCHIVE#"$ROOT"/}"
+if [ -n "$ARCHIVE" ] && [ "$ARCHIVE_REL" != "$ARCHIVE" ]; then
+    TEST_FILES="$(printf '%s\n' "$TEST_FILES" | awk -v p="$ARCHIVE_REL/" 'NF && index($0, p) != 1' || true)"
+else
+    echo "data overlay test gate: the registry name archive-root did not resolve" \
+         "under $ROOT; archived suites are NOT excluded" >&2
+fi
+TEST_COUNT="$(printf '%s' "$TEST_FILES" | grep -c . || true)"
+# The root of each suite, not the leaf holding one file: everything up to and
+# including the `tests` component, deduped, so pytest is handed each suite root
+# once rather than its subdirectories separately.
+# `#` as the sed delimiter, not `|`: the alternation in the pattern is a literal
+# `|`, and with `s|...|...|` sed reads it as the closing delimiter and dies with
+# "unknown option to `s'".
+TEST_DIRS="$(printf '%s\n' "$TEST_FILES" | sed -E 's#(^|/)tests/.*#\1tests#' \
+    | sort -u | grep -v '^$' || true)"
+
+if [ "$TEST_COUNT" -eq 0 ]; then
+    # Said out loud rather than passed in silence: an overlay whose tests have
+    # gone missing is a finding, and a gate that prints nothing when it checks
+    # nothing is how the empty-corpus pass gets believed.
+    echo "data overlay test gate: no tracked test file in $ROOT - nothing to gate"
+elif [ -n "$TEST_DIRS" ]; then
+    echo "data overlay test gate: $TEST_COUNT test file(s) under" \
+         "$(printf '%s' "$TEST_DIRS" | tr '\n' ' ')"
+    # PYTHONDONTWRITEBYTECODE and no:cacheprovider are load-bearing: the overlay
+    # write guard refuses pytest's `__pycache__/` and `.pytest_cache/` writes
+    # inside the overlay, which failed collection after any test edit
+    # (2026-09-01). Run from the root with RELATIVE paths, as `git ls-files` reports.
+    if ! ( cd "$ROOT" && printf '%s\n' "$TEST_DIRS" | PYTHONDONTWRITEBYTECODE=1 \
+            xargs "$PY" -m pytest -q -p no:cacheprovider ); then
+        # Exit 5 is pytest for "collected nothing", which is NOT a failing test
+        # and must not be reported as one. It cannot arise from this branch,
+        # which only runs over directories git says hold test files, and the
+        # message says so rather than leaving the reader to wonder.
+        echo "data overlay tests failed - push blocked (pytest over:" \
+             "$(printf '%s' "$TEST_DIRS" | tr '\n' ' ')). If it collected" \
+             "nothing, the tracked files and the collected set disagree and the" \
+             "gate, not the tests, is what to look at." >&2
+        exit 1
+    fi
+fi
+
+# Hand off to git-lfs, which owned this hook slot before the gate did. Git calls a
+# pre-push hook with <remote> <url>; `git lfs pre-push` needs them, so a call with
+# no arguments is not a real push and there is nothing to hand over.
+if [ "$#" -gt 0 ] && command -v git-lfs >/dev/null 2>&1; then
+    replay_refs | git lfs pre-push "$@"
+    exit $?
+fi
+exit 0

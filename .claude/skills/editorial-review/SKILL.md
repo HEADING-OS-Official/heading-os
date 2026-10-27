@@ -1,0 +1,90 @@
+---
+name: editorial-review
+description: "Structural editor for a long draft: section order, claim-to-evidence linkage, redundancy, buried lede, missing sections. Proposes CUT / MERGE / MOVE / CONDENSE / SPLIT / ADD operations before any sentence is rewritten, and never changes the content itself. Use on a draft that is complete but badly ordered."
+argument-hint: "[file:<path> | pasted text]"
+allowed-tools: "Read, Edit, Write, Bash(.venv/bin/python:*)"
+metadata:
+  author: Misha Hanin
+  email: misha.hanin@headingos.com
+  version: "1.0"
+x-heading-capability:
+  what: >
+    A document-level structural editor for long deliverables. It maps a draft's
+    argument architecture and proposes CUT / MERGE / MOVE / CONDENSE / SPLIT /
+    ADD / PROMOTE / PRESERVE operations with word-savings estimates, then applies
+    only the approved ones. It reorganizes; it never rewrites sentences or argues
+    with the ideas.
+  how: >
+    Run /editorial-review file:<path> (or paste the text). Phase 1 presents
+    findings behind an approval gate; Phase 2 hands all sentence-level prose work
+    to the humanization.md rule and runs the sanitize + humanization-check gates.
+  when: >
+    Use on a long proposal, brief, or report whose argument arc needs checking.
+    For sentence-level "make this sound human" work use the humanization rule;
+    for artifact checks run scripts/artifact-evaluator.py.
+x-heading-routing:
+  category: Operations
+  label: /editorial-review [file:<path>]
+  triggers:
+    - editorial pass
+    - structural review
+    - review the structure of this
+    - tighten this document
+    - restructure this draft
+  exclusions:
+    - Sentence-level prose / "make this human" -> humanization.md
+    - typo or grammar fix -> sanitize-text + humanization-check
+    - artifact check -> scripts/artifact-evaluator.py
+    - atomic note -> /zk
+  compound: 'No'
+  router: auto
+---
+# Editorial Review (structural pass)
+
+Critique and tighten a long deliverable's **argument architecture** — then hand the prose off to the humanization layer. This skill operates on structure only; it never rewrites sentences and never challenges the ideas.
+
+The full method (document arcs, operation vocabulary, defect checklist, the hard boundary with `humanization.md`) lives in `reference/editorial-review.md`. Load it; do not restate it here.
+
+---
+
+## Phase 0: Load context
+
+1. Read `reference/editorial-review.md` (the document-model arcs, the operation vocabulary, the defect checklist, the boundary table).
+2. Read `.claude/rules/humanization.md` and confirm the boundary. This skill stops at the paragraph. Everything below it belongs to that rule: rhythm, specificity, banned vocabulary, and the calibration gate.
+3. Read the target document **in full** (the `file:<path>` argument, or the pasted text). Never review a draft you have only skimmed.
+
+## Phase 1: Structural pass
+
+1. **Select one document model** from `reference/editorial-review.md` (proposal arc, intel-brief arc, investor-narrative arc, argument/decision-note arc, or a generic model). State the choice and its primary rule in one sentence. The form is "This deliverable should follow the {model}; its primary rule is {rule}."
+2. **Map the structure** — list each major section with an approximate word count. This forces measurement before recommendation.
+3. **Walk the defect checklist.** It covers the orphan section, claim-without-evidence, evidence-without-claim, the buried lede, and flat hierarchy. It also covers redundant paragraphs, missing scaffolding, no document-level stance, and scope violation.
+4. **Emit findings.** Tag each with exactly one operation, a one-sentence rationale, and a word-impact estimate. The operations are CUT, MERGE, MOVE, CONDENSE, SPLIT, ADD, PROMOTE, DEMOTE, PRESERVE, and QUESTION. PRESERVE protects comprehension aids from over-cutting, because summaries and examples are reinforcement, not redundancy.
+5. **Close with the summary block.** It carries total recommendations, estimated reduction with its percentage of the original, the meets-length-target verdict, and comprehension trade-offs.
+6. **Optional — pull a critique method.** For a hard restructure, run `.venv/bin/python scripts/elicit.py show "Critique and Refine"` or `"Red Team vs Blue Team"` from the shared elicitation catalog. Apply it to the argument arc. Skip it when the checklist already bites.
+7. **APPROVAL GATE.** Present the findings. Apply NO structural edit until the CEO approves (per `.claude/rules/voice.md`: no structural changes without approval). "No substantive changes recommended — the structure is sound" is a valid, explicit completion. On approval, apply only the approved operations, editing structure (move/cut/merge/condense), never wording.
+
+## Phase 2: Hand off to the prose layer
+
+1. State explicitly: "Structural pass complete. Sentence-level rhythm, specificity, and vocabulary are now governed by `.claude/rules/humanization.md` (two-pass voice edit)." Do not perform that work here.
+2. Run the standard prose gates on the resulting document:
+   - `.venv/bin/python scripts/sanitize-text.py <path> --scan`
+   - `.venv/bin/python scripts/humanization-check.py <path>`
+3. Report the validation line: `Structural ops applied: N. Word count: X. Hidden characters: <scan result>. Humanisation audit: <result>.`
+   The middle two fields come from `sanitize-text.py --scan`; see `.claude/rules/hidden-chars.md`.
+
+---
+
+## Voice rules
+
+- Hyphens, not em-dashes in the operation labels and prose; terminology per `.claude/rules/terminology.md`.
+- The skill proposes; the CEO decides. Frame every finding as a recommendation, never an executed change.
+- Sentence case in any headings the skill itself emits.
+
+## NEVER
+
+- NEVER do sentence-level prose work — rhythm, specificity density, banned-vocabulary swaps, or the calibration gate. That is `humanization.md`'s job; duplicating it is a defect.
+- NEVER challenge or rewrite the ideas. Content is sacrosanct; reorganize only.
+- NEVER apply a structural edit before the CEO approves the findings.
+- NEVER trigger a prose rewrite on already-human (sub-15%-AI) text — the structural pass operates on the argument layer only and leaves human prose byte-for-byte intact.
+- NEVER run on an atomic `/zk` note or a short chat reply — the structural pass is a near no-op there.
+- NEVER declare done without the Phase 2 sanitize + humanization-check gates and the validation line.

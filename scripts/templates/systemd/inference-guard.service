@@ -1,0 +1,21 @@
+[Unit]
+Description=Inference guard (probe the pinned server; tell the operator when it stays down)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# `watch`, not `check`: probe, and after a sustained outage send one line to the
+# operator's own Telegram sink through the channel the ops radar uses. It starts
+# nothing. Until 2026-09-25 this line ran `heal`, which launched the Windows-side
+# application through WSL interop; the operator kept the WSL-only rule without
+# exception that day (HOS-60), so the guard reports instead.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/inference-guard.py watch
+# Exit 1 means "nothing answered", which is information, not a unit failure to
+# alarm on: the line to the operator is the alarm. Exit 2 (unreadable host
+# config) is left failing, because that IS a broken install.
+SuccessExitStatus=0 1
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

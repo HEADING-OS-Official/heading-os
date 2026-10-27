@@ -1,0 +1,163 @@
+# HEADING OS routing map: what belongs to THIS repository.
+#
+# One of the two classification inputs, with `config/engine-allowlist.yaml`.
+# `get_routing_destination()` in `scripts/utils/workspace.py` reads these and
+# nothing else; never write a second prefix list beside them (MEASURED
+# 2026-09-13: a hand-written one disagreed with this map on 10,008 of 11,857
+# files, always unsafely).
+#
+# The default is `private` and what follows is an ALLOWLIST of public engine
+# files (inverted 2026-09-21, so a list of private exceptions can no longer
+# disclose what the operator tracks). `config/`, `docs/` and `reference/` are
+# allowlisted file by file: a new engine file there resolves `private` and the
+# commit gate refuses it until its name is added here. Every data-repository
+# path is private by repository (HOS-232); an engine path answers `engine` only
+# when the allowlist covers it AND this map routes it `engine`, otherwise it is
+# refused. Two destinations only, `engine` and `private` (`corporate` retired,
+# HOS-132).
+#
+# Resolution: most-specific (longest) matching key wins. A key ending in '/'
+# matches as a directory prefix; a key without one matches that exact path or
+# that path as a prefix. An unparseable file resolves every path to `private`.
+
+version: 1
+
+# An engine path no rule below names is REFUSED (HOS-232), and the commit gate
+# refuses it with the resolver. That is the point. Do not change it to `engine` to make a commit pass.
+default: private
+
+# Every data-repository path is private, rule or none (HOS-232). Operator
+# ruling 2026-09-13: not one file of the Data Repository may be open.
+data_default: private
+
+rules:
+  # ---- the official distribution: files its build lays on top --------------
+  "CHANGELOG.md": engine
+  "CONTRIBUTING.md": engine
+  "SUPPORT.md": engine
+  "docs/AGENTVIEW.md": engine
+  "docs/CLIPROXY.md": engine
+  "docs/HERDR.md": engine
+  "docs/HINDSIGHT.md": engine
+  "docs/INSTALL.md": engine
+  "docs/LIFIC.md": engine
+  "docs/RULES-AND-PROTECTIONS.md": engine
+  "docs/SKILLS-COMMUNICATION.md": engine
+  "docs/SKILLS-CONTENT.md": engine
+  "docs/SKILLS-DAILY.md": engine
+  "docs/SKILLS-INTEL.md": engine
+  "docs/SKILLS-STRATEGY.md": engine
+  "docs/SKILLS-SYSTEM.md": engine
+  "docs/SKILLS.md": engine
+  "docs/WHATS-NEW.md": engine
+  "docs/WORKING-WITH-HEADING-OS.md": engine
+  "docs/YARDS.md": engine
+  "docs/assets/how-it-works.svg": engine
+  "docs/assets/install-steps.svg": engine
+  "docs/assets/security.svg": engine
+  "install.sh": engine
+
+  # ---- allowlist: whole directories of engine code ---------------------------
+  ".claude/": engine
+  ".devcontainer/": engine
+  ".githooks/": engine
+  ".github/": engine
+  # The HEADING OS Official overlay: what scripts/official-build.py lays over the
+  # published snapshot. Each file is listed in config/engine-allowlist.yaml.
+  "scripts/": engine
+  "tests/": engine
+
+  # ---- allowlist: root files -------------------------------------------------
+  ".env.example": engine
+  ".gitattributes": engine
+  ".gitignore": engine
+  ".lint-baseline.json": engine
+  ".pre-commit-config.yaml": engine
+  ".python-version": engine
+  ".secrets.baseline": engine
+  ".visual-baseline.json": engine
+  "AGENTS.md": engine
+  "CLAUDE.md": engine
+  "LICENSE": engine
+  "NOTICE": engine
+  "README.md": engine
+  "SECURITY.md": engine
+  "pyproject.toml": engine
+  "requirements-dev.txt": engine
+  "requirements.txt": engine
+  "uv.lock": engine
+
+  # ---- private exceptions inside an allowlisted directory --------------------
+  # Runtime and per-instance files the allowlist above would otherwise open.
+  ".claude/settings.local.json": private
+  ".claude/projects/": private
+  "scripts/sentinel_config.yaml": private
+
+  # ---- allowlist: config/, docs/, reference/, file by file -------------------
+  # Mixed directories. Every entry is a PUBLIC engine file.
+  "config/accepted-vulnerabilities.json": engine
+  "config/census-bench-questions.json": engine
+  "config/context-floor-baseline.json": engine
+  "config/council-models.json": engine
+  "config/data-path-pins-exemptions.json": engine
+  "config/data-path-ratchet.json": engine
+  "config/engine-allowlist.yaml": engine
+  "config/engine-dir-writes-exemptions.json": engine
+  "config/engine-only-baseline.json": engine
+  "config/import-env-purity-exemptions.json": engine
+  "config/live-data-root-baseline.json": engine
+  "config/llm_fallback.yaml": engine
+  "config/outside-workspace-writes-exemptions.json": engine
+  "config/skill-data-paths-exemptions.json": engine
+  "config/engine-data-paths-exemptions.json": engine
+  "config/memory-index.yaml": engine
+  "config/nightly-skip-baseline.json": engine
+  "config/inference-hosts.example.yaml": engine
+  "config/ordinary-english.txt": engine
+  "config/parked-tests.json": engine
+  "config/plugin-bundles.yaml": engine
+  "config/routing-map.yaml": engine
+  "config/rule-split-inventory/development-standards.md.txt": engine
+  "config/rule-split-inventory/documentation.md.txt": engine
+  "config/schemas/crm-address-book.schema.json": engine
+  "config/schemas/crm-contact.schema.json": engine
+  "config/schemas/crm-relationship.schema.json": engine
+  "config/test-budget.json": engine
+  "config/test-vacuity-baseline.json": engine
+  "config/tmp-leak-baseline.json": engine
+  "config/tool-risk.json": engine
+  "config/triggers-coverage-baseline.json": engine
+  "config/update-registry.yaml": engine
+  "config/user-agent-exemptions.json": engine
+  "config/user-agent.txt": engine
+  "config/visual-check-profiles.json": engine
+  "config/wizard-questions.yaml": engine
+  "config/wizard-templates/business-info.md.tmpl": engine
+  "config/wizard-templates/calendar-policy.md.tmpl": engine
+  "config/wizard-templates/ceo-voice.md.tmpl": engine
+  "config/wizard-templates/personal-info.md.tmpl": engine
+  "reference/editorial-review.md": engine
+  "reference/elicitation-methods.csv": engine
+  "reference/elicitation-methods.md": engine
+  "reference/forensic-evidence-grading.md": engine
+  "reference/hidden-characters.md": engine
+  "reference/humanization-banned-vocabulary.md": engine
+  "reference/humanization-rule-detail.md": engine
+  "reference/lific-integration-detail.md": engine
+  "reference/memory-discipline-detail.md": engine
+  "reference/osint-advanced-toolkit.md": engine
+  "reference/persistence-detail.md": engine
+  "reference/prompt-refinement-escalations.md": engine
+  "reference/scheduled-tasks.md": engine
+  "reference/skill-graph.csv": engine
+  "reference/skill-router/communication.md": engine
+  "reference/skill-router/content.md": engine
+  "reference/skill-router/crm.md": engine
+  "reference/skill-router/design.md": engine
+  "reference/skill-router/intel.md": engine
+  "reference/skill-router/operations.md": engine
+  "reference/skill-router/strategy.md": engine
+  "reference/templates/spec-core.md": engine
+  "reference/voice-examples.md": engine
+  "reference/voss-negotiation.md": engine
+  "reference/vpn-preflight.md": engine

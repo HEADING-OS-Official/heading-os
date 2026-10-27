@@ -1,0 +1,40 @@
+[Unit]
+Description=Associative-memory index refresh (incremental re-embed of changed notes)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Incremental build (NOT --force): re-embeds only notes whose mtime changed and
+# prunes deleted/denied paths, so the "hippocampus" (index.db under runtime:memory-index/cache)
+# stays in parity with the "neocortex" (the git-tracked note layers). A day's
+# delta is a handful of files -> seconds. The pinned embedder must be up; if it
+# is down the build commits what it embedded and exits non-zero (journald
+# records it) and the next fire resumes -- no corruption, no partial-dim rows.
+# It also refuses, writing nothing, when the pinned embedder is not the one that
+# wrote the store (HOS-194); only a manual `build --force` changes embedders.
+#
+# Companions first (HOS-149). A document is findable only through its
+# `-extract.md` companion, and most documents arrive with no event code can see:
+# dropped by hand, rendered by a generator, written by a session. This is the
+# earliest moment such a companion can matter, because nothing reads it before
+# the build. Incremental: a fresh companion costs a stat. `refresh` runs that
+# pass, bounded at 30 minutes (`EXTRACT_SECONDS`), then the build whatever the
+# pass returned, and exits non-zero when EITHER failed, so a document that
+# fails to convert marks this unit failed instead of only a journal line. It
+# was `ExecStartPre=-...` until HOS-194, and the leading `-` hid the pass's
+# exit code: MEASURED 2026-10-03, exit 1 every hour under `Result=success`.
+# Each document is abandoned after `PER_FILE_SECONDS` inside the script. Every
+# companion is written atomically, so a pass cut short keeps what it wrote and
+# the next one resumes. NOT `TimeoutStartSec`: that would bound the build too,
+# and a full re-embed took 1 h 49 min on 2026-09-24.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/memory-index.py refresh
+# `OnCalendar ... {{TZ}}` in the .timer pins WHEN this fires, not what the
+# process thinks the date is. A systemd user unit inherits no TZ, so without
+# this line a naive `date.today()` inside the build ran on the host's libc
+# timezone -- a different day near midnight from the one the schedule meant.
+# The installer already substitutes {{TZ}}; only the line was missing.
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

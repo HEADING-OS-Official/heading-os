@@ -1,0 +1,102 @@
+# Which inference host serves THIS machine. Template -- copy to config/inference-hosts.yaml.
+#
+#   cp config/inference-hosts.example.yaml config/inference-hosts.yaml
+#
+# The live file is gitignored on purpose. Every address below is a fact about
+# one computer: `auto:11434` means "whatever answers at this machine's default
+# gateway on port 11434", which on a WSL2 laptop is the Windows side and on a
+# server is the router. Committing it would point every other clone at nothing.
+#
+# NO FILE AT ALL IS A VALID SETUP. Then both jobs use http://localhost:11434,
+# nothing is probed, and a clone with one local ollama works with zero setup.
+# Only fill this in when a second, faster ollama exists somewhere else.
+#
+# Entry forms:
+#   auto            the default gateway, port 11434 (resolved at run time)
+#   auto:11436      the default gateway, port 11436
+#   http://10.0.0.5:11434    a literal base URL
+#
+# `auto` is resolved on every call rather than written out once because WSL2
+# picks a new gateway address on restart: a literal that works today is a
+# silent outage after the next reboot.
+#
+# A list is tried in order, first to answer wins. List several ports on the same
+# machine when you cannot control which one it binds: the Ollama desktop app for
+# Windows manages its own bind address from its settings and IGNORES the
+# OLLAMA_HOST environment variable, so an auto-update restart can move it back
+# to 11434 under a pin that says 11436.
+
+# EMBEDDING -- this is a PIN. When nothing here answers, the run FAILS instead of
+# embedding somewhere else. Vectors from two model builds are not comparable,
+# and a silent switch to a second embedder looks exactly like working software.
+# The named way out is `memory-index build --allow-host-fallback`.
+embed: []
+# embed:
+#   - "auto:11434"
+#   - "auto:11436"
+
+# WHICH PROGRAM answers at the embed address, and which variable holds its key.
+# Both optional; empty means ollama, unauthenticated, which is what this file
+# has always meant and what every clone keeps by leaving them alone.
+#
+# Facts about ONE computer, like the addresses; the tracked
+# `config/memory-index.yaml` still wins where it is filled in.
+#
+# `lemonade`: same ollama wire format, but needs `Authorization: Bearer <key>`
+# (401 without it) and reports a constant /api/tags digest, so the provider
+# name is the only record of which program made a vector (measured 2026-09-23).
+#
+# Switching is a config edit and reverts as one: set `embed` to the Lemonade
+# port, set these two, and undo all three to go back.
+embed_provider:
+embed_api_key_env:
+# embed_provider: "lemonade"
+# embed_api_key_env: "LEMONADE_API_KEY"  # pragma: allowlist secret
+#
+# That pragma is on a line holding a variable NAME and no value, which is the
+# whole point of the field: detect-secrets matches the shape `*_KEY: "..."` and
+# cannot tell a name from a token. It is the documented mitigation for exactly
+# this, and it is not a licence to silence the scanner anywhere a real value
+# would sit.
+
+# GENERATION (the local summarizer model) -- also a PIN. When nothing here
+# answers, the run FAILS and names the addresses it tried.
+#
+# It is a pin for a blunter reason than embedding's: on the machine this was
+# written for there is no second ollama to fall back to. Falling back to
+# localhost when no daemon is installed there produces a connection error two
+# layers deeper, which reads as a bug in the caller. If your machine DOES run a
+# usable local model, leaving this empty is the better setup - then the local
+# daemon is used directly, with no pin and no probe.
+generate: []
+# generate:
+#   - "auto:11434"
+#   - "auto:11436"
+
+# WHICH PROGRAM answers at the generation address, which variable holds its key,
+# and WHICH MODEL to ask for. All three optional; empty means ollama,
+# unauthenticated, `gemma3:4b`. Facts about ONE computer, with no tracked
+# counterpart.
+#
+# `generate_provider` also picks the request dialect: ollama `prompt` at
+# `/api/generate`, Lemonade `messages` at `/api/v1/chat/completions`. Declared,
+# never inferred from the port.
+#
+# Whether a given model writes an acceptable entry, and what a real session
+# costs on it, is answered on your own machine and nowhere else:
+# `python scripts/chronicle.py check-model --session <transcript.jsonl>` is the
+# command that answers both; it writes nothing.
+#
+# Switching is a config edit and reverts as one: set `generate` to the Lemonade
+# port, set these three, and undo all four to go back.
+generate_provider:
+generate_api_key_env:
+generate_model:
+# generate:
+#   - "auto:13305"
+# generate_provider: "lemonade"
+# generate_api_key_env: "LEMONADE_API_KEY"  # pragma: allowlist secret
+# generate_model: "<your-model>"
+#
+# That pragma is on a line holding a variable NAME and no value, for the same
+# reason as the one on `embed_api_key_env` above.

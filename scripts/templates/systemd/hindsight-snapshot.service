@@ -1,0 +1,17 @@
+[Unit]
+Description=Daily snapshot of what lives only in the Hindsight bank (HOS-203)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Reads the bank only (GET requests) and writes `runtime:hindsight-snapshot/cache`
+# under the data root. A failed or partial export exits 1 and leaves the last good
+# snapshot in place; the next fire tries again. MEASURED 2026-10-05 on the live bank:
+# 62 s for the first full run, about 45 MB, and the observation listing is one
+# request because consolidation moves its total faster than 34 pages can be read.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/hindsight-snapshot.py take
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

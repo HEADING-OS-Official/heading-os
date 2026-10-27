@@ -1,0 +1,40 @@
+{
+  "_why": "Reviewed exemptions for scripts/dev/import-env-purity.py, the third push ratchet (HOS-116). One entry per finding, keyed by the file plus the sha256 of the flagged statement, every line of it, with its whitespace collapsed. The entry stores the statement, and the checker computes the hash from it, so what a reviewer reads is exactly what is keyed. An entry that matches no finding fails the run, and so does a finding no entry and no rule covers. The module-level ensure_venv() calls in hyphenated CLI scripts are not listed here: the checker exempts them by one rule, read from the AST, which its docstring states.",
+  "entries": [
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ[\"HEADING_OS_TZ\"] = \"Etc/GMT-4\"",
+      "reason": "Pins the suite's time zone to Etc/GMT-4 so every calendar, scheduling and heartbeat assertion runs against one known offset. It is an assignment, not setdefault, so a stray shell variable cannot re-point the whole suite at another zone without saying so."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ.setdefault(_venv._SENTINEL, \"1\")",
+      "reason": "Marks the process as already relaunched, so a script loaded by path whose module-level ensure_venv() runs cannot os.execv the whole pytest process. A relaunched run writes into pytest's capture file and prints nothing while still exiting 0 or 1."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ[\"HEADING_OS_RUNTIME_REDIRECT\"] = _TEST_RUNTIME_REDIRECT",
+      "reason": "Sends the runtime store writes of a test run (the denial log, the recall log, every daemon and cache file) to a directory under this checkout's scratch, so fixtures that exercise the leak guard and the push walls do not append to the operator's production logs. It replaced the old .logs/_pytest redirect on 2026-09-25, when those logs left the engine checkout."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ[\"WS_RATE_LIMIT_STATE\"] = str(_TEST_RATE_STATE)",
+      "reason": "Points the dispatcher's daily Write and Edit rate counter at a test-only file, so hook tests driven in a subprocess neither fill the operator's counter with fixture paths nor get blocked by it."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ[\"HEADING_OS_STATE_DIR\"] = str(_TEST_STATE_DIR)",
+      "reason": "Redirects the checkout's hook state, which lives in the data repository since 2026-09-25, to a test directory, because hook tests drive the real hooks and had written checkpoint files into the operator's live state before this pin existed."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ[_key.strip()] = \"\"",
+      "reason": "Blanks every .env value that holds a Healthchecks ping URL, so a test that drives a daemon loop to completion cannot send real success pings to a live deadman check and hide a real outage."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "os.environ[\"WS_OVERLAY_WATCH_OWNER\"] = \"1\"",
+      "reason": "Marks the outermost pytest as the owner of the overlay reachability ratchet, so child pytest runs that the suite spawns are not judged against the whole suite's frozen number."
+    }
+  ]
+}

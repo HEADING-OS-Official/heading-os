@@ -1,0 +1,4 @@
+{
+  "_comment": "Frozen design findings for artifacts that existed when the deep engine was integrated. The gate fires on findings ABOVE these counts, never on the counts themselves - existing artifacts are not remediated. Regenerate with `visual-discipline-check.py baseline record --deep <path>` only after an intentional fix, so the numbers only ever fall.",
+  "files": {}
+}

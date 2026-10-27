@@ -1,0 +1,669 @@
+#!/usr/bin/env python3
+"""ops-radar.py - the manual-actions + silent-health detector (Loop-Engineering).
+
+Read-only by default. Aggregates the objective signals computed in
+scripts/utils/ops_signals.py into a two-tier view:
+
+  Tier A (machine-domain): ollama, memory-index. These SELF-HEAL (see `heal`)
+    and stay SILENT unless auto-heal has failed >= AUTOHEAL_ESCALATE consecutive
+    times - at which point a critical "auto-heal FAILED" line surfaces.
+  Tier B (sovereign manual): backup, weekly-review, Odin collect/reflect, the
+    action queue, ollama acceleration, router accuracy, and two daemon-health
+    signals that are surfaced but never healed: a user unit restart-looping, and
+    the last successful Exchange sync too old, plus a hostname pinned in
+    /etc/hosts that public DNS no longer answers. These surface an EXCEPTION-ONLY nudge when objectively
+    overdue and not suppressed: one line carrying each due signal's summary.
+
+Suppression: an `ack` silences a signal until its TTL expires OR its severity
+band worsens; `crunch on` suppresses everything except the critical floor
+(imminent data-loss / auto-heal failure) that always pierces.
+
+Never auto-executes a Tier-B manual action; outbound sends stay human-gated. Data
+I/O goes through the data-root helpers; state files are written atomically.
+
+Usage:
+    python3 scripts/ops-radar.py                  # detailed due-items view (or "all clear")
+    python3 scripts/ops-radar.py --quiet          # due-item summaries on one line; empty when nothing due
+    python3 scripts/ops-radar.py --json           # machine-readable
+    python3 scripts/ops-radar.py ack backup [--ttl 24h]
+    python3 scripts/ops-radar.py crunch on|off
+    python3 scripts/ops-radar.py heal             # Tier-A auto-heal (ollama/index)
+
+Exit 0 on every DETECTION path (a detector, not a gate). The mutating
+subcommands are not covered by that: `ack` exits 2 on an unknown signal key, and
+argparse exits 2 on malformed usage. A wrapper that reads any nonzero exit as
+"the radar is broken" misfires on a typo'd ack, which is why the word "always"
+came out of this line.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+# Workspace import bootstrap (per development-standards.md)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.utils import ops_signals as ops  # noqa: E402
+from scripts.utils.checkpoint_paths import file_lock  # noqa: E402
+from scripts.utils.data_path import data_path, data_write_dir  # noqa: E402
+from scripts.utils.venv_guard import venv_python  # noqa: E402
+from scripts.utils.workspace import (  # noqa: E402
+    get_data_root,
+    get_workspace_root,
+    load_env,
+)
+from scripts.utils.clone_guard import require_main_clone
+
+# ============================================================
+# Configuration
+# ============================================================
+
+TIER_A_TARGETS = ("ollama", "memory_index")
+WEEKLY_KEYS = {"weekly_review", "odin_cadence"}  # default ack TTL 7d
+DEFAULT_TTL_DAILY = 24 * 3600
+DEFAULT_TTL_WEEKLY = 7 * 24 * 3600
+
+ACK_FILE = "ack.json"
+CRUNCH_FILE = "crunch.json"
+AUTOHEAL_FILE = "autoheal.json"
+
+
+# Known signal keys that `ack` will accept. The synthetic auto-heal keys are
+# DERIVED from TIER_A_TARGETS rather than spelled out, because the comment here
+# already claimed they were accepted and they were not: `autoheal_signals` mints
+# them as f"{target}_autoheal", so an escalated Tier-A failure surfaced a
+# critical line on every run, crunch could not suppress it (critical pierces the
+# floor by design), and `ack ollama_autoheal` exited 2 with "unknown signal key".
+# That is the exact stuck state `ack` exists for. Deriving the names keeps a
+# future Tier-A target ackable without a second edit anyone can forget.
+KNOWN_KEYS = {
+    "backup", "weekly_review", "odin_cadence",
+    "queue", "ollama", "ollama_accel", "memory_index", "router_accuracy",
+    "restart_loop", "exchange_sync", "unit_drift", "hosts_pin",
+} | {f"{target}_autoheal" for target in TIER_A_TARGETS}
+
+
+# ============================================================
+# State: two directories, split by what a fresh clone must keep
+# ============================================================
+
+def resolve_state_dir() -> Path:
+    """Where `ack.json` and `crunch.json` live: the registry name `ops-radar-state`.
+
+    Machine state a person set by hand, which a fresh clone must carry, so it
+    sits outside the migration-swept scratch kinds (an ack left there was lost,
+    MEASURED 2026-09-18).
+    """
+    # The address is the data repository's `config/data-paths.yaml`, so a folder
+    # move there moves this with no engine change. Not created here: the first
+    # ack or crunch write makes it.
+    return data_path("ops-radar-state")
+
+
+def resolve_autoheal_dir() -> Path:
+    """Where `autoheal.json`, its lock and its `.tmp` live: the runtime store `runtime:ops-radar/state`.
+
+    The failure counters are rebuilt by the next radar pass, so they are
+    runtime junk, not a record; split from `resolve_state_dir` on 2026-09-14.
+    """
+    return data_write_dir("runtime:ops-radar/state")
+
+
+def load_json(path: Path) -> dict:
+    """The ack / autoheal state, or `{}` when it cannot be read.
+
+    `UnicodeDecodeError` is named because it is a SIBLING of
+    `json.JSONDecodeError` under `ValueError`, not a subclass, and the decode
+    happens inside `read_text` before `json.loads` sees a single byte. These
+    files are rewritten under a lock on every radar pass, so a torn write is
+    the ordinary corruption; MEASURED 2026-09-01, one non-UTF-8 byte in
+    `ack.json` raised out of here and took the whole radar run with it - the
+    signal-killing shape `ops_signals.queue_state` was already fixed for.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+
+def _state_dict(path: Path) -> dict:
+    """`load_json` widened from "can it be decoded" to "is it the right shape".
+
+    `load_json` degrades a file it cannot DECODE or PARSE. A file that parses
+    cleanly and is a list, a string or a bare null was handed straight back, and
+    every consumer here then called `.get` on it. MEASURED 2026-09-01, one
+    `ack.json` holding `["not", "a", "dict"]` raised AttributeError out of
+    `ack_suppressed` and took the whole radar pass down - every other signal
+    with it. `ops_signals` has been fixed for this exact shape five times
+    (`queue_state`, `odin_cadence_state`, `_read_trend_records`, the since
+    removed `publish_state`, `_index_source_globs`); these three state files were the
+    copy nobody updated.
+
+    The drop NAMES the file on stderr. A radar that quietly runs on defaults is
+    the other half of the same defect: the operator's acks stop working and
+    nothing says why.
+    """
+    data = load_json(path)
+    if isinstance(data, dict):
+        return data
+    print(f"ops-radar: ignoring {path.name} - expected a JSON object, got "
+          f"{type(data).__name__}; continuing on defaults", file=sys.stderr)
+    return {}
+
+
+def _num_or(value, default: float = 0.0) -> float:
+    """A stored number that is not a number. Float, so an `acked_at` timestamp
+    keeps its sub-second part; callers that need a count cast.
+
+    `float("many")` is a ValueError and `float(None)` a TypeError, and neither
+    is in any except clause on the paths that read `ack.json` / `autoheal.json`.
+    A bool is rejected deliberately: `true` in a counter field is corruption,
+    not the number 1.
+    """
+    if isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def save_json_atomic(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def parse_ttl(s: str | None, key: str) -> int:
+    """Parse a TTL string (e.g. '24h', '7d', '3600s', '900') to seconds.
+
+    None -> per-key default (weekly keys 7d, else 24h)."""
+    if not s:
+        return DEFAULT_TTL_WEEKLY if key in WEEKLY_KEYS else DEFAULT_TTL_DAILY
+    s = s.strip().lower()
+    try:
+        if s.endswith("d"):
+            return int(float(s[:-1]) * 86400)
+        if s.endswith("h"):
+            return int(float(s[:-1]) * 3600)
+        if s.endswith("m"):
+            return int(float(s[:-1]) * 60)
+        if s.endswith("s"):
+            return int(float(s[:-1]))
+        return int(float(s))
+    # OverflowError is NOT a ValueError, and `float("inf")` is what "infd" and
+    # "1e400" parse to. MEASURED: both raised `OverflowError: cannot convert
+    # float infinity to integer` out of `cmd_ack`, a traceback where the module
+    # docstring contracts exit 2 for bad usage. "nand" was already fine, because
+    # `int(nan)` IS a ValueError - which is why the gap was invisible.
+    except (ValueError, OverflowError):
+        return DEFAULT_TTL_WEEKLY if key in WEEKLY_KEYS else DEFAULT_TTL_DAILY
+
+
+# ============================================================
+# Signal gathering
+# ============================================================
+
+def gather_live_signals(engine_root: Path, data_root: Path) -> list[dict]:
+    """Compute every signal from live sources (read-only).
+
+    Every data-rooted signal is built from `data_root`, never from a helper that
+    resolves the machine's own root, so a caller passing a throwaway root reads
+    nothing from the live overlay (HOS-77).
+    """
+    return [
+        ops.backup_state(engine_root, data_root),
+        ops.weekly_review_state(data_root),
+        ops.odin_cadence_state(engine_root),
+        ops.queue_state(data_root),
+        ops.ollama_state(),
+        ops.ollama_accel_state(engine_root),
+        ops.index_freshness_state(engine_root, data_root),
+        ops.router_accuracy_state(data_root),
+        ops.restart_loop_state(),
+        ops.exchange_sync_state(),
+        ops.unit_drift_state(engine_root),
+        ops.hosts_pin_state(data_root),
+    ]
+
+
+def autoheal_signals(signals: list[dict], autoheal: dict) -> list[dict]:
+    """Synthesize a critical 'auto-heal FAILED' signal for each Tier-A target
+    that is due AND has failed auto-heal >= AUTOHEAL_ESCALATE consecutive times.
+
+    A due Tier-A target below the escalation threshold produces NOTHING here
+    (it stays silent - heal will retry). The synthetic signal is severity
+    'critical' so it pierces crunch.
+    """
+    out: list[dict] = []
+    by_key = {s["key"]: s for s in signals}
+    for target in TIER_A_TARGETS:
+        sig = by_key.get(target)
+        if not sig or not sig["due"]:
+            continue
+        # A counter of the wrong shape degrades to 0, which fails toward SILENCE
+        # on this one signal rather than toward a false critical line the
+        # operator cannot act on. `int((x or {}).get(...))` raised AttributeError
+        # on a string entry and ValueError on a non-numeric count.
+        entry = autoheal.get(target)
+        failures = int(_num_or(entry.get("failures", 0))) if isinstance(entry, dict) else 0
+        if failures >= ops.AUTOHEAL_ESCALATE:
+            out.append({
+                "key": f"{target}_autoheal",
+                "value": {"failures": failures},
+                "threshold": ops.AUTOHEAL_ESCALATE,
+                "due": True,
+                "severity": "critical",
+                "tier": "A",
+                "summary": f"auto-heal FAILED: {target} after {failures} tries",
+            })
+    return out
+
+
+# ============================================================
+# Suppression (ack + crunch)
+# ============================================================
+
+def ack_suppressed(sig: dict, ack: dict, now: float) -> bool:
+    """True if `sig` is currently ack-silenced: an ack entry exists, is within
+    TTL, and the signal's severity has not worsened past the acked band."""
+    entry = ack.get(sig["key"])
+    # An entry that is not an object is not an ack. `"yesterday"` raised
+    # AttributeError on `.get`, and a non-numeric `acked_at` raised TypeError on
+    # the comparison below; both fail toward NOT suppressing, so a corrupt ack
+    # file loses silence rather than gaining it.
+    if not isinstance(entry, dict):
+        return False
+    acked_at = _num_or(entry.get("acked_at", 0))
+    ttl = _num_or(entry.get("ttl_seconds", 0))
+    if now >= acked_at + ttl:
+        return False  # expired
+    acked_band = entry.get("acked_band", "ok")
+    return ops.severity_rank(sig["severity"]) <= ops.severity_rank(acked_band)
+
+
+def select_candidates(signals: list[dict], autoheal: dict) -> list[dict]:
+    """The set of signals eligible to surface BEFORE suppression:
+      - every due Tier-B signal
+      - the synthetic auto-heal-failure signals (escalated Tier-A only)
+    Non-escalated Tier-A signals are intentionally excluded (machine domain)."""
+    candidates = [s for s in signals if s["tier"] == "B" and s["due"]]
+    candidates.extend(autoheal_signals(signals, autoheal))
+    return candidates
+
+
+def assess(engine_root: Path, data_root: Path, state_dir: Path,
+           signals: list[dict] | None = None, autoheal: dict | None = None,
+           now: float | None = None, autoheal_dir: Path | None = None) -> dict:
+    """Full read-only assessment. Returns the structured result the renderers and
+    the notify entrypoint consume. `signals`/`autoheal`/`now` are injectable for
+    tests; live values are read otherwise. `state_dir` holds ack/crunch; the
+    autoheal counters are read from `autoheal_dir` when `autoheal` is not given."""
+    now = time.time() if now is None else now
+    if signals is None:
+        signals = gather_live_signals(engine_root, data_root)
+    if autoheal is None:
+        if autoheal_dir is None:
+            raise ValueError("assess: pass `autoheal` or `autoheal_dir`")
+        autoheal = _state_dict(autoheal_dir / AUTOHEAL_FILE)
+    ack = _state_dict(state_dir / ACK_FILE)
+    crunch_on = bool(_state_dict(state_dir / CRUNCH_FILE).get("on"))
+
+    candidates = select_candidates(signals, autoheal)
+    displayed: list[dict] = []
+    suppressed: list[dict] = []
+    for sig in candidates:
+        if ack_suppressed(sig, ack, now):
+            suppressed.append({**sig, "suppressed_by": "ack"})
+            continue
+        if crunch_on and sig["severity"] != "critical":
+            suppressed.append({**sig, "suppressed_by": "crunch"})
+            continue
+        displayed.append(sig)
+
+    # Strongest first for the wire line.
+    displayed.sort(key=lambda s: ops.severity_rank(s["severity"]), reverse=True)
+    quiet_line = "; ".join(s["summary"] for s in displayed)
+    return {
+        "signals": signals,
+        "candidates": candidates,
+        "displayed": displayed,
+        "suppressed": suppressed,
+        "crunch_on": crunch_on,
+        "quiet_line": quiet_line,
+    }
+
+
+# ============================================================
+# Rendering
+# ============================================================
+
+def render_detailed(result: dict) -> str:
+    lines: list[str] = []
+    crunch = " [CRUNCH]" if result["crunch_on"] else ""
+    displayed = result["displayed"]
+    # A signal may carry `notes`: what it could not evaluate, said out loud so a
+    # silent check never reads as a clean one. Never due, never on the wire.
+    notes = [f"  [    note] {n}" for s in result["signals"] for n in s.get("notes", [])]
+    if not displayed:
+        return "\n".join([f"ops-radar{crunch}: all clear - nothing due.", *notes])
+    lines.append(f"ops-radar{crunch}: {len(displayed)} item(s) due")
+    for s in displayed:
+        lines.append(f"  [{s['severity']:>8}] {s['summary']}")
+    sup = result["suppressed"]
+    if sup:
+        lines.append(f"  ({len(sup)} suppressed: " +
+                     ", ".join(f"{s['key']}/{s['suppressed_by']}" for s in sup) + ")")
+    lines.extend(notes)
+    return "\n".join(lines)
+
+
+# ============================================================
+# Subcommands
+# ============================================================
+
+def cmd_ack(args, state_dir: Path, engine_root: Path, data_root: Path,
+            autoheal_dir: Path) -> int:
+    key = args.key
+    if key not in KNOWN_KEYS:
+        print(f"ops-radar: unknown signal key {key!r}. Known: {', '.join(sorted(KNOWN_KEYS))}",
+              file=sys.stderr)
+        # 2, not 0. "Always exit 0" is the DETECTOR contract; `ack` is a
+        # mutation, and returning success on a typo meant the caller could not
+        # tell the ack never happened while the signal kept firing.
+        return 2
+    # Acked band = the signal's CURRENT severity, so a later worsening re-surfaces.
+    #
+    # The synthetic auto-heal keys live only in `autoheal_signals`, never in the
+    # live list, so resolving the band from `gather_live_signals` alone fell
+    # through to "ok". Measured: an ack banded "ok" leaves a critical
+    # `ollama_autoheal` in `displayed`, because `ack_suppressed` compares
+    # severity_rank(critical) <= severity_rank(ok) and that is false. Accepting
+    # the key without this line would have stored an ack that silenced nothing,
+    # which is worse than the exit-2 refusal it replaced.
+    signals = gather_live_signals(engine_root, data_root)
+    signals = signals + autoheal_signals(signals, _state_dict(autoheal_dir / AUTOHEAL_FILE))
+    cur = next((s for s in signals if s["key"] == key), None)
+    band = cur["severity"] if cur else "ok"
+    ttl = parse_ttl(args.ttl, key)
+    now = time.time()
+    # Locked for the whole read-modify-write, the same as `run_autoheal` -- and
+    # for a wider window than that one. `save_json_atomic` makes each WRITE
+    # atomic and says nothing about the gap between the load and the save, and
+    # `gather_live_signals` above sits inside that gap, network probes to the
+    # ollama hosts included. Two overlapping manual acks each loaded the file
+    # before the other saved, so one ack was silently lost and its signal kept
+    # firing.
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with file_lock(state_dir / (ACK_FILE + ".lock"), label="ops-radar-ack"):
+        ack = _state_dict(state_dir / ACK_FILE)
+        ack[key] = {"acked_at": now, "ttl_seconds": ttl, "acked_band": band}
+        save_json_atomic(state_dir / ACK_FILE, ack)
+    hrs = ttl / 3600
+    print(f"ops-radar: ack {key} for {hrs:.0f}h (band={band}); re-surfaces on worsening or expiry.")
+    return 0
+
+
+def cmd_crunch(args, state_dir: Path) -> int:
+    on = args.mode == "on"
+    save_json_atomic(state_dir / CRUNCH_FILE, {"on": on, "since": time.time()})
+    print(f"ops-radar: crunch {'ON' if on else 'OFF'}"
+          + (" - Tier-B suppressed except the critical floor." if on else " - normal posture."))
+    return 0
+
+
+# ============================================================
+# Tier-A auto-heal (ollama / memory-index)
+# ============================================================
+
+def record_heal_result(autoheal: dict, target: str, ok: bool) -> dict:
+    """Pure: increment a target's consecutive-failure counter on failure, reset
+    it to 0 on success. Returns a NEW dict (no in-place mutation)."""
+    out = {k: dict(v) if isinstance(v, dict) else v for k, v in autoheal.items()}
+    # `dict("broken")` raised ValueError and `int("many")` raised ValueError, so
+    # a corrupt counter for ONE target killed the heal pass for both. A counter
+    # that cannot be read restarts from this run rather than blocking it.
+    raw = out.get(target)
+    entry = dict(raw) if isinstance(raw, dict) else {}
+    entry["failures"] = 0 if ok else int(_num_or(entry.get("failures", 0))) + 1
+    out[target] = entry
+    return out
+
+
+def _systemctl(args: list[str]) -> bool:
+    """Run `systemctl <args>`; True only on exit 0. A missing binary, an absent
+    unit ('Unit not found'), or a denied privilege all return False (never a
+    silent success) so the caller counts the heal as failed."""
+    import subprocess
+    try:
+        proc = subprocess.run(["systemctl", *args], capture_output=True,
+                              text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _ollama_reachable() -> bool:
+    return bool(ops.ollama_state()["value"]["reachable"])
+
+
+def _spawn_ollama_serve() -> bool:
+    """Spawn `ollama serve` detached. True if the binary launched (present on
+    PATH); False if absent. Reachability is re-probed by the caller."""
+    import subprocess
+    try:
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+def _describe_unstartable(job: str, provider: str, host: str) -> str:
+    """One clause per blocked job: the program as a person knows it, and where."""
+    from scripts.utils.embeddings import EMBED_PROVIDER_DISPLAY
+
+    where = host or "no configured host"
+    if not provider:
+        return f"{job} at {where}, served by a program nobody declared"
+    name = EMBED_PROVIDER_DISPLAY.get(provider.strip().lower(), provider)
+    return f"{job} at {where}, served by {name}"
+
+
+def restart_embedder() -> tuple[bool, str]:
+    """Tier-A heal for an unreachable model server: restart it only when this
+    radar can, and otherwise say which program to start and where.
+
+    The one program the radar can start is ollama, and only when every job in
+    use DECLARES it (`ops.unstartable_jobs`, which reads the declared provider
+    the way `embeddings.declared_embed_provider` does, never a default). Then
+    the ladder, in order:
+
+      1. managed user unit  (fleet-safe)
+      2. managed system unit (polkit; may be denied -> falls through)
+      3. detached `ollama serve`, then re-probe
+
+    Returns (ok, note). ok is True ONLY if a server is reachable afterward, so
+    a privilege denial or an absent unit is a real failure, not a no-op.
+
+    Any other answer is REPORTED and nothing is attempted: Lemonade Server,
+    which the operator starts himself outside WSL, and a job whose provider
+    nobody declared. A heal that cannot heal must not pretend to try. All three
+    rungs reach the ollama program by name, and on a machine that does not run
+    ollama they fail every time and cost about 40 seconds of the radar run (two
+    `systemctl` calls at a 20 s timeout each, then five 1 s re-probes). The ok
+    flag stays False, so the failure counter and the escalation into the
+    Tier-B nudge behave exactly as before; only the note carries the reason.
+
+    Named `restart_ollama` until HOS-220 (2026-10-10). Ollama is no longer
+    installed on the operator's machine, and the old name described the one
+    case this function no longer reaches there."""
+    blocked = ops.unstartable_jobs()
+    if blocked:
+        named = "; ".join(_describe_unstartable(*entry) for entry in blocked)
+        return False, (
+            f"not attempted: {named}. The radar starts only a declared Ollama; "
+            f"start that program where it is served"
+        )
+    if _systemctl(["--user", "restart", "ollama"]) and _ollama_reachable():
+        return True, "restarted via systemctl --user"
+    if _systemctl(["restart", "ollama"]) and _ollama_reachable():
+        return True, "restarted via systemctl (system unit)"
+    if _spawn_ollama_serve():
+        for _ in range(5):
+            time.sleep(1)
+            if _ollama_reachable():
+                return True, "started via `ollama serve`"
+    return False, "no managed unit restartable and `ollama serve` did not come up"
+
+
+def rebuild_index(engine_root: Path) -> tuple[bool, str]:
+    """Trigger an incremental memory-index build. (ok, note)."""
+    import subprocess
+    script = engine_root / "scripts" / "memory-index.py"
+    if not script.exists():
+        return False, "memory-index.py absent"
+    try:
+        proc = subprocess.run(
+            [str(venv_python()), str(script), "build"],
+            cwd=str(engine_root), capture_output=True, text=True, timeout=1800,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"build raised: {type(exc).__name__}"
+    if proc.returncode == 0:
+        return True, "memory-index rebuilt"
+    return False, f"build exit {proc.returncode}"
+
+
+def run_autoheal(autoheal_dir: Path, engine_root: Path, data_root: Path,
+                 signals: list[dict] | None = None,
+                 restart_fn=None, rebuild_fn=None) -> dict:
+    """Attempt Tier-A self-heal for due ollama/index; track consecutive failures.
+
+    `signals`/`restart_fn`/`rebuild_fn` are injectable for tests. A healthy
+    target resets its counter; a failed heal increments it (escalating into the
+    Tier-B nudge at AUTOHEAL_ESCALATE)."""
+    if signals is None:
+        signals = gather_live_signals(engine_root, data_root)
+    restart_fn = restart_fn or restart_embedder
+    rebuild_fn = rebuild_fn or (lambda: rebuild_index(engine_root))
+    # Locked for the whole read-modify-write. `save_json_atomic` makes each WRITE
+    # atomic but does nothing about the gap between the load above and the save
+    # below: a timer fire and a manual `heal` overlapping there each wrote a
+    # counter derived from the state before the other ran, so a failure streak
+    # reset itself and the escalation into the Tier-B nudge was delayed or
+    # doubled.
+    autoheal_dir.mkdir(parents=True, exist_ok=True)
+    with file_lock(autoheal_dir / (AUTOHEAL_FILE + ".lock"), label="ops-radar-autoheal"):
+        return _autoheal_locked(autoheal_dir, engine_root, signals, restart_fn, rebuild_fn)
+
+
+def _autoheal_locked(autoheal_dir: Path, engine_root: Path, signals,
+                     restart_fn, rebuild_fn) -> dict:
+    autoheal = _state_dict(autoheal_dir / AUTOHEAL_FILE)
+    by_key = {s["key"]: s for s in signals}
+    actions: list[dict] = []
+
+    ol = by_key.get("ollama", {"due": False})
+    ollama_up = not ol.get("due")
+    if ol.get("due"):
+        ok, note = restart_fn()
+        autoheal = record_heal_result(autoheal, "ollama", ok)
+        ollama_up = ok
+        actions.append({"target": "ollama", "ok": ok, "note": note})
+    else:
+        autoheal = record_heal_result(autoheal, "ollama", True)
+
+    idx = by_key.get("memory_index", {"due": False})
+    if idx.get("due"):
+        if ollama_up:
+            ok, note = rebuild_fn()
+            autoheal = record_heal_result(autoheal, "memory_index", ok)
+            actions.append({"target": "memory_index", "ok": ok, "note": note})
+        else:
+            # cannot embed without the model up -> a real (counted) failure
+            autoheal = record_heal_result(autoheal, "memory_index", False)
+            actions.append({"target": "memory_index", "ok": False, "note": "skipped: model server down"})
+    else:
+        autoheal = record_heal_result(autoheal, "memory_index", True)
+
+    save_json_atomic(autoheal_dir / AUTOHEAL_FILE, autoheal)
+    return {"autoheal": autoheal, "actions": actions}
+
+
+def cmd_heal(args, autoheal_dir: Path, engine_root: Path, data_root: Path) -> int:
+    result = run_autoheal(autoheal_dir, engine_root, data_root)
+    actions = result["actions"]
+    if not actions:
+        print("ops-radar heal: Tier-A healthy - nothing to heal.")
+        return 0
+    for a in actions:
+        status = "ok" if a["ok"] else "FAILED"
+        failures = result["autoheal"].get(a["target"], {}).get("failures", 0)
+        print(f"ops-radar heal: {a['target']} {status} ({a['note']})"
+              + (f" [{failures} consecutive failures]" if not a["ok"] else ""))
+    return 0
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description="Manual-actions + silent-health detector.")
+    ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ap.add_argument("--quiet", action="store_true",
+                    help="print the due-item summaries on one line; nothing when nothing is due")
+    sub = ap.add_subparsers(dest="cmd")
+
+    p_ack = sub.add_parser("ack", help="silence a signal until TTL or worsening")
+    p_ack.add_argument("key", help="signal key (e.g. backup, odin_cadence)")
+    p_ack.add_argument("--ttl", default=None, help="e.g. 24h, 7d (default per-signal)")
+
+    p_crunch = sub.add_parser("crunch", help="toggle crunch-mode suppression")
+    p_crunch.add_argument("mode", choices=["on", "off"])
+
+    sub.add_parser("heal", help="Tier-A auto-heal (ollama / memory-index)")
+    return ap
+
+
+def main(argv=None) -> int:
+    require_main_clone(__file__)
+    args = build_parser().parse_args(argv)
+    root = get_workspace_root()
+    load_env(root)
+    engine_root = root
+    data_root = get_data_root()
+    state_dir = resolve_state_dir()
+    autoheal_dir = resolve_autoheal_dir()
+
+    if args.cmd == "ack":
+        return cmd_ack(args, state_dir, engine_root, data_root, autoheal_dir)
+    if args.cmd == "crunch":
+        return cmd_crunch(args, state_dir)
+    if args.cmd == "heal":
+        return cmd_heal(args, autoheal_dir, engine_root, data_root)
+
+    # Default: assess + render.
+    result = assess(engine_root, data_root, state_dir, autoheal_dir=autoheal_dir)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+    if args.quiet:
+        if result["quiet_line"]:
+            print(result["quiet_line"])
+        return 0
+    print(render_detailed(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

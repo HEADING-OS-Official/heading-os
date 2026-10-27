@@ -1,0 +1,7 @@
+{
+  "max_skips": 6,
+  "measured": "2026-09-20",
+  "shape": "python scripts/run-tests.py, which is pytest -q -n auto -m \"not acceptance\": the shape scripts/nightly-refresh.py actually runs. The count read is pytest's own \"N skipped\" from that run's summary line.",
+  "note": "Shrink-only ceiling on how many tests the nightly may see SKIPPED and still move the day-mode green marker: the line between a suite that passed and one that did not run (a run with a replaced PATH skipped 240 and exited 0, 2026-09-05). A jump means tests stopped running: find the tool the launcher can no longer reach before raising it. Describes HELM; a worktree skips more by design. One reader, read_skip_ceiling() in scripts/utils/skip_ceiling.py (used by scripts/nightly-refresh.py and scripts/utils/skip_ceiling_guard.py); a bad value makes both refuse.",
+  "history": "Set 2026-09-20 against the pre-split suite; not re-measured since the 2026-09-21 split (HOS-54), so it is a ceiling, not a measurement."
+}

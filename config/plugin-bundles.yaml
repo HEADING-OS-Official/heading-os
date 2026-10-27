@@ -1,0 +1,199 @@
+# Plugin bundle manifest
+#
+# Consumed by: scripts/dev/build-plugins.py (F-10.1).
+# Maps the monorepo tree into Claude Code plugin bundles. The monorepo stays the
+# source of truth; this file only declares which existing skills, hooks, and
+# scripts belong to which bundle. Nothing here is a copy of source content.
+#
+# Per bundle:
+#   description       - one line
+#   skills            - .claude/skills/<name> dirs to include (copied verbatim)
+#   hooks             - .claude/hooks/<file> to include (copied verbatim)
+#   hook_events       - event -> [hook script names] wiring used to GENERATE
+#                       hooks/hooks.json (this workspace wires hooks in
+#                       settings.local.json, which does not travel in a plugin)
+#   session_start_env - when true, the build emits a SessionStart hook that
+#                       exports WORKSPACE_ROOT and HEADING_OS_DATA into
+#                       $CLAUDE_ENV_FILE (plugin-cache root resolution + data seam)
+#   commands          - .claude/commands/<file> slash commands to include. Copied
+#                       with the same ${CLAUDE_PLUGIN_ROOT} script-path rewrite
+#                       the SKILL.md bodies get, and scanned by the completeness
+#                       gate. Ship a command whenever a bundled skill's body tells
+#                       the operator to run it.
+#   scripts           - EXPLICIT list of scripts/<path> the bundle needs.
+#                       The packages in build-plugins.py's
+#                       ALWAYS_BUNDLED_PACKAGES are implied and always copied
+#                       wholesale: scripts/utils/, and the three packages
+#                       scripts/utils/ itself imports (heading_os_2,
+#                       migrations, record_readers). Never list a file from
+#                       one of those here. Same for ALWAYS_BUNDLED_FILES, the
+#                       scripts/*.example.* template those packages read.
+#
+# NOTE: rules are deliberately NOT a field in this slice (F-10.1 / H2). There is
+# no supported plugin component that loads .claude/rules/*.md as always-on
+# behavior from a plugin cache; a carrier mechanism is an unresolved follow-up.
+
+bundles:
+  heading-core:
+    description: >-
+      Sovereignty and session core: the prime/handover/clear-handover
+      skills, the standalone sovereignty guard hooks, and the session
+      checkpoint system: a context-usage sensor, a threshold offer, a redacted
+      post-compact save and a resume injector, all keyed by session so
+      concurrent sessions never overwrite each other. One optional switch, an
+      unattended mode that waits out a grace period at a pause and carries on
+      when nobody answers, bounded by a no-progress limit and a continuation
+      ceiling.
+    skills:
+      - prime
+      - handover
+      - clear-handover
+    hooks:
+      # Genuinely self-contained guards only.
+      - prompt-guard.py
+      - post-write-sanitize.py
+      # The checkpoint system (2026-08-16). Self-contained: the four hooks reach
+      # only scripts/utils/, which is always bundled, and they find their root by
+      # walking for that directory rather than by counting parents, so the same
+      # files work at .claude/hooks/ in the monorepo and at hooks/ in a bundle.
+      # checkpoint-statusline.py ships but CANNOT be wired from here: Claude Code
+      # exposes context-window usage only to a statusLine, and a plugin manifest
+      # has no statusLine key. Installing it is one line in the consumer's
+      # settings.json - see PLUGINS.md (in the data repository under
+      # `spec-docs` since 2026-09-25).
+      - checkpoint-statusline.py
+      - checkpoint-offer.py
+      - checkpoint-inject.py
+      - checkpoint-save.py
+      # Named by checkpoint-offer.py: a bare "1" or "2" as the next prompt
+      # picks an option at an unattended pause.
+      - unattended-resume.py
+    hook_events:
+      PostToolUse:
+        - matcher: "Write|Edit|MultiEdit|NotebookEdit"
+          hooks:
+            - prompt-guard.py
+            - post-write-sanitize.py
+      SessionStart:
+        - matcher: "compact|clear|resume"
+          hooks:
+            - checkpoint-inject.py
+      PostCompact:
+        - matcher: "manual|auto"
+          hooks:
+            - checkpoint-save.py
+      Stop:
+        - matcher: ""
+          hooks:
+            - checkpoint-offer.py
+      UserPromptSubmit:
+        - matcher: ""
+          hooks:
+            - unattended-resume.py
+    session_start_env: true
+    commands:
+      # The /handover skill's own body tells the operator to run this one.
+      - unattended.md
+    scripts:
+      # Scripts referenced by the three skills' SKILL.md (enumerated, not
+      # grep-discovered at build time). scripts/utils/ is always bundled.
+      - apply-wizard-answers.py
+      - checkpoint-paths.py
+      - generate-skill-router.py
+      - next-signal.py
+      - prime-health-parallel.py
+      - sync-exchange.py
+      - thread.py
+      # Named by files this bundle already ships (the /prime terminal
+      # entry-point table, HOS-15, and checkpoint-save.py's docstring); the
+      # completeness gate reads every script reference in a bundled file.
+      - action-queue.py
+      - crm-health.py
+      - email-intelligence.py
+      - knowledge-health.py
+      - memory-index.py
+      - pipeline-summary.py
+      - skill-metadata-check.py
+      - lific-board.py
+      - compaction-probe.py
+      - hindsight-health.py
+      # EXECUTED: checkpoint-save.py runs it to list the session's prompts.
+      - prompt-archive.py
+      # HOS-48: the shell's door into scripts/utils/data_path.py (always
+      # bundled). Without the registry a stranger gets a legible REFUSED, exit
+      # 2, naming the registry it read (measured 2026-09-22), not an ImportError.
+      - data-path.py
+
+  # --- Curated capability bundles (2026-07-09) ---
+  # Curation criterion: a skill ships only if it runs for a stranger with NO CEO
+  # credentials, NO running daemon, and NO private data overlay (Claude-native
+  # tools + bundled scripts, degrading gracefully). Skills needing Exchange /
+  # Telegram / OSINT-service creds, Google OAuth, third-party model keys, the
+  # private CRM overlay, or a live daemon stay RESERVED (named below).
+  heading-intel:
+    description: >-
+      Intelligence: parse a document with citations (docparse) and build a
+      web-sourced market brief (market-brief). Reserved (need service creds):
+      osint, yt-pulse, deep-research-advance, notebooklm.
+    skills:
+      - docparse
+      - market-brief
+    hooks: []
+    hook_events: {}
+    session_start_env: true
+    scripts:
+      - docparse.py
+      - polymarket.py
+      - crop-image.py
+      - data-path.py
+  heading-comms:
+    description: >-
+      Communication. Reserved (need Exchange/Telegram/session or the send
+      transport): email-intel, telegram, email-draft, email-respond, follow-up.
+    skills: []
+    hooks: []
+    hook_events: {}
+    session_start_env: true
+    scripts: []
+  heading-content:
+    description: >-
+      Content drafting: LinkedIn posts and series, plus image prompts
+      (linkedin-post, linkedin-series, image-prompt). Reserved: flux-image
+      (API key), linkedin-archive (private data).
+    skills:
+      - linkedin-post
+      - linkedin-series
+      - image-prompt
+    hooks: []
+    hook_events: {}
+    session_start_env: true
+    scripts:
+      - data-path.py
+      - memlog.py
+  heading-crm:
+    description: CRM skills (crm, google-contacts, the assistant-inbox skill). Not built yet.
+    skills: []
+    hooks: []
+    hook_events: {}
+    session_start_env: true
+    scripts: []
+  heading-ops:
+    description: >-
+      Ops and thinking: draft an implementation plan (create-plan), reason
+      through a hard decision (deep-think), and run a structural editorial
+      pass (editorial-review). Reserved (data/daemon/key-bound): dashboard,
+      radar, sync, next, recall, council.
+    skills:
+      - create-plan
+      - deep-think
+      - editorial-review
+    hooks: []
+    hook_events: {}
+    session_start_env: true
+    scripts:
+      - artifact-evaluator.py
+      - data-path.py
+      - prompt-archive.py
+      - elicit.py
+      - humanization-check.py
+      - sanitize-text.py

@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""polymarket.py - Query Polymarket Gamma API for prediction-market signal.
+
+Free public API (gamma-api.polymarket.com), no auth required. Used by
+/market-brief and /ceo-intel as a 14th source ("Markets Are Pricing" section).
+
+Conditional firing via topic whitelist - only queries when topic matches
+AI / big tech / elections / geopolitics / crypto / conflicts / macro / sports.
+Company-niche topics skip because Polymarket has zero useful coverage there;
+the company's own list of them is read from the data repository (see
+`SKIP_TERMS_FILE`), so a skip can say the topic was suppressed.
+
+Usage:
+    python scripts/polymarket.py "AI agents"
+    python scripts/polymarket.py "Apple" --keywords "company,stock,iPhone"
+    python scripts/polymarket.py "regional telecom procurement"  # skips, prints empty
+    python scripts/polymarket.py "Iran tensions" --output markdown
+    python scripts/polymarket.py "AI agents" --min-volume-usd 50000 --limit 3
+
+Output: JSON wrapper with markets[], skip_reason, query_used, whitelist_match.
+Or markdown table including internal-use footer. In markdown mode any
+skip_reason prints nothing on stdout (exit 0), so a caller omits the section on
+empty output; `fetch_error` writes its reason to stderr and exits 1.
+
+CEO-EYES-ONLY USAGE: Polymarket data is internal signal only. NEVER quote
+in external company communication (proposals, letters, partnership docs, posts).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.utils.user_agent import user_agent  # noqa: E402
+
+
+GAMMA_ENDPOINT = "https://gamma-api.polymarket.com/markets"
+DEFAULT_TIMEOUT = 30
+INTERNAL_USE_FOOTER = (
+    "*Polymarket data is internal signal only; never used in external company communication.*"
+)
+
+
+WHITELIST_POSITIVE: dict[str, list[str]] = {
+    "ai_big_tech": [
+        "ai", "artificial intelligence", "agi", "openai", "anthropic", "google", "alphabet",
+        "microsoft", "meta", "facebook", "nvidia", "apple", "amazon", "tesla", "deepmind",
+        "claude", "gpt", "gemini", "llama", "model release", "ai regulation",
+    ],
+    "elections": [
+        "election", "primary", "vote", "presidential", "senate", "congress", "trump", "biden",
+        "harris", "uk election", "general election", "midterm", "parliament", "modi",
+    ],
+    "geopolitics_conflicts": [
+        "iran", "israel", "russia", "ukraine", "china", "taiwan", "north korea", "gaza",
+        "war", "ceasefire", "strait of hormuz", "oil supply", "sanctions", "nato", "putin",
+        "xi jinping", "kim jong",
+    ],
+    "crypto": [
+        "bitcoin", "btc", "ethereum", "eth", "solana", "crypto", "etf", "sec ruling",
+        "stablecoin", "defi",
+    ],
+    "macro_fed": [
+        "fed", "fomc", "interest rate", "recession", "cpi", "inflation", "gdp", "unemployment",
+        "rate cut", "rate hike", "treasury yield",
+    ],
+    "global_sports": [
+        "world cup", "olympics", "super bowl", "nba finals", "champions league", "world series",
+    ],
+    "corporate_events": [
+        "ipo", "merger", "acquisition", "earnings beat", "earnings miss", "stock buyback",
+    ],
+}
+
+#: The company-niche topics, one per line (`#` starts a comment) in this file
+#: under the data repository's config directory. Absent, the list is empty: the
+#: whitelist still decides what fires, and only `negative_match` loses its say.
+SKIP_TERMS_FILE = "polymarket-skip-terms.txt"
+
+
+def whitelist_negative() -> list[str]:
+    """The company's niche terms, lower-cased; empty when it names none."""
+    try:
+        from scripts.utils.workspace import get_data_config_dir
+        text = (get_data_config_dir() / SKIP_TERMS_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except Exception as exc:  # a data root that cannot be resolved or read
+        print(f"polymarket: {SKIP_TERMS_FILE} unreadable ({type(exc).__name__}: {exc}); "
+              f"no niche terms", file=sys.stderr)
+        return []
+    return [t for t in (line.split("#", 1)[0].strip().lower() for line in text.splitlines()) if t]
+
+
+def _term_in(term: str, text: str) -> bool:
+    """Is `term` present in `text` as a WHOLE word (or whole phrase)?
+
+    A plain substring test fires on short entries inside unrelated words ("ai"
+    in Bahrain, "war" in toward). Lookarounds, not ``\\b``, so a caller-supplied
+    ``--keywords`` value that starts with a non-word character (``$aapl``) can
+    still match.
+    """
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
+
+
+def match_whitelist(topic: str) -> tuple[str | None, bool, list[str]]:
+    """Apply precedence rule (P2): positive match required to fire.
+
+    Returns (positive_category_or_None, has_negative_match, matched_terms).
+
+    Caller logic: if positive matched, fire (positive wins over negative).
+    If only negative matched (no positive), skip. If neither matched, skip.
+
+    `matched_terms` is returned because the whitelist fires on ANY single term,
+    so the market filter is given the terms that fired rather than the whole
+    topic ("Iran tensions" fires on "iran").
+    """
+    topic_lower = topic.lower()
+    positive_match: str | None = None
+    matched_terms: list[str] = []
+    for category, terms in WHITELIST_POSITIVE.items():
+        hits = [t for t in terms if _term_in(t, topic_lower)]
+        if not hits:
+            continue
+        # EVERY category's hits are collected, so a cross-domain topic ("Trump
+        # AI policy") keeps all its terms. `whitelist_match` still reports the
+        # FIRST matching category: two SKILL.md files read it as one value.
+        if positive_match is None:
+            positive_match = category
+        matched_terms.extend(hits)
+
+    has_negative = any(_term_in(neg, topic_lower) for neg in whitelist_negative())
+    return positive_match, has_negative, matched_terms
+
+
+def _http_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict | list:
+    """GET JSON with one retry on 429/5xx.
+
+    Sends the workspace User-Agent (scripts/utils/user_agent.py). Cloudflare
+    in front of gamma-api.polymarket.com returns 403 "error code: 1010" to
+    Python urllib's default UA.
+    """
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": user_agent(),
+    }
+    for attempt in (1, 2):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt == 1:
+                time.sleep(2)
+                continue
+            raise
+        except urllib.error.URLError:
+            if attempt == 1:
+                time.sleep(2)
+                continue
+            raise
+
+
+def fetch_active_markets(limit: int = 500) -> list[dict]:
+    """Fetch active, non-closed markets ordered by volume desc.
+
+    Uses Gamma API: GET /markets?active=true&closed=false&limit=N&order=volume&ascending=false
+    Returns raw market objects.
+
+    Default limit=500 because the top-by-volume tail is dominated by esports
+    and sports props; topic substring filtering needs a larger pool to surface
+    relevant election / AI / geopolitics markets that have lower volume.
+    """
+    params = urllib.parse.urlencode({
+        "active": "true",
+        "closed": "false",
+        "limit": limit,
+        "order": "volume",
+        "ascending": "false",
+    })
+    url = f"{GAMMA_ENDPOINT}?{params}"
+    data = _http_get(url)
+    if isinstance(data, list):
+        return data
+    return data.get("markets", []) if isinstance(data, dict) else []
+
+
+def filter_markets(
+    markets: list[dict],
+    topic: str,
+    keywords: list[str] | None,
+    min_volume_usd: float,
+    match_terms: list[str] | None = None,
+) -> list[dict]:
+    """P3: client-side filter on `question` field, case-insensitive.
+
+    A market passes if any of `match_terms` -- the whitelist terms that fired
+    for this topic -- appears in the question as a whole word. Falls back to
+    the whole topic string when no terms are supplied.
+
+    Keywords (P4) further narrow the match - a market must contain at least one
+    keyword, as a WHOLE word, if any are provided. P5: drop markets below the
+    volume threshold.
+    """
+    topic_lower = topic.lower()
+    needles = [t.lower() for t in (match_terms or []) if t.strip()] or [topic_lower]
+    keyword_set = {k.strip().lower() for k in (keywords or []) if k.strip()}
+    out: list[dict] = []
+    for m in markets:
+        question = (m.get("question") or "").lower()
+        if not any(_term_in(n, question) for n in needles):
+            continue
+        # `_term_in`, not `kw in question`: `--keywords "stock"` must not
+        # match Woodstock.
+        if keyword_set and not any(_term_in(kw, question) for kw in keyword_set):
+            continue
+        try:
+            volume = float(m.get("volume") or 0)
+        except (TypeError, ValueError):
+            volume = 0.0
+        if volume < min_volume_usd:
+            continue
+        out.append(m)
+    return out
+
+
+def _parse_outcomes_and_prices(market: dict) -> list[dict]:
+    """Parse outcomes (e.g., '["Yes","No"]') and outcomePrices into [{name, probability}]."""
+    raw_outcomes = market.get("outcomes")
+    raw_prices = market.get("outcomePrices")
+    try:
+        names = json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else (raw_outcomes or [])
+    except (json.JSONDecodeError, TypeError):
+        names = []
+    try:
+        prices = json.loads(raw_prices) if isinstance(raw_prices, str) else (raw_prices or [])
+    except (json.JSONDecodeError, TypeError):
+        prices = []
+    out = []
+    for i, name in enumerate(names):
+        try:
+            prob = float(prices[i]) if i < len(prices) else 0.0
+        except (ValueError, TypeError):
+            prob = 0.0
+        out.append({"name": str(name), "probability": prob})
+    return out
+
+
+def normalise_market(market: dict) -> dict:
+    """Reduce a Gamma market to the brief-friendly shape."""
+    slug = market.get("slug") or market.get("conditionId") or ""
+    try:
+        volume_usd = float(market.get("volume") or 0)
+    except (TypeError, ValueError):
+        volume_usd = 0.0
+    return {
+        "question": market.get("question", ""),
+        "outcomes": _parse_outcomes_and_prices(market),
+        "end_date": market.get("endDate") or market.get("end_date") or None,
+        "volume_usd": volume_usd,
+        "link": f"https://polymarket.com/event/{slug}" if slug else "",
+    }
+
+
+def render_markdown(markets: list[dict]) -> str:
+    """P7: pin columns - Market | Top Outcome | Probability | Volume | End Date.
+
+    Appends the P1 internal-use footer line.
+    """
+    if not markets:
+        return f"_No matching prediction markets found._\n\n{INTERNAL_USE_FOOTER}\n"
+
+    lines = ["| Market | Top Outcome | Probability | Volume | End Date |",
+             "|---|---|---|---|---|"]
+    for m in markets:
+        outcomes = m.get("outcomes", [])
+        if outcomes:
+            top = max(outcomes, key=lambda o: o.get("probability", 0))
+            top_name = top.get("name", "?")
+            top_prob = f"{top.get('probability', 0) * 100:.0f}%"
+        else:
+            top_name = "?"
+            top_prob = "?"
+        question = (m.get("question", "") or "").replace("|", "\\|")
+        if len(question) > 80:
+            question = question[:77] + "..."
+        end_date = (m.get("end_date") or "")[:10]
+        volume_str = f"${m.get('volume_usd', 0):,.0f}"
+        lines.append(f"| {question} | {top_name} | {top_prob} | {volume_str} | {end_date} |")
+    lines.append("")
+    lines.append(INTERNAL_USE_FOOTER)
+    return "\n".join(lines) + "\n"
+
+
+def query_polymarket(
+    topic: str,
+    keywords: list[str] | None = None,
+    limit: int = 5,
+    min_volume_usd: float = 10000.0,
+) -> dict:
+    """Run the full pipeline and return the wrapper JSON (P6 shape).
+
+    Returns:
+        {
+            "markets": [...],
+            "skip_reason": null | "outside_whitelist" | "no_matches" | "fetch_error",
+            "query_used": "...",
+            "whitelist_match": "ai_big_tech" | ... | null,
+            # Only on an outside_whitelist skip: True when a niche term
+            # (`whitelist_negative()`) matched, so a suppressed topic is distinguishable from an
+            # unknown one. Kept out of skip_reason on purpose -- this file and
+            # two SKILL.md files each enumerate the three reasons above.
+            "negative_match": true | false,
+            "error": null | "...",  # only when fetch fails
+        }
+    """
+    positive, has_negative, matched_terms = match_whitelist(topic)
+    if positive is None:
+        # The negative list is reported in its OWN field, deliberately not a
+        # fourth `skip_reason` value: two SKILL.md files enumerate the three
+        # known reasons. `negative_match` says which kind it was.
+        return {"markets": [], "skip_reason": "outside_whitelist",
+                "negative_match": has_negative,
+                "query_used": topic, "whitelist_match": None}
+
+    try:
+        raw_markets = fetch_active_markets(limit=500)
+    except Exception as e:  # broad: covers HTTPError, URLError, JSONDecodeError
+        return {"markets": [], "skip_reason": "fetch_error",
+                "query_used": topic, "whitelist_match": positive,
+                "error": f"Gamma API failed: {str(e)[:200]}"}
+
+    filtered = filter_markets(raw_markets, topic, keywords, min_volume_usd,
+                              match_terms=matched_terms)
+    if not filtered:
+        return {"markets": [], "skip_reason": "no_matches",
+                "query_used": topic, "whitelist_match": positive}
+
+    top_n = filtered[:limit]
+    return {
+        "markets": [normalise_market(m) for m in top_n],
+        "skip_reason": None,
+        "query_used": topic,
+        "whitelist_match": positive,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Query Polymarket Gamma API for prediction-market signal")
+    parser.add_argument("topic", help="Topic to query (e.g., 'AI agents', 'Iran tensions')")
+    parser.add_argument("--keywords",
+                        help="Comma-separated disambiguators (e.g., 'company,stock' for 'Apple')")
+    parser.add_argument("--output", default="json", choices=["json", "markdown"])
+    parser.add_argument("--limit", type=int, default=5,
+                        help="Max markets to return (default 5)")
+    parser.add_argument("--min-volume-usd", type=float, default=10000.0,
+                        help="Filter markets below this volume threshold (default 10000)")
+    args = parser.parse_args()
+
+    keywords = [k.strip() for k in args.keywords.split(",")] if args.keywords else None
+    result = query_polymarket(args.topic, keywords, args.limit, args.min_volume_usd)
+
+    if args.output == "json":
+        print(json.dumps(result, indent=2))
+    else:
+        # Markdown mode carries the skills' rule itself: on ANY skip_reason it
+        # prints NOTHING on stdout, so the caller omits the section by finding
+        # no output. A down source is still not an empty result: `fetch_error`
+        # names itself on stderr and exits 1.
+        reason = result.get("skip_reason")
+        if reason == "fetch_error":
+            print(f"Polymarket unavailable: {result.get('error', 'fetch failed')}",
+                  file=sys.stderr)
+            return 1
+        if reason:
+            return 0
+        print(render_markdown(result.get("markets", [])))
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

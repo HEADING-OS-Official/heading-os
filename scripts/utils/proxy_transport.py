@@ -1,0 +1,417 @@
+"""Shared proxy transport for external model calls (council + research).
+
+Routes every Kimi/Grok/Gemini call through the local CLIProxyAPI proxy
+(127.0.0.1:8317, OpenAI-compatible), which fronts flat subscriptions instead of
+per-token vendor keys. Prompt-agnostic: it sends the prompt verbatim and never
+injects a system block, so each caller owns its own prompt coupling (council
+injects the company context block via council_prompts; deep-research sends raw prompts and so
+never leaks business context into the third-party cloud).
+
+Reproduces the thinking-model truncation retry (empty content + finish_reason=
+length) that Kimi/Grok reasoning needs, and classifies OpenAI SDK exceptions into
+RuntimeError with actionable messages.
+"""
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from scripts.utils.api import load_api_key  # noqa: E402
+from scripts.utils import proxy_usage  # noqa: E402
+
+PROXY_BASE_URL = "http://127.0.0.1:8317/v1"
+RETRY_CEILING = 16384
+# 300s (was 120s): the k3 reasoning voice legitimately thinks for minutes on larger
+# inputs, and 120s cut off council/scrutinize critiques mid-reason. Callers with a
+# genuinely huge draft can still pass an explicit higher `timeout` (kimi-consult
+# exposes --timeout). This is a socket read ceiling for ONE call, not a per-request
+# target. For the real worst-case wall time see `call_model`; it is far above
+# `timeout * (1 + RETRY_TIMEOUT_GROWTH_CAP)`, which this comment used to claim
+# by counting the `length` retry and forgetting that every call underneath it
+# runs through `_retry_server_errors`.
+DEFAULT_TIMEOUT = 300.0
+# The retry raises the token budget, and a bigger budget means a longer think, so
+# the socket ceiling has to grow with it or the retry times out where the first
+# call merely truncated. Measured 2026-08-23 against the live proxy: 8192 tokens
+# answered in 158s, and 32768 tokens blew a 240s ceiling outright. Capped so a
+# small `max_tokens` (whose ratio to RETRY_CEILING is enormous) cannot turn one
+# call into an hour-long wait.
+RETRY_TIMEOUT_GROWTH_CAP = 2.0
+# The proxy answers 503 `auth_unavailable ... check Claude auth/key session and
+# cooldown state` when a provider session is exhausted, and recovers on its own
+# within seconds. The transport classified that as InternalServerError, printed
+# "Transient; retry in 30 seconds", and then did not retry - so the caller ate a
+# hard failure over a condition the message itself called temporary. Measured
+# 2026-08-23: one cooldown window cost a 37-shard audit re-run 29 shards, each
+# failing in 1 to 3 seconds, and the model answered normally on the next probe.
+# Bounded, because a provider that is genuinely down must not spin on the
+# subscription this proxy exists to protect.
+SERVER_ERROR_ATTEMPTS = 4
+SERVER_ERROR_BACKOFF = (5.0, 20.0, 45.0)
+
+
+def _is_complete(content: str, finish_reason) -> bool:
+    """A usable answer: visible text the model actually finished writing.
+
+    `finish_reason == "length"` means the budget cut the answer off mid-word.
+    That is true whether or not any text escaped, and until 2026-08-23 only the
+    no-text half was noticed: `if content.strip(): return content` ran before
+    `finish_reason` was looked at, so a half-written answer was returned as the
+    whole thing with exit 0 and no warning. Which half you landed in was a coin
+    flip on how long the reasoning ran — the same prompt at the same budget
+    produced an empty `length` on one call and a partial `length` on the next.
+
+    Every caller treats the return value as a complete answer, so a partial one
+    is worse than an error: `scrutinize-dispatch` counts a half-written
+    refutation as a vote, and the 2026-08-23 engine audit recorded truncated
+    finding lists as finished shards.
+    """
+    return bool(content.strip()) and finish_reason != "length"
+
+
+class _TransientServerError(Exception):
+    """Internal: a proxy 503 the transport will retry. Never escapes call_model."""
+
+
+def _retry_server_errors(attempt, tok_budget, call_timeout):
+    """Run `attempt`, retrying only the proxy's own transient 503.
+
+    Module level, not a closure inside `call_model`. It WAS a closure, and that
+    is why the "report the FIRST failure alongside the last" branch below was
+    executed by no test in the suite: reaching it needed a live proxy answering
+    with two different 503s in sequence. Lifting it out changes no behaviour and
+    makes the branch reachable with a stub `attempt`.
+    """
+    first: Exception | None = None
+    last: Exception | None = None
+    for attempt_no in range(SERVER_ERROR_ATTEMPTS):
+        try:
+            return attempt(tok_budget, call_timeout)
+        except _TransientServerError as e:
+            first = first if first is not None else e
+            last = e
+            if attempt_no < SERVER_ERROR_ATTEMPTS - 1:
+                time.sleep(SERVER_ERROR_BACKOFF[
+                    min(attempt_no, len(SERVER_ERROR_BACKOFF) - 1)])
+    # Report the FIRST failure alongside the last. When a retry sequence mixes
+    # causes, the last one is the least informative: the proxy parks an auth in
+    # cooldown after the real refusal, so attempt 1 carries the answer ("usage
+    # limit for this billing cycle") and attempts 2-4 carry only its consequence
+    # ("auth_unavailable: no auth available"). Raising `last` alone reported the
+    # consequence as the cause. Measured 2026-08-24: it sent an hour of
+    # diagnosis at a configuration that was correct, while the proxy's own log
+    # had the 403 all along.
+    detail = f"{last}"
+    if first is not None and str(first) != str(last):
+        detail = f"first failure: {first} | last failure: {last}"
+    raise RuntimeError(
+        f"{detail} Still failing after {SERVER_ERROR_ATTEMPTS} attempts over "
+        f"{sum(SERVER_ERROR_BACKOFF):.0f}s of backoff; the provider session "
+        f"behind the proxy is not recovering."
+    ) from last
+
+
+def _make_client(api_key, timeout=DEFAULT_TIMEOUT):
+    """Build the OpenAI SDK client pointed at the proxy. Isolated for test patching."""
+    from openai import OpenAI
+    return OpenAI(api_key=api_key, base_url=PROXY_BASE_URL, timeout=timeout)
+
+
+def call_model(model, prompt, *, temperature=0.7, max_tokens=8192, timeout=DEFAULT_TIMEOUT,
+               reasoning_effort=None, with_model=False):
+    """Send `prompt` to `model` through the proxy; return the visible answer text.
+
+    With `with_model=True` it returns `(text, served)` instead, where `served`
+    is the response's `model` field: the upstream model the proxy actually
+    routed to, which differs from `model` when that is an alias with
+    fallbacks behind it. None when the response carries no such field. A flag
+    rather than a new return type, so every existing caller still gets a str.
+
+    The return value is a COMPLETE answer or nothing: a response cut off by the
+    token budget raises rather than returning its fragment (see `_is_complete`).
+
+    Raises RuntimeError on missing key, API failure, or a genuine empty/truncated
+    answer. On finish_reason=length — empty (reasoning ate the budget) or partial
+    (the answer itself was cut) — retries once at a strictly higher budget, with
+    the socket ceiling grown to match, before raising an accurate truncation
+    error that names how much was lost — never a safety-block claim.
+
+    `timeout` is the socket ceiling for ONE ATTEMPT, not for this function.
+    Budget `16 * timeout + 210s` in the worst case - 83 minutes at the default
+    300s - and do not set a supervisor, unit or CI wall-time below it.
+
+    The arithmetic, because this docstring told callers to "budget for
+    `timeout * 5`" and that number was wrong by construction: up to three
+    `_call` invocations happen (the first, an empty-`stop` retry, a `length`
+    retry at up to `RETRY_TIMEOUT_GROWTH_CAP` times the ceiling), and EVERY one
+    of them runs through `_retry_server_errors`, which makes up to
+    `SERVER_ERROR_ATTEMPTS` (4) attempts separated by `sum(SERVER_ERROR_BACKOFF)`
+    (70s) of sleeps. So 4·t + 70 + 4·t + 70 + 4·2t + 70. The 503s that drive
+    those attempts normally return in seconds, so the typical wall time is
+    nowhere near the bound - but a supervisor is sized against the bound, and
+    the old one would have killed a legitimate run mid-retry.
+
+    Passing a `max_tokens` and `timeout` large enough to finish on the first
+    call is cheaper than relying on the retry.
+
+    `reasoning_effort` (low/high/max) is optional and honored by thinking models
+    (e.g. k3); when set it rides `extra_body={"reasoning_effort": ...}`. Omit it
+    (leave as None) for models that don't support the field, such as the default
+    kimi-for-coding.
+    """
+    from openai import (
+        APIError,
+        APIConnectionError,
+        APIStatusError,
+        AuthenticationError,
+        BadRequestError,
+        NotFoundError,
+        RateLimitError,
+        APITimeoutError,
+        InternalServerError,
+    )
+
+    api_key = load_api_key("CLIPROXY_API_KEY", required=False)
+    if not api_key:
+        raise RuntimeError(
+            "CLIPROXY_API_KEY is missing from .env. Add the local CLIProxyAPI key "
+            "(`cliproxy key`) before invoking the council."
+        )
+
+    def _call(tok_budget, call_timeout):
+        """One attempt, retrying only the proxy's own transient 503."""
+        return _retry_server_errors(_attempt, tok_budget, call_timeout)
+
+    call_id = proxy_usage.new_call_id()
+    attempts = [0]
+
+    def _attempt(tok_budget, call_timeout):
+        """`_send`, plus one usage-ledger row per request, retries included.
+
+        The row is written whatever the request ended in, because a retry or a
+        truncated answer costs tokens like any other; an exception that left no
+        response is recorded with no token counts.
+        """
+        attempts[0] += 1
+        seen = {}
+        outcome = "error:interrupted"
+        started = time.monotonic()
+        try:
+            content, finish_reason, served = _send(tok_budget, call_timeout, seen)
+            if finish_reason in ("length", "content_filter"):
+                outcome = finish_reason
+            else:
+                outcome = "ok" if content.strip() else "empty"
+            return content, finish_reason, served
+        except (RuntimeError, _TransientServerError) as e:
+            outcome = f"error:{type(e.__cause__ or e).__name__}"
+            raise
+        finally:
+            # The ledger never breaks or delays the model call: a failed write
+            # is one warning on stderr, and the call's own result stands.
+            # RuntimeError covers the registry's DataPathError and the overlay
+            # write guards (OverlayWriteRefused, CloneGuardError), which refuse
+            # by raising it. MEASURED 2026-10-25: catching only DataPathError,
+            # an untracked writer refused by the overlay guard turned a
+            # successful Kimi call into exit 1.
+            try:
+                proxy_usage.append_row(proxy_usage.make_row(
+                    call_id=call_id, attempt=attempts[0], model=model,
+                    resp=seen.get("resp"),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    outcome=outcome, http_status=seen.get("http_status")))
+            except (OSError, ValueError, TypeError, RuntimeError) as log_err:
+                print(f"[proxy-usage] WARNING: usage row not recorded: "
+                      f"{type(log_err).__name__}: {log_err}", file=sys.stderr)
+
+    def _send(tok_budget, call_timeout, seen):
+        client = _make_client(api_key, timeout=call_timeout)
+        create_kwargs = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": tok_budget,
+        }
+        if reasoning_effort:
+            create_kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
+        try:
+            try:
+                resp = client.chat.completions.create(**create_kwargs)
+            except APIStatusError as e:
+                # A non-2xx reply can still carry `model` and `usage` in its
+                # JSON body, and those tokens were spent. The SDK's `e.body` is
+                # only the nested `error` object, so the full body is read from
+                # the response; `e.body` is the fallback. Re-raised unchanged
+                # into the classification below.
+                seen["http_status"] = e.status_code
+                # RuntimeError too: httpx raises ResponseNotRead (a RuntimeError)
+                # for an unread body, and it must not replace the SDK's error.
+                try:
+                    body = e.response.json()
+                except (ValueError, RuntimeError) as body_err:
+                    print(f"[proxy-usage] HTTP {e.status_code} reply body not readable as "
+                          f"JSON ({type(body_err).__name__}); its token counts, if any, "
+                          "are not recorded", file=sys.stderr)
+                    body = e.body
+                seen["resp"] = body if isinstance(body, dict) else None
+                raise
+            seen["resp"] = resp
+        except AuthenticationError as e:
+            raise RuntimeError(
+                f"Proxy auth failed for {model}: {e}. Check CLIPROXY_API_KEY in .env."
+            ) from e
+        except RateLimitError as e:
+            raise RuntimeError(
+                f"Proxy rate-limited for {model}: {e}. Retry shortly or check the "
+                "subscription quota behind the proxy."
+            ) from e
+        except NotFoundError as e:
+            raise RuntimeError(
+                f"Proxy returned 404 for {model}: {e}. Check the model id (`cliproxy models`)."
+            ) from e
+        except BadRequestError as e:
+            raise RuntimeError(
+                f"Proxy rejected the request for {model}: {e}. Check model id and prompt."
+            ) from e
+        except APITimeoutError as e:
+            raise RuntimeError(
+                f"Proxy timeout for {model}: {e}. Retry or reduce --max-tokens."
+            ) from e
+        except APIConnectionError as e:
+            raise RuntimeError(
+                f"Proxy connection failed for {model}: {e}. Is CLIProxyAPI running? "
+                "(`cliproxy status`)."
+            ) from e
+        except InternalServerError as e:
+            # Handled by _retry_server_errors above, which owns the backoff.
+            raise _TransientServerError(
+                f"Proxy server error for {model}: {e}."
+            ) from e
+        except APIError as e:
+            raise RuntimeError(f"Proxy call failed for {model}: {e}") from e
+        except Exception as e:  # network / non-APIError
+            msg = str(e).lower()
+            if "timeout" in msg or "timed out" in msg:
+                raise RuntimeError(
+                    f"Proxy timeout for {model}: {e}. Retry or reduce --max-tokens."
+                ) from e
+            raise RuntimeError(f"Proxy call failed for {model}: {e}") from e
+
+        # The shape read sits INSIDE a classification, like every exception
+        # above it. It used to sit after the try, so an answer that parsed but
+        # carried a different shape - `message` absent on a delta-shaped choice,
+        # no `finish_reason`, no `choices` attribute at all - raised
+        # AttributeError past every branch here. The two CLI wrappers that catch
+        # only RuntimeError then printed a traceback instead of the classified
+        # message their own docstrings promise. Which SDK version the proxy
+        # answers is not this module's to assume, so the read is guarded rather
+        # than trusted.
+        try:
+            if not resp.choices:
+                raise RuntimeError(f"Proxy returned no choices for {model}.")
+            ch = resp.choices[0]
+            return (ch.message.content or ""), ch.finish_reason, getattr(resp, "model", None)
+        except RuntimeError:
+            raise
+        except Exception as e:  # noqa: BLE001 - classification, then re-raised
+            raise RuntimeError(
+                f"Proxy returned an unreadable response for {model}: "
+                f"{type(e).__name__}: {e}. The proxy answered, but not in the "
+                "shape this transport reads; check the CLIProxyAPI version."
+            ) from e
+
+    def _done(content, served):
+        return (content, served) if with_model else content
+
+    content, finish_reason, served = _call(max_tokens, timeout)
+    if _is_complete(content, finish_reason):
+        return _done(content, served)
+
+    # The `stop`-with-no-content retry runs HERE, above the dispatch, so its
+    # outcome is classified like any other. It used to sit at the bottom, after
+    # every branch had been skipped, and whatever the retry came back with fell
+    # into the final "returned an empty answer" raise. Measured 2026-08-26: an
+    # empty `stop` followed by a 38-character `length` reported
+    # "returned an empty answer (finish_reason=length)" - the answer was not
+    # empty, and nothing named the truncation this function's docstring promises
+    # to name. The retry's rationale is unchanged and recorded below.
+    #
+    # `stop` with no content is a NORMAL termination that produced nothing, and
+    # until 2026-08-19 it raised on the first occurrence with zero retries. On
+    # that day the Kimi voice returned it twice during one `/scrutinize`, the
+    # skill noted the drop and carried on as designed, and the refutation layer
+    # ran at half its roster - a quiet degradation of a review, which is the
+    # worst place to have one.
+    #
+    # The CAUSE is unreproduced and this retry does not claim to fix it. Prompt
+    # size was ruled out afterwards (k3 answered a 361 864-character prompt), and
+    # the proxy was updated from 7.2.129 to 7.2.136 in the same pass, so the
+    # original conditions no longer exist to test against. What is defensible
+    # without a diagnosis is that one empty completion should not be terminal:
+    # `length` already earns a retry, and this case is strictly less informative
+    # than that one. If the emptiness is deterministic for a given prompt, the
+    # second call returns empty too and the error is raised exactly as before,
+    # one call later.
+    if finish_reason == "stop":
+        content, finish_reason, served = _call(max_tokens, timeout)
+        if _is_complete(content, finish_reason):
+            return _done(content, served)
+
+    if finish_reason == "length":
+        ceiling = max(max_tokens * 2, RETRY_CEILING)
+        before = len(content.strip())
+        if ceiling > max_tokens:
+            growth = min(ceiling / max_tokens, RETRY_TIMEOUT_GROWTH_CAP)
+            content, finish_reason, served = _call(ceiling, timeout * growth)
+            if _is_complete(content, finish_reason):
+                return _done(content, served)
+        got = len(content.strip())
+        # `finish_reason` is re-read from the retry, so by here it may be
+        # anything the retry ended on. Both messages used to hardcode
+        # `finish_reason=length`, asserting a truncation that was not the
+        # terminal state. MEASURED 2026-08-30 with a first call returning
+        # ("partial answer", "length") and the retry returning ("", "stop"): the
+        # error read "exhausted its token budget ... without a visible answer
+        # (finish_reason=length)" - the reason was wrong AND the 14 characters
+        # the first call did return were invisible, sending diagnosis at the
+        # token budget when the terminal state was an empty `stop`. That is the
+        # same message-accuracy defect the 2026-08-26 block above was written to
+        # end.
+        if got:
+            # Never put the partial itself in the message: a caller that
+            # str()s the exception would treat it as the answer, which is the
+            # defect this branch exists to prevent. The length is diagnostic.
+            raise RuntimeError(
+                f"{model} hit its token budget ({ceiling}) and the answer is cut "
+                f"off mid-word ({got} characters returned, "
+                f"finish_reason={finish_reason}). "
+                "Raise --max-tokens and --timeout together, or split the prompt — "
+                "a thinking-model truncation, not a safety block."
+            )
+        lost = (f" The call before the retry returned {before} characters, which "
+                f"the retry did not." if before else "")
+        raise RuntimeError(
+            f"{model} exhausted its token budget ({ceiling}) in the reasoning phase "
+            f"without a visible answer (finish_reason={finish_reason}).{lost} "
+            "Raise --max-tokens or "
+            "simplify the prompt — a thinking-model truncation, not a safety block."
+        )
+    if finish_reason == "content_filter":
+        raise RuntimeError(
+            f"{model} returned empty: blocked by safety filters (content_filter)."
+        )
+
+    # Reaching here means `content` is empty, and the word "empty" is accurate.
+    # `_is_complete` rejects exactly two things: no visible text, or
+    # finish_reason == "length". Every `length` path raises inside the branch
+    # above, so anything that arrives here failed the first test. A partial
+    # answer under some other finish_reason was returned as the answer long
+    # before this line.
+    #
+    # No non-empty-fragment guard here: it is unreachable by construction, and
+    # the defect it aimed at is fixed above (removed 2026-08-26).
+    raise RuntimeError(
+        f"{model} returned an empty answer (finish_reason={finish_reason})."
+    )

@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly memory hygiene scan (Monday 07:34, configured timezone)
+
+[Timer]
+# Weekly cadence. Monday 07:34 in the configured zone, before the working day. The :34 minute (not :30) avoids the
+# round-mark pileup. The zone is named rather than inherited from the host:
+# "Monday morning" is a claim about the operator's week, and on a host whose
+# system zone runs behind, a Monday 07:34 fire can land on Sunday. Persistent=true
+# runs a missed Monday on next boot, covering the machine-was-off case without a
+# separate OnBootSec trigger.
+OnCalendar=Mon *-*-* 07:34:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

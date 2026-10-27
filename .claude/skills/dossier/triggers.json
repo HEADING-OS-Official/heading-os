@@ -1,0 +1,15 @@
+[
+  { "query": "dossier HOS-9001", "should_trigger": true },
+  { "query": "досье HOS-9002", "should_trigger": true },
+  { "query": "show the dossier of HOS-9003", "should_trigger": true },
+  { "query": "что по задаче HOS-9004?", "should_trigger": true },
+  { "query": "/dossier HOS-9005", "should_trigger": true },
+  { "query": "give me the full history of HOS-9006 before I resume it", "should_trigger": true },
+
+  { "query": "show me the Lific board", "should_trigger": false },
+  { "query": "which issues are waiting to be closed by hand", "should_trigger": false },
+  { "query": "what do we know about the Hindsight migration", "should_trigger": false },
+  { "query": "create an issue for the stale Lific docs", "should_trigger": false },
+  { "query": "OSINT dossier on a telecom operator", "should_trigger": false },
+  { "query": "move HOS-9007 to done", "should_trigger": false }
+]

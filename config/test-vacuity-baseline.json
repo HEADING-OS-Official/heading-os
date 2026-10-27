@@ -1,0 +1,5 @@
+{
+  "_comment": "Frozen sites for scripts/check-test-vacuity.py. Shrink-only: --write-baseline removes entries that are no longer findings and never adds new ones. A new finding must be fixed, not frozen. This initial freeze was written once, deliberately, from the tree at 835c146; the script itself has no code path that can grow this list.",
+  "frozen": [],
+  "measured": "2026-09-02"
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Deliver the Porkbun-issued TLS certificate to the server (porkbun.py ssl push)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Domain, ssh alias and FQDN come from PORKBUN_CERT_DOMAIN, PORKBUN_CERT_HOST and
+# PORKBUN_CERT_NAME in the gitignored .env, so this template names nothing. A
+# failed push or a certificate close to expiry exits 1 and shows as `failed`,
+# after porkbun.py has told the operator's own notification sinks.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/porkbun.py ssl push
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,16 @@
+[Unit]
+Description=HEADING OS weekly LLM-fit downgrade-audit report (Langfuse traces -> data-overlay report)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/llm-fit-report.py
+# TZ pins the report's file date (YYYY-MM-DD) to the configured timezone
+# regardless of the host. The installer substitutes {{TZ}} from HEADING_OS_TZ
+# (default UTC). journald avoids a log path on a /mnt/c 9P mount.
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

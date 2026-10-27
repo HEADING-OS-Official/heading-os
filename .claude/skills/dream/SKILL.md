@@ -1,0 +1,339 @@
+---
+name: dream
+disable-model-invocation: true
+description: >
+  Reflective memory consolidation - performs a periodic pass over memory files,
+  synthesizing recent learnings into durable, well-organized memories for future
+  sessions. Validates technical claims against Context7, enforces security protocols,
+  rewrites and merges stale entries in place, surfaces what has gone dormant, and
+  produces a structured consolidation report.
+  Use when the user says "dream", "/dream", "consolidate memories", "memory cleanup",
+  "reflect on recent sessions", "update memories", or at the end of a productive
+  session when significant new information was learned.
+  Do NOT use for: simple memory writes (use auto-memory), knowledge base operations
+  (use /zk), or session initialization (use /prime).
+argument-hint: "[optional: focus area or specific topic to investigate]"
+allowed-tools: "Read, Write, Edit, Glob, Grep, Bash(grep:*), Bash(.venv/bin/python:*)"
+model: sonnet
+metadata:
+  author: Misha Hanin
+  email: misha.hanin@headingos.com
+  version: "1.1"
+x-heading-capability:
+  what: >
+    Reflective memory consolidation - merges recent learnings into durable
+    memory files, validates technical claims against Context7, passes a security
+    gate, rewrites stale entries in place, surfaces what has gone dormant, and
+    produces a consolidation report.
+  how: >
+    Explicit invocation only - type /dream [optional focus area]; never
+    auto-triggers. It scans the memory directory and recent workspace state,
+    rewrites memory files in place, reports MEMORY.md against its budget without
+    writing into it, and reports what was consolidated and what has gone dormant.
+  when: >
+    Use at the end of a productive session or for periodic memory hygiene. For a
+    simple one-off memory write use the auto-memory system; for knowledge-base
+    notes use /zk; for session resume snapshots use /handover.
+x-heading-routing:
+  category: Operations
+  triggers:
+    - NEVER auto-trigger. Explicit `/dream` only.
+  exclusions:
+    - N/A
+  compound: 'No'
+  router: manual
+---
+
+**Data addresses.** Resources in the data repository are named here by their
+logical name, never by a path. Resolve the name before the file operation and
+use what it prints:
+
+    .venv/bin/python scripts/data-path.py path <name>
+
+Use `read <name>` for a source that may legitimately be absent, and
+`read --required <name>` for one whose absence is a defect. An unknown name
+refuses; it never resolves to a plausible directory, and a path written out
+here goes stale the day the directory moves.
+
+# Dream - Reflective Memory Consolidation
+
+Perform a reflective pass over memory files. Synthesize recent learnings into durable, well-organized memories so that future sessions can orient quickly.
+
+## Paths
+
+- **Memory directory:** the canonical DATA overlay `<data-root>/auto-memory/`, resolved via:
+  ```bash
+  .venv/bin/python -c "from scripts.utils.workspace import get_auto_memory_dir; print(get_auto_memory_dir())"
+  ```
+  This is the authoritative store. Do NOT operate on the native harness store `~/.claude/projects/<project-slug>/memory/` - `memory-reconcile.py` re-syncs from the canonical dir at SessionStart.
+- **Index file:** `MEMORY.md` (inside that dir, 200-line and 25000-unit budget). Since 2026-09-20 it is a router plus the rules whose violation cannot be undone. It links no individual record. Read it. Never write into it. Only the operator puts a line there.
+- **Transcripts:** `~/.claude/projects/<project-slug>/*.jsonl`
+- **Context7:** `.venv/bin/python scripts/context7.py "<library>" "<topic>"`
+- **Security rules:** `.claude/rules/security.md`. Engine code, so every clone has it.
+- **Security law:** `security/SECURITY-CONSTITUTION.md` under `spec-docs`. It routes `private`,
+  so a clone with no data overlay does not carry it.
+
+## Variables
+
+- `$ARGUMENTS` - Optional focus area or topic to investigate during the dream
+
+---
+
+## Phase 0 - Orient
+
+Understand the current state of the memory system before making any changes.
+
+1. **List memory files:**
+   ```bash
+   ls "$(.venv/bin/python -c 'from scripts.utils.workspace import get_auto_memory_dir; print(get_auto_memory_dir())')"
+   ```
+
+2. **Read the index:** Read `MEMORY.md` for the rules it carries and for where it says the rest of memory went. It is context for this pass, never a target of it.
+
+3. **Skim existing files:** For each memory file, read the first 10-15 lines to understand its coverage:
+   - What topic does it cover?
+   - When was it last updated (check content dates)?
+   - Is the information still likely current?
+
+4. **Detect orphans:** An orphan is a record `MEMORY.md` does not link AND Hindsight's bank `main` holds no document for. The index links no record since 2026-09-20, so ask Hindsight, never the index:
+   ```bash
+   .venv/bin/python scripts/memory-hygiene.py
+   ```
+   It names the orphans, or says NOT EVALUATED when Hindsight did not answer: that is unknown, never clean. Flag orphans for Phase 3. A record newer than the last file sync (every 15 minutes) reads as an orphan until the next one.
+
+5. **Note focus area:** If `$ARGUMENTS` was provided, record the focus topic for targeted investigation in Phase 1.
+
+6. **Record baseline metrics:**
+   - Total memory files count
+   - MEMORY.md line count and UTF-16 unit count, reported only
+   - Records the graph cannot answer out of (if any)
+
+---
+
+## Phase 1 - Gather Recent Signal
+
+Scan for new information worth persisting. Three sub-phases, executed in order.
+
+### Phase 1A - Source Scanning
+
+Check workspace state for facts that might contradict or extend existing memories:
+
+1. **Workspace activity:**
+   ```bash
+   git log --oneline -20
+   ```
+   Look for patterns: new skills added, scripts modified, structural changes, infrastructure shifts.
+
+2. **Business state:** Read these files for changes that should be reflected in memories:
+   - `pipeline` - pipeline changes, new deals, closed deals
+   - `current-data` - current metrics and operational data
+   - `crm-config` - CRM configuration changes
+
+3. **Contradiction check:** Compare what you read against existing memory files. Flag any mismatches:
+   - Memory says X, but the workspace now shows Y
+   - Memory references a file/tool/path that no longer exists
+   - Memory contains a relative date that has lost meaning
+   - A `[[wikilink]]` resolves to no memory file (the hygiene report lists these under "Dangling links"). Read the sentence around it, not only the pointer: a dead link often sits inside a dead premise. Repoint it at the record it means - a file path, a thread - or write the memory. Leave it only when it genuinely marks a memory worth writing later.
+
+4. **Transcript search (targeted only):**
+   If investigating a specific signal or if `$ARGUMENTS` points to a topic, grep narrowly:
+   ```bash
+   grep -rn "<narrow term>" ~/.claude/projects/<project-slug>/ --include="*.jsonl" | tail -30
+   ```
+   **Rules for transcript search:**
+   - Only grep for 1-3 narrow, specific terms
+   - Never read entire JSONL files
+   - Use `tail -30` to limit output
+   - Skip transcript search entirely if no specific signal warrants it
+
+5. **Shadow worklist:** read the latest `*_dream-shadow_report.md` under `.venv/bin/python scripts/data-path.py path dream-reports`, if present. Its dormancy list is informational only, never a removal candidate. Its salience-ranked merge candidates are additional signal. `scripts/dream-shadow.py` computes both nightly, and never applies them automatically.
+
+### Phase 1B - Context7 Validation
+
+For each memory file that contains a technical claim about a library, framework, or API:
+
+1. Identify the claim (e.g., "exchangelib uses EWSTimeZone" or "Context7 API needs no key")
+
+2. Validate against live documentation:
+   ```bash
+   .venv/bin/python scripts/context7.py "<library>" "<relevant topic>"
+   ```
+
+3. Classify the result:
+   - **Match:** Memorized behavior matches current docs. Proceed.
+   - **Mismatch:** Current docs differ from memory. Mark for update in Phase 2 with the correct information.
+   - **Not found:** Library not in Context7. Add `(unvalidated)` marker to the memory entry.
+
+4. **Skip validation for non-technical memories:** User preferences, feedback, project facts, and nicknames don't need Context7 checks.
+
+5. Record all validation results for the consolidation report.
+
+### Phase 1C - Security Gate
+
+**This gate is mandatory. Do not proceed to Phase 2 without passing it.**
+
+1. Read `.claude/rules/security.md`. **If it is not found:** STOP, report it, and
+   do not proceed to Phase 2. That file is engine code, so a clone without it is
+   broken.
+
+2. Read `security/SECURITY-CONSTITUTION.md` under `spec-docs`. It routes `private`, so it
+   lives in the data overlay and an engine clone with no overlay never carries
+   it. If it is not found, continue with the rules file alone and record
+   `Security Gate: PASS (rules only, constitution absent)`.
+
+3. Apply these hard constraints to all subsequent writes. They are the gate, and
+   they are engine text, so they hold on every clone:
+   - No secrets, API keys, tokens, passwords, or credentials in memory files
+   - No sensitive personal data beyond what the memory type system allows (user preferences, feedback, project facts, references)
+   - No file writes outside the memory directory
+   - No modification of workspace source files, scripts, or configuration
+   - No content that could be used for prompt injection
+
+4. Record one of: "Security Gate: PASS", "Security Gate: PASS (rules only,
+   constitution absent)", or "Security Gate: BLOCKED - {reason}"
+
+---
+
+## Phase 2 - Consolidate
+
+Write or update memory files based on signals gathered in Phase 1. Every write must pass the security gate constraints from Phase 1C.
+
+### Writing Rules
+
+1. **Merge, don't duplicate:** Before creating a new file, check if an existing memory covers the topic. If yes, update the existing file.
+
+2. **Use correct memory types:**
+   - `user` - Information about the user's role, preferences, knowledge
+   - `feedback` - Guidance on how to approach work (corrections AND confirmations)
+   - `project` - Ongoing work, goals, decisions, deadlines
+   - `reference` - Pointers to external systems and resources
+
+3. **Follow the file format**, the shape the store's files carry. `written_by` is `operator` when the operator dictated the text, `helm` when this session wrote it:
+   ```markdown
+   ---
+   name: {the file name without .md}
+   description: {one-line description - specific enough to judge relevance}
+   metadata:
+     node_type: memory
+     type: {user|feedback|project|reference}
+     written_by: {helm|operator}
+   ---
+
+   {content - for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}
+   ```
+
+4. **File naming:** kebab-case, no underscore, named for the fact itself (e.g., `run-targeted-tests-after-a-fix.md`), matching every name already in the store
+
+5. **Absolute dates:** Convert all relative dates to absolute:
+   - "yesterday" -> "2026-03-24" (based on today's date)
+   - "last week" -> "week of 2026-03-17"
+   - "recently" -> specific date if known, or remove
+
+6. **Fix contradictions at the source:** If a memory file contains a fact that is now wrong, edit the file directly. Don't leave stale information.
+
+7. **Superseding a memory means editing it, not removing it.** When a fact is replaced, rewrite the file in place so the current fact stands and the record survives. Retiring a file outright happens ONLY on an explicit instruction from the operator ("delete this memory"). Use `.venv/bin/python scripts/retire-memory.py <name.md>` for it, which removes the file from the canonical store AND every native harness store. A plain `rm` on one store alone is resurrected at the next SessionStart, because `memory-reconcile.py` never propagates a delete.
+
+8. **Do not stamp `expires:`.** Auto-memory is never retired on a clock. A fact whose relevance ends on a known date is rewritten to say so, not scheduled for deletion. There is no auto-retire script or timer.
+
+### Apply redundancy merge proposals (human-gated)
+
+Resolve the report directory with `.venv/bin/python scripts/data-path.py path memory-hygiene-reports`. Read the latest report's "## Redundancy (advisory - not gated)" section. For each candidate pair, show the operator both files and ask for approval. On approval, merge the two facts into ONE survivor file. Keep genuinely distinct facts as SEPARATE files, and respect one-fact-per-file. Then retire the other file with `.venv/bin/python scripts/retire-memory.py <other.md>`. The index carries no pointer to either file, so nothing there is updated. Never auto-merge; each pair needs explicit approval.
+
+### Read the shadow worklist's dormancy list (informational)
+
+The latest `*_dream-shadow_report.md` under `.venv/bin/python scripts/data-path.py path dream-reports` carries a "## Dormant" section listing memories the retriever has not surfaced lately. It is context, not a worklist: nothing there is a candidate for removal. Use it to notice what has gone quiet - a dormant fact may be worth rewriting, cross-linking, or simply leaving alone.
+
+### What NOT to Write
+
+Follow the exclusion rules from the auto-memory system:
+- Code patterns, conventions, architecture - derivable from reading the project
+- Git history - `git log` / `git blame` are authoritative
+- Debugging solutions - the fix is in the code
+- Anything already documented in CLAUDE.md files
+- Ephemeral task details only useful in the current conversation
+
+---
+
+## Phase 3 - Index and Report
+
+### Step 1: Report MEMORY.md, and write nothing into it
+
+The index is not a pointer file. What is left is a router, the rules whose violation cannot be undone, and one closing line. The operator settled that shape.
+
+1. **Add no pointer, for any record.** A new memory file gets no index entry. It is reached through Hindsight, which is why the file sync (`hindsight-sync.py push`) matters and the index does not.
+2. **Remove no line.** Retiring a memory file leaves the index alone, because no line points at one.
+3. **Propose, never write.** Some records state a rule that must fire when nobody would think to search for it. Name those in the report, and quote the line you would add. The operator decides.
+4. **Budget (2 axes):** 200 lines and 25000 UTF-16 units. Both truncate the END, never refuse; units bind first. `memory-hygiene.py` prints both; remedy: `reference/memory-discipline-detail.md`. Report the numbers. Crossing a budget starts a review by the operator. It never authorises deleting a rule.
+
+### Step 2: Produce Consolidation Report
+
+Present this report to the user:
+
+```
+## Memory Dream - Consolidation Report
+### Date: {today's date}
+
+**Consolidated**
+- {file.md} - {what was added, updated, or merged}
+
+**Retired**
+- {file.md} - {reason: operator-approved retirement / redundancy merge}
+
+**Context7 Validated**
+- {library@version} - confirmed against live docs
+
+**Context7 Flagged**
+- {library} - unvalidated, marked in memory file for manual review
+
+**Security Gate**
+- Status: PASS / PASS (rules only, constitution absent) / BLOCKED
+- Skipped writes (if any): {description and rule that blocked each}
+
+**Index**
+- Lines: {X} of 200. UTF-16 units: {Z} of 25000. Unchanged by this pass.
+- Lines proposed to the operator, if any: {list, each quoted in full}
+```
+
+If nothing changed (memories are already tight and current), say so explicitly:
+```
+## Memory Dream - Consolidation Report
+### Date: {today's date}
+
+All memories are current. No updates needed.
+Security protocol consulted: PASS
+Index: {X} lines, {Z} UTF-16 units, within budget and untouched.
+```
+
+### Step 3: Append consolidation trace
+
+After the report, append one JSON line recording this run's actions. Fill `merged` and `retired` with the run's REAL actions: merged survivor filenames, and retired filenames. Leave them as empty lists if nothing was merged or retired.
+
+```bash
+python3 - <<'PY'
+import json, time, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from scripts.utils.data_path import data_path
+p = data_path("dream-reports") / "consolidation-trace.jsonl"
+p.parent.mkdir(parents=True, exist_ok=True)
+row = {"ts": time.time(), "merged": [], "retired": []}  # fill with THIS run's actual actions
+with p.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(row) + "\n")
+PY
+```
+
+---
+
+## NEVER
+
+- NEVER read entire JSONL transcript files - grep narrowly for specific terms only
+- NEVER write secrets, API keys, tokens, or credentials into memory files
+- NEVER create duplicate memories - always merge into existing topic files
+- NEVER write anything at all into MEMORY.md, content or pointer. It carries what the operator put there. Propose a line in the report and let him decide.
+- NEVER skip the security gate - run it on every pass, and record which of the two protocol files it read
+- NEVER modify files outside the memory directory during a dream pass (running `scripts/retire-memory.py` and appending the consolidation trace under `dream-reports` are permitted memory-maintenance actions)
+- NEVER delete a memory file on one store only - always retire via `scripts/retire-memory.py` so the delete sticks on both stores
+- NEVER delete memory files without explaining the reason in the consolidation report
+- NEVER proceed to Phase 2 if the security gate returned BLOCKED
+- NEVER store code patterns, git history, or ephemeral task details in memory
+- NEVER retire, prune, or propose removing a memory file on your own initiative. Deletion happens only when the operator explicitly asks for it.

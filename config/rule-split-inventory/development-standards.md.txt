@@ -1,0 +1,88 @@
+So the problem was never missing tests, and "write good tests" would have prevented almost none of it.
+**Reproduce before repairing.** Never act on a written finding, an audit report, or a memory of the code.
+**Both directions, always.** The case that must be refused AND the case that must still pass.
+Never a restated copy of the guard's own condition inside the test: a copy passes while the real command still exits 0.
+**Mutation-verify the fix.** Plant deliberate breaks in the SOURCE, never in an assertion, and every one must be caught.
+A survivor is resolved as a real gap, an equivalent mutant recorded with its reason, or an ambiguous anchor the harness refused to score; it is never made to pass by weakening the test.
+Use `scripts/utils/mutation_harness.py`, which bounds the child in wall clock and address space, backs up before the edit and verifies the restore against a digest.
+*No gate: `scripts/canopus.py probe` is uncalibrated and must not be wired into one.
+**Every gate has a scope and a test.** A `files:` pattern matching nothing passes every commit vacuously; a wall no test names has never been observed refusing.
+It never audits anything and never calls a model.
+Three bounds, held by the code with no test since 2026-09-21: the prompt carries no word from the release gate's own authorising lists, imported from the hook so a word added there tomorrow is checked tonight; the batch is consumed before the session starts, so a crash cannot repeat a half-done pass; and the session writes nothing to the rotation ledger, because an agent that repairs and then certifies its own repair is marking its own homework.
+Read `scripts/night-repair.py` before you change any of them.
+Its prompt must ask for what Phase 5 below requires: a reproduction run and a `Fix-Note:` line, and a test only for failure A or B.
+Never rely solely on training data.
+**Read, then state the approach.** Before editing, read the code the change touches and its callers, then say in a few lines what you will change and why, naming any assumption you have not checked.
+Use `/deep-think` only for a genuine choice between several options (architecture, a trade-off with no obvious winner), where the written decision analysis it produces is the deliverable.
+**Check what exists.** Search the workspace for existing patterns, utilities, and conventions before creating new ones.
+Reuse `scripts/utils/` modules.
+Follow established skill/script patterns.
+**Read full files.** Read tool defaults to `limit: 10000` for source files, notes, long markdown, and generated outputs.
+Use smaller limits only for known-small files or specific ranges.
+They do not overlap, and neither overrides the other.
+- No error handling for scenarios that cannot occur.
+- Do not "improve" adjacent code, comments, or formatting.
+- Do not refactor what is not broken, even when you would write it differently.
+- Match existing style in the file you are editing.
+- Remove imports, variables, and helpers that your change orphaned.
+Do not delete it.
+It never excuses skipping a fix the workspace already requires.
+- **Review findings.** Code-review and `/scrutinize` findings are all fixed before declaring done, never triaged into fix-now versus fix-later.
+The rule: **do not hypothesise about a bug until you can reproduce it on demand.** Staring at code is not debugging.
+Skip a phase only when you can explicitly justify it.
+**If you genuinely cannot build a loop, stop and say so.** List what you tried.
+Do not proceed to guesswork.
+Run the loop.
+Prefer a debugger or REPL; fall back to targeted logs at the boundaries that distinguish hypotheses.
+Never "log everything and grep." Tag every debug log with a unique prefix (`[DEBUG-a4f2]`) so cleanup is one grep.
+The test is the exception that must be argued, not the obligation that must be waived.
+Write it before the fix, watch it fail, apply the fix, watch it pass, then re-run the Phase 1 loop against the original scenario.
+If the answer is a structural change, surface it to the CEO or log it to the relevant thread -- do not silently fix beyond scope (see Restraint).
+Every skill in `.claude/skills/{name}/SKILL.md` must have:
+- `name` -- kebab-case identifier (required)
+- `description` -- detailed trigger description including when to use AND when not to use (required)
+Grant the interpreter the body actually runs, and run scripts as `.venv/bin/python scripts/<name>.py`, never a bare `python` or `python3` (operator decision 2026-10-16, engine audit F-1.27)
+- `metadata.author` -- `Misha Hanin` (required)
+- `metadata.email` -- `misha.hanin@headingos.com` (required)
+- `metadata.version` -- semantic version, e.g., `"1.0"` (required)
+- `disable-model-invocation: true` -- the model cannot trigger the skill from natural language or as a tool.
+Use for any skill whose description already says "EXPLICIT INVOCATION ONLY" or "NEVER auto-trigger", and for high-blast-radius actions where accidental routing is unacceptable.
+Hides the skill from the `/` menu so the CEO never invokes it directly, while leaving the model free to trigger it contextually.
+Use for background-context or internal-only skills that other skills depend on but should not appear as user-facing commands.
+They are harness-enforced and supersede any prose policy ("NEVER auto-trigger") written into `description`.
+category: Operations triggers: ["example phrase", "another trigger"] exclusions: ["<signal> -> /<other-skill>"]   # or ["N/A"] compound: "No" router: auto                                  # or manual (NEVER auto-trigger skills)
+Keep writing them anyway, 1-2 sentences each, ASCII-only, grounded in the skill's real behaviour and router exclusions: they are the only place a skill states what it does in prose a person reads rather than in trigger vocabulary a router matches.
+Whether a terminal surface should render them again is open and unresolved.
+Router registry (under `x-heading-routing:` namespaced block, required for every routable skill; F-5.1):
+- `router` -- `auto` (routable from natural language) or `manual` (NEVER auto-trigger / `disable-model-invocation` skills).
+**The skill router is GENERATED from these blocks** by `scripts/generate-skill-router.py`, in a two-layer split (F-5.2): a compact core index (Skill + Triggers) between the `<!-- BEGIN GENERATED REGISTRY -->` / `<!-- END GENERATED REGISTRY -->` markers in the always-on `.claude/rules/skill-router.md`, plus a full per-category detail table (Skill | Triggers | Exclusions | Compound) in each `reference/skill-router/<category>.md`.
+Never hand-edit either layer: edit the skill's `x-heading-routing` frontmatter, then run `python scripts/generate-skill-router.py`.
+- Reference files must include: H1 title, "Consumed by" pointer, "Last Updated" date
+- NEVER section listing explicit prohibitions
+"Auto-routable" means `x-heading-routing.router: auto` AND NOT `disable-model-invocation: true`; a `router: manual` or `disable-model-invocation: true` skill is EXEMPT (it never auto-routes, so a routing corpus is meaningless).
+Pre-F-6.1 uncovered skills are grandfathered by the committed, only-shrinks `config/triggers-coverage-baseline.json` (regenerated shrink-only via `--write-baseline`: it removes now-covered skills, never adds a newly-shipped one), so a NEW auto-routable skill must ship a corpus.
+Any skill that produces a synthesized answer over a source set MUST invoke `/brain-audit` at the end of its synthesis phase and append the returned footer to its output.
+For the live set of composers, ask the tree, never this paragraph: `grep -rl "brain-audit" .claude/skills/ --include=SKILL.md`.
+New synthesis skills MUST adopt the same pattern.
+Every Python script in `scripts/` must follow:
+- `snake_case.py` for (a) anything in `scripts/utils/` (library modules always), and (b) any script imported as a Python module from elsewhere in the workspace.
+If any Python file imports it, it must stay snake_case.
+- Use `from scripts.utils.workspace import get_workspace_root` (not manual path resolution)
+- Use `from scripts.utils.colors import GREEN, YELLOW, RED, CYAN, GRAY, BOLD, RESET`
+- Use `from scripts.utils.api import load_api_key` for single API keys; `load_env()` for multi-variable `.env` reads (Exchange credentials, OAuth configs)
+- Use `pathlib.Path` objects, not string paths
+- Catch `HTTPError` before `URLError` (HTTPError is a subclass -- Context7 validated)
+**Scheduled tasks (systemd-user timers) MUST survive reboot.** Every scheduled task in this workspace -- every existing timer and every future one -- ships as a systemd-user timer built to fire after an unattended reboot, never as a session-scoped `CronCreate` task (those are NOT durable -- see `reference/scheduled-tasks.md`, which took this content out of `.claude/rules/skill-router.md` on 2026-08-20).
+Reboot survival requires all THREE mechanisms, and an installer must include every one (copy an existing sibling installer such as `scripts/install-router-accuracy-timer.sh`, which already bakes them in -- do not hand-roll a partial one):
+**In-process APScheduler jobs MUST NOT be dropped for lateness.** The reboot rule above governs OS-level timers.
+Construct every scheduler with the shared defaults, never per job:
+A scheduler-level default is inherited by jobs registered later, by authors who never read this rule; a per-job argument is not.
+Even then it had a stated limit, which the reader inherits: a spread, a call, or an unrecognised name (`job_defaults=build()`, `{**base}`) passes unexamined, because source inspection cannot settle it.
+Every file in `reference/` must include:
+**Frontmatter validation:** Verify YAML parses correctly, all required fields present
+Use `/implement --evaluate` to integrate the feedback loop into implementation
+Never mark a tool as "WORKING" without testing it.
+**Update on failure.** If a previously working tool starts failing, update the registry immediately and switch to the fallback chain.
+**Never auto-update from upstream.** External tool registries (like awesome-osint) change constantly.
+New entries must be validated before adding.
+Human approval required.

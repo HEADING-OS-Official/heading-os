@@ -1,0 +1,26 @@
+{
+  "_about": "Ratchet for scripts/audit-skill-data-paths.py. ceiling: physical data-repository paths in skills that no entry covers; it may only fall. entries: reviewed exemptions in the format of scripts/utils/statement_exemptions.py, one finding each, keyed by the full text of the line.",
+  "ceiling": 0,
+  "entries": [
+    {
+      "path": ".claude/skills/calibrate/SKILL.md",
+      "statement": "`auto-memory/...` with `tree='data'`, `.claude/...` with `tree='engine'`. A",
+      "reason": "an argument example for get_routing_destination, which classifies a path relative to its repository root named by tree=; it is a classifier input, never an address the skill opens"
+    },
+    {
+      "path": ".claude/skills/memory-hygiene/SKILL.md",
+      "statement": "- Reads the canonical auto-memory dir (`<data-root>/auto-memory/`) and computes orphans, BOTH index-budget breaches (200 lines and 25000 UTF-16 units), and stale files. An orphan is a record that NEITHER MEMORY.md links NOR the Hindsight bank `main` holds as a document (id `auto-memory/<name>.md`, or a `#part-NN` of it). Since 2026-09-20 the index links no record at all. The bank is therefore the only source that can still say no. When the bank does not answer, or names under half the corpus, the script drops the orphan category from the gate. The script only reads the bank, never writes to it. The run then prints `not evaluated this run: orphans`. That is an UNKNOWN, never a clean result. Do not read it as a reason to put pointers back into MEMORY.md.",
+      "reason": "the format of a Hindsight document id, which mirrors the record's path inside the data repository; it is an identifier the bank holds, not an address this skill opens"
+    },
+    {
+      "path": ".claude/skills/recall/SKILL.md",
+      "statement": "  `.claude/hooks/_dispatch.py` refuses `threads/personal/` and <!-- leak-guard: ok (the guard's own match pattern, not an address) -->",
+      "reason": "names the literal substrings check_protect_personal_threads in .claude/hooks/_dispatch.py refuses; the guard matches these spellings, so a logical name here would misstate what it matches"
+    },
+    {
+      "path": ".claude/skills/recall/SKILL.md",
+      "statement": "  `ledger/episode/threads/archive/<any segment>/personal/`. It covers the Read, Bash and Glob <!-- leak-guard: ok (the guard's own match pattern, not an address) -->",
+      "reason": "names the literal substrings check_protect_personal_threads in .claude/hooks/_dispatch.py refuses; the guard matches these spellings, so a logical name here would misstate what it matches"
+    }
+  ]
+}

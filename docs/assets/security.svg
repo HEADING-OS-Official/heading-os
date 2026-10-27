@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 360" width="880" height="360" role="img" aria-labelledby="t d">
+  <title id="t">Security in plain words</title>
+  <desc id="d">The shared code and your private data live in two separate places with a checkpoint between them. Nothing is sent without your approval, and passwords stay on your computer.</desc>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #0f2a44; }
+    .h { font-size: 18px; font-weight: 700; }
+    .b { font-size: 14px; }
+    .s { font-size: 12.5px; fill: #44566a; }
+  </style>
+  <rect x="0" y="0" width="880" height="360" rx="18" fill="#f6f8fa"/>
+
+  <!-- Engine -->
+  <rect x="40" y="36" width="330" height="170" rx="14" fill="#ffffff" stroke="#c9d6e3" stroke-width="1.5"/>
+  <text x="64" y="72" class="h">The engine</text>
+  <text x="64" y="96" class="s">shared code, the same for everyone</text>
+  <text x="64" y="132" class="b">the assistant's know-how</text>
+  <text x="64" y="156" class="b">the safety checks</text>
+  <text x="64" y="186" class="b" style="font-weight:700; fill:#a8432a">holds none of your data</text>
+
+  <!-- Checkpoint -->
+  <rect x="404" y="36" width="72" height="170" rx="10" fill="#0f2a44"/>
+  <text x="440" y="112" text-anchor="middle" class="b" style="fill:#ffffff; font-weight:700">safety</text>
+  <text x="440" y="132" text-anchor="middle" class="b" style="fill:#ffffff; font-weight:700">check</text>
+  <path d="M424 160l10 10l20 -22" fill="none" stroke="#7fd1ae" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Vault -->
+  <rect x="510" y="36" width="330" height="170" rx="14" fill="#e7f1ee" stroke="#1f7a5c" stroke-width="1.5"/>
+  <g transform="translate(790 52)">
+    <rect x="0" y="12" width="22" height="18" rx="3" fill="#1f7a5c"/>
+    <path d="M4 12v-4a7 7 0 0 1 14 0v4" fill="none" stroke="#1f7a5c" stroke-width="3"/>
+  </g>
+  <text x="534" y="72" class="h" style="fill:#14523e">Your vault</text>
+  <text x="534" y="96" class="s" style="fill:#14523e">private, on your own account</text>
+  <text x="534" y="132" class="b">contacts, notes, briefs</text>
+  <text x="534" y="156" class="b">drafts, reviews, decisions</text>
+  <text x="534" y="186" class="b" style="font-weight:700; fill:#14523e">only you can see it</text>
+
+  <!-- Three promises -->
+  <g>
+    <rect x="40" y="232" width="252" height="100" rx="12" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="60" y="264" class="b" style="font-weight:700">1. You approve every send</text>
+    <text x="60" y="290" class="s">The assistant writes drafts.</text>
+    <text x="60" y="310" class="s">Nothing leaves until you say so.</text>
+  </g>
+  <g>
+    <rect x="314" y="232" width="252" height="100" rx="12" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="334" y="264" class="b" style="font-weight:700">2. Passwords stay home</text>
+    <text x="334" y="290" class="s">Kept in one file on your computer</text>
+    <text x="334" y="310" class="s">that is never uploaded.</text>
+  </g>
+  <g>
+    <rect x="588" y="232" width="252" height="100" rx="12" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="608" y="264" class="b" style="font-weight:700">3. Checked automatically</text>
+    <text x="608" y="290" class="s">Every backup is scanned for keys</text>
+    <text x="608" y="310" class="s">and private data before it leaves.</text>
+  </g>
+</svg>

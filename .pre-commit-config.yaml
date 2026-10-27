@@ -1,0 +1,528 @@
+# Pre-commit hook configuration. Install: CLAUDE.md, Setup step 4 (`pre-commit install`).
+#
+# INTERPRETER PIN. Every `repo: local` hook below invokes `.venv/bin/python`,
+# never a bare `python3`. `language: system` resolves an entry against PATH, and
+# on this machine PATH `python3` is /usr/bin/python3 (3.12.3) while the pinned
+# environment is .venv (3.11.15) built by `uv sync`. MEASURED 2026-09-02 with a
+# probe hook printing sys.executable: 21 of the 23 local hooks ran under
+# /usr/bin/python3, so the commit gate, secret scanner included, executed a
+# different program from the one the test suite validates. The four remote repos
+# import no project module and are deliberately not pinned (git history, 2026-09-02).
+#
+# `commit-msg` is listed so a bare `pre-commit install` arms the two message
+# hooks (2026-09-21). `pre-push` must stay absent: `.git/hooks/pre-push` is the
+# gate `scripts/install-git-hooks.py` writes, ending in `git lfs pre-push`, and
+# listing it here renamed that gate to `pre-push.legacy` (MEASURED 2026-09-21).
+default_install_hook_types: [pre-commit, commit-msg]
+
+# Every hook runs at pre-commit unless it declares `stages:`; without this line
+# each hook also ran at commit-msg over `.git/COMMIT_EDITMSG` (MEASURED 2026-09-21).
+default_stages: [pre-commit]
+
+repos:
+  # Secret scanning - catches credentials before they enter git
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        # Exclude for a known structural false positive:
+        # - skills-lock.json: the file exists to record a sha256 tree hash per
+        #   vendored skill, so its `computedHash` fields are hex digests BY
+        #   CONSTRUCTION and every re-lock writes new ones. A baseline entry
+        #   would pin one digest and go stale on the next `--relock`, which is
+        #   the shape that teaches people to refresh a baseline without reading
+        #   it. Added 2026-09-02, when an ordinary edit to a vendored SKILL.md
+        #   changed a hash and the entropy detector called it a secret. The
+        #   file is NOT unguarded: `scripts/secret-scanner.py` reads it at
+        #   commit time and again inside the push-time scan (push-all.py and the
+        #   pre-push hook), and
+        #   reports it clean on the pattern rules rather than on entropy.
+        exclude: |
+          (?x)^(
+            skills-lock\.json
+          )$
+
+  # Python security static analysis
+  - repo: https://github.com/PyCQA/bandit
+    rev: '1.9.4'
+    hooks:
+      - id: bandit
+        args: ['-c', 'pyproject.toml', '--severity-level', 'medium']
+        files: '\.py$'
+
+  # Python linting with security rules (S=bandit-equivalent only for pre-commit gate)
+  # The full rule set lives in pyproject.toml: ruff check --config pyproject.toml
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        args: ['--select', 'S', '--ignore', 'S101,S105,S310,S603,S607']
+
+  # Standard pre-commit checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: debug-statements
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # _secure/ commit guard -- the vault was removed in Plan 5; this is retained
+  # as cheap defence-in-depth so any stray `_secure/` path can never be committed.
+  #
+  # Both guards below exit through ONE unconditional `sys.exit(1 if leaked else 0)`.
+  # Until 2026-08-23 they ended in `print(...) or [print(f) for f in leaked] or
+  # sys.exit(1)`, and a non-empty list comprehension is truthy, so `or`
+  # short-circuited and sys.exit(1) never ran: both printed "BLOCKED" and then
+  # exited 0, letting the commit through. Neither had ever blocked anything.
+  # No live test holds this since the 2026-09-21 test-suite split (d7b85d52).
+  - repo: local
+    hooks:
+      - id: vault-guard
+        name: Block stray _secure/ paths from commits
+        entry: .venv/bin/python -c "import sys; leaked=[f for f in sys.argv[1:] if '_secure/' in f.replace(chr(92),'/')]; print('BLOCKED - vault files staged for commit') if leaked else None; [print('  ' + f) for f in leaked]; sys.exit(1 if leaked else 0)"
+        language: system
+        pass_filenames: true
+
+  # Runtime-state guard -- blocks scratch and scheduler runtime files from commits
+  - repo: local
+    hooks:
+      - id: runtime-state-guard
+        name: Block runtime state (.tmp/, scheduled_tasks.*) from commits
+        entry: .venv/bin/python -c "import sys; pats=['.tmp/', '.claude/scheduled_tasks.json', '.claude/scheduled_tasks.lock']; leaked=[f for f in sys.argv[1:] if any(p in f.replace(chr(92),'/') for p in pats)]; print('BLOCKED - runtime state staged for commit (add to .gitignore, unstage, retry)') if leaked else None; [print('  ' + f) for f in leaked]; sys.exit(1 if leaked else 0)"
+        language: system
+        pass_filenames: true
+
+  # Skill-router registry generation (F-5.1) -- the registry tables in skill-router.md are
+  # generated from each SKILL.md's x-heading-routing frontmatter; this fails on content drift
+  # (regenerate with `python scripts/generate-skill-router.py`). Replaces the old presence-only
+  # check-skill-router-sync.py (drift gap from the 2026-05-14 workspace deep audit, P0.2c).
+  - repo: local
+    hooks:
+      - id: skill-router-sync
+        name: Skill-router registry generated from SKILL.md frontmatter (no drift)
+        entry: .venv/bin/python scripts/generate-skill-router.py --check
+        language: system
+        files: '^(\.claude/(skills/.*/SKILL\.md|rules/skill-router\.md)|reference/skill-router/.*\.md|scripts/generate-skill-router\.py)$'
+        pass_filenames: false
+
+  # SKILL.md size budget (F-5.3) + trigger-coverage gate (F-6.1) -- one hook, both
+  # unconditional. skill-metadata-check.py hard-fails (exit 1) on any HARD size
+  # violation (>500 lines or >18432 bytes) AND on any coverage failure (an
+  # auto-routable skill with no valid triggers.json and not grandfathered, a
+  # thin/malformed corpus, or a stale baseline entry), regardless of flags; size
+  # WARN lines (>=16384 bytes) print but do not block. Runs the full audit (whole
+  # tree, pass_filenames: false) whenever a SKILL.md, a triggers.json, or the
+  # grandfather baseline is staged. CI enforces the same gate via the flagless invocation.
+  - repo: local
+    hooks:
+      - id: skill-size-budget
+        name: SKILL.md size budget + triggers.json coverage gate
+        entry: .venv/bin/python scripts/skill-metadata-check.py --summary
+        language: system
+        files: '^(\.claude/skills/.*/(SKILL\.md|triggers\.json)|config/triggers-coverage-baseline\.json)$'
+        pass_filenames: false
+
+  # Version-sync guard (F-1.1): pyproject.toml is the single source of truth;
+  # README § Status and uv.lock must agree with it. CHANGELOG.md and ROADMAP.md
+  # left this pattern on 2026-09-25 with the files themselves (HOS-131).
+  - repo: local
+    hooks:
+      - id: version-sync
+        name: Verify README/uv.lock version matches pyproject.toml
+        entry: .venv/bin/python scripts/check-version-sync.py --quiet
+        # uv.lock joined the pattern 2026-09-03. Without it a commit touching
+        # ONLY the lock never fires this hook, which is how uv.lock sat at
+        # 0.13.0 against pyproject 0.14.0 across a release.
+        files: '^(README\.md|pyproject\.toml|uv\.lock)$'
+        language: system
+        pass_filenames: false
+
+  # CRM schema enforcement -- closes P2.4 from the 2026-05-14 workspace deep audit.
+  # Blocks commits that introduce malformed CRM contact frontmatter (missing name/type/
+  # last_touch, invalid YAML, bad date format). Permissive on phone/email/type quality -
+  # those are flagged by crm-health.py but don't block commits.
+  - repo: local
+    hooks:
+      # always_run, NOT `files:`. This hook matched '^crm/contacts/.*\.md$' until
+      # 2026-08-20, and that path cannot exist in this repository: crm/contacts/
+      # routes private and lives in the DATA overlay for every operator, while
+      # this config routes engine. The pattern is a leftover from the single
+      # workspace that preceded the split, so the hook reported "Skipped" on
+      # every commit since, which reads as "nothing changed" and not as "this
+      # can never fire". The script resolves the overlay itself, costs 0.33 s
+      # over 326 records, and exits 0 with nothing to say when no CRM is present
+      # (a public clone), so running it unconditionally is the honest form.
+      - id: crm-schema-validate
+        name: Validate CRM contact frontmatter against config/schemas/crm-contact.schema.json
+        entry: .venv/bin/python scripts/validate-crm-schema.py --quiet
+        language: system
+        always_run: true
+        pass_filenames: false
+
+  # Adversarial suite validation -- closes P1.4 from the 2026-05-17 workspace deep audit.
+  # Runs --dry-run only (no API calls) when an attack JSON changes, to catch malformed
+  # fixtures before they enter the suite. The full live run (with API costs) is reserved
+  # for manual invocation and CI.
+  - repo: local
+    hooks:
+      - id: adversarial-suite-validate
+        name: Validate adversarial prompt-injection fixtures (dry-run)
+        entry: .venv/bin/python tests/security/prompt-injection/run-adversarial-suite.py --dry-run --quiet
+        language: system
+        files: '^tests/security/prompt-injection/(attacks/.*\.json|run-adversarial-suite\.py)$'
+        pass_filenames: false
+
+  # CVE scan on dependency changes -- closes P1.8 from the 2026-05-17 workspace deep audit.
+  # Runs pip-audit ONLY when requirements*.txt is staged. Strict mode -- any HIGH/CRITICAL
+  # CVE blocks the commit. It still degrades rather than blocking a commit on a machine
+  # without the dev toolchain, but it SAYS SO -- the sibling lint-ratchet hook carried the
+  # same silent `find_spec -> exit 0` guard and reported Passed for two days while the same
+  # gate failed in CI. The venv is tried before the ambient interpreter for the same reason:
+  # `language: system` resolves `python3` from PATH, which is often not the repo's venv.
+  - repo: local
+    hooks:
+      - id: pip-audit-cve
+        name: Scan requirements-dev.txt (which includes requirements.txt) for known CVEs (pip-audit)
+        entry: .venv/bin/python -c "import importlib.util, os, subprocess, sys; sys.path.insert(0, 'scripts'); from utils.vuln_acceptance import announce, ignore_flags; announce(); flags = ignore_flags(); venv = os.path.join('.venv', 'bin', 'pip-audit'); cmd = [venv] if os.path.exists(venv) else ([sys.executable, '-m', 'pip_audit'] if importlib.util.find_spec('pip_audit') else None); sys.exit(subprocess.run(cmd + ['--requirement', 'requirements-dev.txt', '--strict'] + flags).returncode) if cmd else (print('pip-audit-cve SKIPPED - pip-audit is installed nowhere this hook can reach, so the CVE gate did NOT run. CI dependency-audit still covers it.') or sys.exit(0))"
+        language: system
+        files: '^(requirements\.txt|requirements-dev\.txt)$'
+        pass_filenames: false
+
+  # Full-ruleset lint ratchet (F-3.2) -- freezes existing lint debt at the
+  # committed .lint-baseline.json and fails on any NEW violation. Runs the whole
+  # tree (pass_filenames: false) when a .py file is staged. Fixing lint lowers the
+  # baseline via `python scripts/lint-ratchet.py update`. Mirrors the CI lint job.
+  #
+  # The entry called the script through a `find_spec('ruff') is None -> exit 0`
+  # guard, evaluated by the PATH `python3` that `language: system` resolves. On a
+  # machine where that interpreter is not the venv, the guard fired every time and
+  # this hook reported Passed for two days while CI failed the same gate on four
+  # real entries. The script now resolves the repo venv itself and REFUSES when
+  # ruff genuinely cannot run, so a skip can no longer be silent.
+  - repo: local
+    hooks:
+      - id: lint-ratchet
+        name: Full-ruleset lint ratchet (fails on new lint debt)
+        entry: .venv/bin/python scripts/lint-ratchet.py check
+        language: system
+        files: '\.py$'
+        pass_filenames: false
+
+  # Custom secret scanner -- workspace-specific credential patterns (see
+  # scripts/secret-scanner.py and .claude/rules/security.md). Runs alongside the
+  # detect-secrets framework hook above; the two are complementary, not redundant.
+  # Folded in from the former .git/hooks/pre-commit.legacy on 2026-05-31 after a
+  # hijacked core.hooksPath was found bypassing all pre-commit hooks.
+  - repo: local
+    hooks:
+      - id: secret-scanner-workspace
+        name: secret scanner (workspace credential patterns)
+        entry: .venv/bin/python scripts/secret-scanner.py
+        language: system
+        pass_filenames: true
+
+  # Engine content-leak gate -- the CONTENT sibling of the routing guards. Blocks a
+  # commit that embeds a real entity (person slug/name, handle, e-mail, Telegram ID,
+  # or curated company/event token) in an engine-routed file. The denylist is built
+  # in memory from the private DATA overlay; absent overlay -> no-op (public clone).
+  # Added 2026-06-28 after the public-readiness audit found real PII inside
+  # engine-routed code that every routing layer waved through. The push wall
+  # (scripts/push-all.py engine_content_scan, also run by the pre-push hook on a
+  # plain `git push`) is the backstop; this is
+  # the early catch. Suppress a true false positive inline: `content-guard: ok ...`.
+  - repo: local
+    hooks:
+      - id: content-guard-workspace
+        name: Block real-entity content (PII/real names) in engine-routed files
+        entry: .venv/bin/python scripts/content-guard.py --quiet --files
+        language: system
+        pass_filenames: true
+
+  # HEADING OS engine/data leak guard (spec Section 6). Active whenever the clone
+  # is the engine, auto-detected by `_in_engine_repo` in scripts/leak-guard.py.
+  - repo: local
+    hooks:
+      - id: leak-guard-paths
+        name: HEADING OS leak guard (no hardcoded data paths in engine code)
+        entry: .venv/bin/python scripts/leak-guard.py check-paths --files
+        language: system
+        files: '\.(py|sh)$'
+      - id: leak-guard-staged
+        name: HEADING OS leak guard (no private/corporate content in engine repo)
+        entry: .venv/bin/python scripts/leak-guard.py check-staged --files
+        language: system
+        pass_filenames: true
+
+  # THE TWO ENGINE/DATA GUARDS, IN ONE PYTEST PROCESS. test_data_root_no_bypass.py
+  # refuses engine code joining an engine root to a DATA dir (use a get_*_dir()
+  # helper); test_engine_tree_clean.py refuses any file in the engine clone that
+  # routes private. One process because the fixed cost (pytest start plus the two
+  # conftest overlay snapshots) is per process, about 24 s each (MEASURED 2026-09-20).
+  # The id is unchanged because scripts/check-gate-integrity.py freezes gate ids.
+  # One slow test is deselected and runs at push and in CI instead (HOS-160); `-n`
+  # is not used because every xdist worker pays the conftest start again (2026-09-28).
+  # No live test holds the merge since the 2026-09-21 test-suite split (d7b85d52).
+  - repo: local
+    hooks:
+      - id: data-root-bypass-guard
+        name: HEADING OS engine/data guards (data-root seam + engine-tree-clean)
+        entry: >-
+          .venv/bin/python -m pytest
+          tests/test_data_root_no_bypass.py
+          tests/test_engine_tree_clean.py
+          --deselect tests/test_data_root_no_bypass.py::test_no_exemption_row_forgives_a_write_site_that_does_not_exist
+          -q -rf
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Engine-only gate (HOS-131). Operator decision 2026-09-25: the engine
+  # repository holds only the engine, and anything else in it is a leak,
+  # invented demo content included. An ALLOWLIST, the reverse of the walls
+  # above: it passes the classes in config/engine-allowlist.yaml and refuses
+  # every other tracked file, reading git's index so the staged tree is judged.
+  # The files outside it on the day it went in sit in the shrink-only
+  # config/engine-only-baseline.json, which refuses an added entry and a stale
+  # one. Also the sixth push ratchet. Unlike the five before it, it runs here,
+  # because the master instruction of 2026-09-25 asked for commit and push and a
+  # non-engine file in the public engine is failure A by the operator's own
+  # definition. Test: tests/test_engine_tree_clean.py.
+  - repo: local
+    hooks:
+      - id: engine-only
+        name: HEADING OS engine-only gate (no tracked file that is not the engine)
+        entry: .venv/bin/python scripts/check-engine-only.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # SKILL bash-path audit -- advisory baseline ratchet. Fails only when a SKILL.md
+  # gains a NEW bash line passing a bare data-class path to a script (the
+  # data-path-redirect hook does not cover Bash). Existing illustrative template
+  # paths are frozen as a baseline in the scanner; no churn on them.
+  - repo: local
+    hooks:
+      - id: skill-bash-paths
+        name: HEADING OS SKILL bash-path audit (no new bare data-path misroute)
+        entry: .venv/bin/python scripts/audit-skill-bash-paths.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Gate-integrity ratchet. Checks the enforcement layer itself: a local hook
+  # whose files: regex matches no tracked path is scoped to nothing and passes
+  # every commit vacuously, and a hook whose script no test file names has never
+  # been observed refusing. Two walls disarmed by an `or` short-circuit went
+  # unnoticed for exactly that reason. Pre-existing cases are frozen in the
+  # scanner's BASELINE, each with the reason a person wrote.
+  - repo: local
+    hooks:
+      - id: gate-integrity
+        name: HEADING OS gate-integrity ratchet (every gate has a scope and a test)
+        entry: .venv/bin/python scripts/check-gate-integrity.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # One workspace User-Agent. Operator rule 2026-09-27: the value is one constant,
+  # config/user-agent.txt, sent by every outbound call, so changing it in one place
+  # changes it everywhere. Refuses a literal User-Agent in engine code, an outbound
+  # call site (urllib, requests, httpx, Playwright, Anthropic/OpenAI clients,
+  # yt-dlp, Apify, exchangelib) whose function never reads the constant, and a
+  # curl/wget line without one, outside the reasoned list in
+  # config/user-agent-exemptions.json. About 4.5 s over the tree. No test: see
+  # hook:user-agent in scripts/check-gate-integrity.py.
+  - repo: local
+    hooks:
+      - id: user-agent
+        name: HEADING OS one workspace User-Agent (no literal, no site without it)
+        entry: .venv/bin/python scripts/check-user-agent.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Test-vacuity ratchet. Fails when tests/ gains a test whose every assertion
+  # sits inside a loop over a corpus that can come back empty -- the shape that
+  # passes because the loop body never ran. The campaign that ended 2026-09-02
+  # found it 23 times, and one sweep found 182 loop-only assertions in a single
+  # pass, so a habit is not enough and this is the mechanical version of the
+  # floor that campaign added by hand. Pre-existing sites are frozen in
+  # config/test-vacuity-baseline.json; the writer is shrink-only, so a new one
+  # cannot be laundered in by re-running it.
+  - repo: local
+    hooks:
+      - id: test-vacuity
+        name: HEADING OS test-vacuity ratchet (no new test green over an empty corpus)
+        entry: .venv/bin/python scripts/check-test-vacuity.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # live_data_root ratchet. Since 2026-09-21 tests/conftest.py pins
+  # HEADING_OS_DATA to a tmp_path for EVERY test, and this marker is the only
+  # way out -- so the marker is the whole exposure. This replaces the overlay
+  # reachability ceiling (now a record under the data registry name
+  # engine-config-history), which froze a child-process COUNT
+  # that MEASURED 2026-09-06 moved plus or minus three percent over nine runs of
+  # one unchanged tree, and sat in the push path anyway. A marker lives in the
+  # source, does not move with the scheduler, and fails here in under two
+  # seconds instead of twelve minutes into a run. Pre-existing sites are frozen in
+  # config/live-data-root-baseline.json; the writer is shrink-only. It also
+  # fails an exemption with no reason comment beside it -- presence and length
+  # only, which the script says out loud rather than implying it judges quality.
+  - repo: local
+    hooks:
+      - id: live-data-root
+        name: HEADING OS live-data-root ratchet (no new escape from the data-root pin)
+        entry: .venv/bin/python scripts/check-live-data-root.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Memory preservation -- on 2026-09-20 the rules of conduct left the capped,
+  # silently-truncating memory index for `CLAUDE.private.md` on the uncapped
+  # instruction chain. This asks the one question that move can fail: is a rule
+  # the index carried now in neither the policy file nor the named review list.
+  # It reads the archive written at the time of the move and compares
+  # IDENTIFIERS, because the move rewrote prose and left identifiers alone.
+  # Skipped rather than failed on a clone with no private overlay. Floors on
+  # every corpus it walks: the validator it replaces passed over an emptied one.
+  # No live test holds this since the 2026-09-21 test-suite split (d7b85d52).
+  - repo: local
+    hooks:
+      - id: memory-preservation
+        name: HEADING OS memory preservation (no rule lost when it left the index)
+        entry: .venv/bin/python scripts/check-memory-preservation.py --skip-without-overlay
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Prose path-reference audit -- advisory baseline ratchet, sibling to the hook
+  # above. Fails when tracked Markdown gains a NEW reference to an engine-routed
+  # path that does not exist (a renamed or deleted script the prose still names).
+  # Overlay-routed paths are skipped: the overlay is absent on a public clone, so
+  # its absence proves nothing. Placeholders and correct prose about deleted
+  # things are frozen in the scanner's BASELINE, each with its reason.
+  - repo: local
+    hooks:
+      - id: path-references
+        name: HEADING OS prose path audit (no new dangling engine path)
+        entry: .venv/bin/python scripts/check-path-references.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Home-path guard (HOS-35). This repository is public, and an absolute path
+  # rooted in somebody's home directory publishes the account name, the layout
+  # of the machine and the names of the working trees on it. leak-guard and
+  # content-guard look for private CONTENT and for data-overlay ADDRESSES, so a
+  # machine path was neither and walked past both. MEASURED 2026-09-21 before
+  # the repair: 27 findings over 2,763 tracked text files, of which a hand grep
+  # for the operator's own account name had found 24. It refuses the SHAPE --
+  # every /home/<account>, /Users/<account> and <drive>:\Users\<account> whose
+  # account is not a declared placeholder -- so renaming the operator does not
+  # satisfy it. The way through is the inline `home-path: ok (<reason>)` marker,
+  # visible from the file that carries the path; there is deliberately no
+  # baseline, because the count is zero. Reads git's INDEX, so it sees staged
+  # content. MEASURED 2026-09-21, three runs over 2,765 files at load average
+  # 3.7 with four other yards live: 0.95s, 0.95s, 0.97s.
+  # Test: tests/test_gate_leak_guard.py (its home-path half, HOME_GATE). The file
+  # this line named until 2026-09-28 left in the 2026-09-21 test-suite split.
+  - repo: local
+    hooks:
+      - id: home-paths
+        name: HEADING OS home-path guard (no real home directory in the public engine)
+        entry: .venv/bin/python scripts/check-home-paths.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Documentation-style gate (.claude/rules/documentation-style.md). ERRORS only:
+  # sentence length, one-action-per-step, and the banned padding vocabulary are
+  # counted mechanically and were driven to zero on 2026-08-11. The warnings are
+  # heuristics with no part-of-speech tagger behind them, so --strict stays out of
+  # the gate and stays advisory, and --quiet keeps 88 advisory lines from training
+  # the reader to skip the output that does fail. Runs --all, not the staged files:
+  # the scope is CHECKED_GLOBS in the checker; since the 2026-09-21 test-suite
+  # split (d7b85d52) nothing holds this hook's files: pattern to that list.
+  - repo: local
+    hooks:
+      - id: documentation-style
+        name: Documentation style (ASD-STE100 subset, errors only)
+        entry: .venv/bin/python scripts/ste-check.py --all --quiet
+        language: system
+        files: '^(docs/INSTALL\.md|scripts/ste-check\.py)$'
+        pass_filenames: false
+
+      # The other half of the rule's scope (2026-08-17). `--all` covered twelve
+      # pages while the rule also governs ninety-six skill bodies, so a green
+      # `--all` read as a green corpus for as long as the skill half went
+      # unmeasured. It measured 300 errors, of which 83 were defects in the
+      # checker's own sentence splitter and 217 were real. The corpus is at zero,
+      # so the gate can hold it there. No vendored exemption: the one vendored
+      # skill was adapted and re-locked instead, because an exemption hides a
+      # file's debt permanently and unmeasured is exactly what this gate exists
+      # to end. Errors only, like its sibling above.
+      - id: documentation-style-skills
+        name: Documentation style - skill bodies (ASD-STE100 subset, errors only)
+        entry: .venv/bin/python scripts/ste-check.py --skills --quiet
+        language: system
+        files: '^(\.claude/skills/.+/SKILL\.md|scripts/ste-check\.py)$'
+        pass_filenames: false
+
+  # README numbers guard (F-8.3) -- derives the enforcement-layer count and fails
+  # if README.md or SECURITY.md disagrees with it or with each other. Runs
+  # `.venv/bin/python` so it sees the locked dependency set. It went
+  # through `uv run` until 2026-09-02, alongside a `command -v uv` guard that skipped
+  # the gate silently; it now refuses by name when the venv is missing.
+  - repo: local
+    hooks:
+      - id: readme-numbers
+        name: Documented numbers in sync (derived vs README/SECURITY)
+        entry: bash -c '[ -x .venv/bin/python ] || { echo "readme-numbers needs .venv/bin/python, which is missing. Run uv sync --all-extras --group dev first."; exit 1; }; .venv/bin/python scripts/dev/check-readme-numbers.py --quiet'
+        language: system
+        # Only the files the guard reads: ROADMAP.md left 2026-09-21, the docs-site
+        # pages and triggers.json files left 2026-09-25 (HOS-131).
+        files: '^(README\.md|SECURITY\.md|scripts/dev/check-readme-numbers\.py)$'
+        pass_filenames: false
+
+  # THREE CEILINGS OVER TEST CODE, AND THE DIRECTION IS THE POINT (HOS-54,
+  # 2026-09-21). MEASURED that day, before the split: three checks REQUIRED test
+  # files to exist (_MIN_TEST_FILES = 800, and MIN_CORPUS = 400 twice) and nine
+  # ratchets under config/ permitted growth and forbade shrinkage. There was no
+  # ceiling anywhere. So 228 test files became 1380 in twelve weeks, 24 a day,
+  # 437 120 lines of test code against 236 422 of the code it tests, and the
+  # push gate reached 380.16 s. That was not a lapse of discipline: the tree
+  # said in code that removal was forbidden and addition was free.
+  #
+  # Lowering is free and happens here, by rewriting the file and asking for a
+  # re-stage. A RAISE is refused at the commit-msg stage below, so it is visible
+  # in git log for good. Guard: tests/test_the_test_system_only_shrinks.py.
+  - repo: local
+    hooks:
+      - id: test-budget
+        name: Test code stays under its three ceilings (files, functions, lines)
+        entry: .venv/bin/python scripts/check-test-budget.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # The commit-msg half of the pair above, plus the Fix-Note line that replaces
+  # the regression test the debugging standard no longer asks for by default.
+  # Both read the message, which nothing at the pre-commit stage can see.
+  - repo: local
+    hooks:
+      - id: test-budget-raise
+        name: A raise to a test-code ceiling is declared in the commit message
+        entry: .venv/bin/python scripts/check-test-budget-raise.py
+        language: system
+        stages: [commit-msg]
+
+      - id: fix-note
+        name: A fix shipping without a test carries its Fix-Note line
+        entry: .venv/bin/python scripts/check-fix-note.py
+        language: system
+        stages: [commit-msg]

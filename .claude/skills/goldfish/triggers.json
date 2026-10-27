@@ -1,0 +1,58 @@
+[
+  {
+    "query": "goldfish review this plan before I approve it",
+    "should_trigger": true
+  },
+  {
+    "query": "run a fresh-eyes review on the yard brief",
+    "should_trigger": true
+  },
+  {
+    "query": "cold read this handoff and tell me what a new session would misunderstand",
+    "should_trigger": true
+  },
+  {
+    "query": "would a stranger understand this proposal without us in the room?",
+    "should_trigger": true
+  },
+  {
+    "query": "goldfish review this tender answer",
+    "should_trigger": true
+  },
+  {
+    "query": "check whether this rule's enforcement claims still match the code with a zero-context reviewer",
+    "should_trigger": true
+  },
+  {
+    "query": "run the Heilmeier questions on this initiative before I commit money to it",
+    "should_trigger": true
+  },
+  {
+    "query": "goldfish the diff blind to the plan",
+    "should_trigger": true
+  },
+  {
+    "query": "scrutinize the execution with the refutation layer",
+    "should_trigger": false
+  },
+  {
+    "query": "what would Kimi say about this decision",
+    "should_trigger": false
+  },
+  {
+    "query": "restructure this draft, the order of sections is wrong",
+    "should_trigger": false
+  },
+  {
+    "query": "draft an email to the procurement team about the tender",
+    "should_trigger": false
+  },
+  {
+    "query": "give me 5 devil's advocate points against this",
+    "should_trigger": false
+  },
+  {
+    "query": "review the security of my branch changes",
+    "should_trigger": false
+  }
+]

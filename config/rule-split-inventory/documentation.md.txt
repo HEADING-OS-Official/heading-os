@@ -1,0 +1,13 @@
+**Data addresses.** Resources in the data overlay are named below by their logical name, never by a path.
+## Always Update Documentation
+**`EMERGENCY-PROCEDURES` is NOT mirrored** (since 2026-09-22): its page in `spec-docs` and the template are separate texts, required to differ.
+For the router registry, do NOT hand-edit the generated layers (`.claude/rules/skill-router.md`, `reference/skill-router/<category>.md`): set the skill's `x-heading-routing` frontmatter and run `python scripts/generate-skill-router.py` (CI + pre-commit enforce `--check`).
+- **PATCH** - typo fixes, clarifications that don't change meaning
+When editing a template, always update both fields.
+**Age is reported, never enforced.** A `last-updated` older than the 90-day threshold prints a warning and increments a separate `stale` counter that is deliberately excluded from the returned issue count, so a stale marker does not fail the health check.
+Anything that needs to be a gate has to be written as one; do not read the 90 days as enforcement.
+A plan is active while its work is in progress; the `plans` root should hold only plans currently being executed or about to be executed.
+Move it to `archive/{YYYY}/` under `plans`: `P=$(python scripts/data-path.py path plans); git mv "$P/{filename}" "$P/archive/{year}/"`
+Never delete a plan; archive it.
+## Never Deliver Barebones Documentation
+All documentation presented to the operator must be:

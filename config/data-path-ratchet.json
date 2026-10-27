@@ -1,0 +1,5 @@
+{
+  "unresolved_paths_max": 0,
+  "measured": "2026-10-13",
+  "what": "the number of data paths named by engine files that do not resolve against the private overlay and are not in BASELINE. Lower it whenever the real number falls; never raise it."
+}

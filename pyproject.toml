@@ -1,0 +1,273 @@
+# pyproject.toml -- HEADING OS engine: package management + tool configuration.
+# Source of truth for dependencies. uv.lock hash-pins the transitive set.
+# Core deps below are the light always-installed set; heavy integrations live in
+# [project.optional-dependencies] (F-7.1) so an adopter runs `uv sync` (core) and
+# arms capabilities with `uv sync --extra <name>`. The operator/CI install is
+# `uv sync --all-extras`. requirements.txt is a GENERATED export covering the
+# full runtime graph for legacy consumers; the exact regeneration command is in
+# AGENTS.md, and CI diffs the file against it header line included.
+# Dependency management rules: `security/DEPENDENCY-POLICY.md` in the data
+# repository under registry name `spec-docs` (absent from a public clone).
+
+# Build backend: the engine is an installed uv package (not a virtual project),
+# so the `heading` console entry point below is placed on PATH. The wheel ships
+# only the `scripts` package (see [tool.hatch.build.targets.wheel]); the rest of
+# the tree (tests, config, .claude) is not packaged.
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "heading-os-engine"
+version = "3.1.0"
+description = "The operating system an executive runs their company from, built on Claude Code — this repository is the engine (code only; it resolves a separate private data repository at runtime)."
+readme = "README.md"
+license = "LicenseRef-PolyForm-Internal-Use-1.0.0 OR PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Misha Hanin", email = "misha.hanin@headingos.com" }]
+keywords = ["claude-code", "ai-agent", "workspace", "automation", "security", "heading-os"]
+requires-python = ">=3.11"
+# Core: light, broadly-imported packages installed on every `uv sync`. Heavy
+# integration packages live in [project.optional-dependencies] below (F-7.1).
+dependencies = [
+    "anthropic==1.8.0",
+    "requests==2.34.2",
+    "pyyaml==6.0.3",
+    "markdown==3.11",
+    "pymdown-extensions==12.1",
+    "lxml==6.1.3",
+    "Pillow==13.0.0",
+    "liteparse==2.14.7",
+    "apscheduler==3.11.3",
+    # numpy powers the memory-index / recall engine (scripts/memory-index.py), a
+    # core capability - it was only ever present transitively (via magika /
+    # onnxruntime / pandas in the heavy set), so F-7.1's split made it an explicit
+    # core dep rather than silently lose recall on a core clone.
+    "numpy==2.4.6",
+    # jsonschema backs the `validate-crm-schema` pre-commit gate
+    # (scripts/validate-crm-schema.py); undeclared, it skipped silently (2026-08-20).
+    "jsonschema==4.26.0",
+    # Imported directly, so declared directly rather than left to arrive
+    # transitively (engine audit, 2026-10-16): packaging by
+    # scripts/utils/update_common.py, urllib3 by the team-bot script, which imports it directly.
+    "packaging==26.3",
+    "urllib3==2.8.0",
+]
+
+# Optional-dependency extras (F-7.1). Where code checks for an extra through
+# `optdeps.require(..., extra="X")`, the extra NAME matches that call site
+# verbatim (email, browser, documents, media, dashboard, ai-extra); telegram,
+# observability and research are imported directly by the scripts that use them.
+# Operator/CI install is `uv sync --all-extras`.
+[project.optional-dependencies]
+email = [
+    "exchangelib==5.6.0",
+]
+telegram = [
+    "Telethon==1.45.0",
+]
+browser = [
+    "playwright==1.63.0",
+    "greenlet==3.5.6",   # playwright transitive, pinned; travels with browser
+    # SOCKS5 with a username and password, for `scripts/linkedin-activity.py`
+    # when a proxy slot is `socks5h://`. `requests` reaches such a slot only
+    # through PySocks, and Playwright 1.61.0 refuses SOCKS5 authentication at
+    # launch, so the script's loopback relay opens every upstream connection
+    # through PySocks too. 1.7.1 is the latest release on PyPI (2019-09-20)
+    # and has no dependencies of its own.
+    "PySocks==1.7.1",
+    # Imported directly by scripts/utils/chromium_cookies.py (cookie decryption).
+    "cryptography==50.0.1",
+]
+documents = [
+    "python-docx==1.2.0",
+    "python-pptx==1.0.2",
+    "openpyxl==3.1.5",
+    "markitdown[pdf,docx,pptx,xlsx,outlook]==0.1.8",
+    # Pinned directly because markitdown's `pdf` extra and scripts/convert-to-md.py
+    # reach it, and as a transitive only it would vanish silently (2026-09-02).
+    "pdfminer.six==20260107",
+]
+media = [
+    "youtube-transcript-api==1.2.4",
+    "yt-dlp==2026.8.19",
+    # Local speech-to-text (scripts/transcribe-media.py). CTranslate2 backend, so
+    # it pulls NO torch - the heavy transitives are ctranslate2 + av, and
+    # onnxruntime is already in the graph via magika. Runs fully on-machine, so
+    # audio never leaves the laptop; that is the whole reason it is a dependency
+    # rather than a cloud API call. MIT, as is ctranslate2.
+    "faster-whisper==1.2.1",
+    # Imported directly by scripts/transcribe-media.py (engine audit, 2026-10-16).
+    "av==18.1.0",
+]
+dashboard = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.54.0",
+]
+ai-extra = [
+    "google-api-python-client==2.200.0",
+    "google-auth==2.58.1",
+    "google-auth-oauthlib==1.4.1",
+    "google-auth-httplib2==0.4.2",
+    # Imported directly by scripts/utils/google_user_agent.py and
+    # scripts/hindsight-snapshot-offsite.py (engine audit, 2026-10-16).
+    "httplib2==0.32.0",
+    # 2.54.0 until a decision to upgrade to 3.x (the cognee hold ended 2026-10-04).
+    "openai==2.54.0",
+]
+observability = [
+    "langfuse==4.15.6",
+]
+research = [
+    "firecrawl-py==4.44.0",   # added per F-H4; never silently missing again
+]
+# Meta-extra: the full integration surface (operator/CI parity). Self-references
+# the project's own extras so it stays in sync automatically.
+all = [
+    "heading-os-engine[email,telegram,browser,documents,media,dashboard,ai-extra,observability,research]",
+]
+
+[project.urls]
+Homepage = "https://github.com/HEADING-OS-Official/heading-os"
+Repository = "https://github.com/HEADING-OS-Official/heading-os"
+Documentation = "https://github.com/HEADING-OS-Official/heading-os/tree/main/docs"
+Issues = "https://github.com/HEADING-OS-Official/heading-os/issues"
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "bandit==1.9.4",
+    "ruff==0.16.9",
+    "pre-commit==4.6.2",
+    "detect-secrets==1.5.0",
+    "pip-audit==2.10.1",
+    "pytest-xdist==3.8.0",
+]
+
+[project.scripts]
+# `heading`: the vendor-independent dispatcher over the engine scripts (F-10.1
+# Option C). Installed onto PATH by the build backend above; run via `uv run
+# heading ...` or after `uv tool install`.
+heading = "scripts.heading_cli:main"
+
+[tool.hatch.build.targets.wheel]
+# Ship only the scripts package. Kebab-named CLIs under scripts/ are carried as
+# files (invoked by path, not imported); scripts.heading_cli + scripts.utils are
+# the importable modules the entry point needs.
+packages = ["scripts"]
+
+[tool.uv]
+# The engine is an installed package (not a virtual project) so [project.scripts]
+# reaches PATH. Editable by default, so in-tree `sys.path` imports and the
+# installed `heading` resolve to the same source.
+package = true
+# Security floor on a transitive dep: msgpack < 1.2.1 carries GHSA-6v7p-g79w-8964
+# (DoS on Unpacker reuse with untrusted input). msgpack arrives via
+# pip-audit -> cachecontrol -> msgpack, so it is not a direct dependency; a plain
+# lock bump is fragile (any re-resolve reverts it — exactly what happened when
+# pytest-xdist was added 2026-06-30). This constraint floors it durably.
+constraint-dependencies = ["msgpack>=1.2.1"]
+
+[tool.bandit]
+# Severity/confidence thresholds are CLI-only in bandit (--severity-level /
+# --confidence-level, set on the bandit step in .github/workflows/ci.yml). They
+# are NOT read from this table, so declaring them here does nothing - the CI
+# step owns the medium/medium floor. This table carries only keys bandit honors
+# from config: exclude_dirs and skips.
+exclude_dirs = ["tests"]
+# B310: urllib urlopen audit for file:/custom schemes. Our scripts call hardcoded
+# https API endpoints (Telegram, etc.) via f-string literals, never user-controlled
+# schemes. The pre-commit ruff gate already ignores the identical rule (S310), so
+# skipping B310 here keeps the two security gates consistent.
+skips = ["B310"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# Security-focused rule selection:
+# S = flake8-bandit (security), B = flake8-bugbear, A = flake8-builtins
+# C4 = flake8-comprehensions, DTZ = flake8-datetimez, T10 = flake8-debugger
+# PIE = flake8-pie, SIM = flake8-simplify, ERA = eradicate (commented code)
+# F821 = pyflakes undefined-name. Added 2026-08-25 after a NameError shipped.
+#
+# `select` REPLACES ruff's default `E4,E7,E9,F`, so pyflakes was off repo-wide
+# and nothing here answered "does this name exist?". On 2026-08-24 commit
+# 76c63fd added `if os.name == "posix":` to scripts/update-manager.py without an
+# `import os`; ruff passed, the suite passed, and the update-manager systemd
+# timer then failed at 07:00 the next morning with
+# `NameError: name 'os' is not defined`, taking the auto-apply tier down for a
+# full cycle before anyone looked.
+#
+# Only F821 is enabled, not all of F. The rest of pyflakes is 415 findings here,
+# nearly all F401 unused-import, which is a cleanup with its own judgement calls
+# and belongs to a separate decision. F821 is different in kind: it is not
+# style. Every hit is a line that raises the moment it executes.
+select = ["S", "B", "A", "C4", "DTZ", "T10", "PIE", "SIM", "ERA", "F821"]
+ignore = [
+    "S101",    # assert used (we use assert in tests)
+    "S603",    # subprocess call - check for untrusted input (too noisy for our use)
+    "S607",    # starting a process with a partial executable path
+    "ERA001",  # commented out code (too aggressive)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]  # Allow assert and hardcoded passwords in tests
+"scripts/secret-scanner.py" = ["S105"]  # Allow hardcoded password patterns
+"scripts/utils/secret_patterns.py" = ["S105"]  # the shared vocabulary; the token is a marker, not a credential
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `"parked"` is a floor under a directory of that name reappearing; the parked
+# suite (HOS-54, 2026-09-21) is counted only in config/parked-tests.json.
+# The defaults are restated because this key REPLACES them rather than adding
+# to them; dropping `.*` alone would make pytest walk `.git`.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules",
+                 "venv", "{arch}", "parked"]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+# --import-mode=importlib: every Canopus slice writes its contract to
+# tests/contract/{date}-{slug}/test_contract.py, so the SECOND slice collides with
+# the first on module basename under the default prepend mode and pytest aborts the
+# whole run with "import file mismatch". The convention guarantees the collision;
+# importlib removes the class rather than renaming one file per slice forever.
+#
+# -p no:cacheprovider: pytest's cache is `.pytest_cache/` at the rootdir, which is
+# the engine checkout, and nothing here reads it (no --lf, --ff, --sw or
+# config.cache anywhere, searched 2026-09-25). HOS-5 section 7 took every
+# artifact out of the engine checkout that day; CI already passed this flag.
+addopts = "--strict-markers --import-mode=importlib -p no:cacheprovider"
+# An xfail that PASSES is a defect report that has stopped being true, and by
+# default pytest records it as XPASS and moves on. Strict turns it into a
+# failure, so a fixed bug forces someone to delete the marker rather than leave
+# a stale claim in the tree (enabled 2026-08-27).
+xfail_strict = true
+# `@pytest.mark.parametrize` over an EMPTY list is silently skipped by default.
+# That is the "green over an empty corpus" defect with pytest's own name on it:
+# a parametrize over a registry, a glob or a derived set that decays to empty
+# reports a pass while running nothing. `fail_at_collect` makes it a collection
+# error instead.
+empty_parameter_set_mark = "fail_at_collect"
+# A test that RETURNS a value instead of asserting one PASSES. Pytest warns and
+# moves on. Three files here were standalone scripts before they were renamed
+# test_*.py, kept their `ok &= check(...)` / `return ok` shape, and so carried 25
+# test functions and 78 conditions that could not fail the suite. Nothing said
+# so for as long as they sat in the tree. Promoting the warning is the only
+# guard that covers a file nobody has written yet.
+filterwarnings = ["error::pytest.PytestReturnNotNoneWarning"]
+markers = [
+    "integration: integration tests (mocked external services)",
+    "acceptance: A+ sign-off gates; excluded from the per-push run. No test carries it and no runner selects it.",
+    "live_data_root: the test's SUBJECT is the operator's real data overlay, so the session-wide pin in tests/conftest.py leaves HEADING_OS_DATA alone for it. Every other test, and every child process it spawns, gets tmp_path instead. Added 2026-09-21: the pin used to cover two packages only, a file at the top of tests/ got none, and a spawned child inherited the live root; the reachability ceiling then counted those children and refused pushes over a number this repository has measured as noisy. Carry the reason for the exemption in a comment beside the marker, because a reader cannot tell a deliberate one from a copied one.",
+    "requires_ollama: needs a local Ollama with bge-m3",
+]
+
+[tool.coverage.run]
+source = ["scripts"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true

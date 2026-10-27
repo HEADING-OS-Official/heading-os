@@ -1,0 +1,52 @@
+# Security Policy
+
+Security is a first-class concern in HEADING OS, not an afterthought. This document explains how to report a vulnerability and summarizes the controls the engine ships with.
+
+## Reporting a vulnerability
+
+**Please do not open a public issue for security vulnerabilities.**
+
+Report privately:
+
+1. **Email:** write to `admin@headingos.com` with the subject line `HEADING OS security`. This always works, and it is the address [headingos.com/security.html](https://headingos.com/security.html#s-report) gives.
+2. **GitHub private advisory:** once this repository is public, the **Security** tab's **Report a vulnerability** button (GitHub private vulnerability reporting) works as well.
+
+Please include enough detail to reproduce: the affected file or path, the conditions, and the impact you observed. If you have a proof of concept, include it.
+
+**What to expect:**
+
+- An acknowledgement within a few business days.
+- An assessment and, where the report is valid, a fix on a timeline proportional to severity.
+- Credit in the release notes if you would like it (tell us how you wish to be named).
+
+Please give us a reasonable window to remediate before any public disclosure.
+
+## Supported versions
+
+The current version is HEADING OS 3.1 (`v3.1.0`). Security fixes are applied to the latest `main`. There are no long-term support branches yet.
+
+| Version | Supported |
+|---------|-----------|
+| `main` (latest) | Yes |
+| older tags | No |
+
+## What the engine already enforces
+
+These are mechanical controls in this repository, not aspirations:
+
+- **Engine ⟂ data separation.** Seven enforcement layers (a static bypass guard, a leak guard, a data-path redirect, a build partition, a runtime tree-clean check, a push-time wall in pure code that `push-all.py` and the pre-push hook both run, and a content guard) ensure the engine clone holds no private or personal data, regardless of how a file was written, and that none of it leaves on the push. The first six answer *where a file goes*; the content guard is the only one that opens an engine-routed file and reads *what is inside it*, which is how it caught a category of private content the routing map had missed.
+- **Outbound send is always human-gated** (the lethal-trifecta control). Anything that can send to the outside world is drafted and queued; a human approves before it leaves. New send-capable actions inherit this by default and fail safe.
+- **Secrets never reach a remote.** A content scan on the push path is pure code with no skip flag, run by `push-all.py` and by the pre-push hook on a plain `git push`. It catches a credential even if a commit-time hook was bypassed; only `git push --no-verify`, which is forbidden, skips the hook. Secrets load only from a gitignored `.env`, never from a tracked file.
+- **No hope-based waiting.** Every must-complete step (every push) runs under a progress watchdog that declares a hang only on real inactivity and verifies its postcondition, rather than trusting a wall-clock timeout or a bare exit code.
+- **Forbidden-pattern gates.** The test and lint suite blocks the usual dangerous patterns (`eval`/`exec` on input, `pickle` on untrusted data, `shell=True`, unsafe YAML loading, TLS verification disabled, and similar).
+
+## Handling your own secrets and data
+
+If you run HEADING OS:
+
+- Keep API keys, tokens, and passwords in the gitignored `.env` only. Never commit them.
+- Keep your real data in your **private** data repository, not in the engine clone.
+- Run `pre-commit install` once per clone so the commit-time secret scan is armed.
+- If a secret is ever exposed, treat it as compromised: rotate it first, then scrub it from history.
+
+See [`docs/INSTALL.md`](docs/INSTALL.md) for the full setup, including the secret gate.

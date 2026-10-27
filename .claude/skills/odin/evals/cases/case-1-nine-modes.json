@@ -1,0 +1,10 @@
+{
+  "id": "case-1-nine-modes",
+  "description": "Confirms /odin names all nine modes (learn, consult, reflect, recall, teach, log, collect, compile, skill-proposal) when listing capabilities.",
+  "input": "What modes does Odin support?",
+  "checks": {
+    "must_mention": ["learn", "consult", "reflect", "recall", "teach", "log", "collect", "compile", "skill-proposal"],
+    "min_words": 50,
+    "hidden_chars_clean": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "agent-watch",
+  "version": "0.1.0",
+  "description": "A band above the prompt and a panel (/agent-watch) listing this session's subagents: type, model, progress, elapsed time and an estimated cost, with a session total.",
+  "author": {
+    "name": "Misha Hanin"
+  },
+  "types": "./types/index.d.ts"
+}

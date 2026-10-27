@@ -1,0 +1,10 @@
+{
+  "id": "case-3-handoff-resume",
+  "description": "Confirms /prime reads the newest handoff pointer written by the checkpoint hooks and asks whether to resume or start fresh. The input named a flat handoff file at the operations root until 2026-08-20; nothing has ever written it, so the case rehearsed a contract the engine does not implement.",
+  "input": "What does /prime do when this checkout's handoff pointer (checkout_summary_pointer) exists from a previous session?",
+  "checks": {
+    "must_mention": ["resume", "handoff", "archive"],
+    "min_words": 50,
+    "hidden_chars_clean": true
+  }
+}

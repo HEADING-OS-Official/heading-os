@@ -1,0 +1,15 @@
+[Unit]
+Description=Hindsight deployment health check (hindsight-health.py check)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Every name (ssh alias, served FQDN, backup directory) comes from the gitignored .env.
+# An unhealthy result exits 1 and shows as `failed`; the operator is told through his
+# own sink only when the set of problems changes.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/hindsight-health.py check
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

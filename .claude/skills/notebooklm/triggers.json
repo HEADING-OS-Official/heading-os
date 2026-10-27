@@ -1,0 +1,11 @@
+[
+  { "query": "make an audio overview from these three articles", "should_trigger": true },
+  { "query": "spin up a NotebookLM notebook on the European cybersecurity market", "should_trigger": true },
+  { "query": "generate an AI podcast from the sources I dropped in the notebook", "should_trigger": true },
+  { "query": "add these URLs as sources to my AI-governance notebook", "should_trigger": true },
+  { "query": "run notebook research to discover new sources on AI governance", "should_trigger": true },
+
+  { "query": "research ExampleTelco before our call and give me a dossier", "should_trigger": false },
+  { "query": "add a quick note about Tamsin Okonkwo's pricing objection", "should_trigger": false },
+  { "query": "what's trending on YouTube podcasts about cybersecurity this week", "should_trigger": false }
+]

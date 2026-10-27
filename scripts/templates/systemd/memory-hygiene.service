@@ -1,0 +1,25 @@
+[Unit]
+Description=Memory hygiene scan (objective-defect detector over auto-memory + Odin brain)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Detector only - writes a dated report and NEVER mutates memory. Exit 1 means
+# objective defects were found (dangling/circular superseded_by, orphan memory
+# files, over-budget MEMORY.md); that is a signal, not a unit failure, so it is
+# declared a success status below. Only exit 2 (script error) marks the unit
+# failed. Resolution stays with /dream (human-gated). The script resolves and
+# prints the report address (registry name memory-hygiene-reports).
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/memory-hygiene.py
+SuccessExitStatus=1
+# `OnCalendar ... {{TZ}}` in the .timer pins WHEN this unit fires, not the
+# process timezone. Without this line the script still computed date.today()
+# in the host's libc zone, so on a host on another zone it misdated its own
+# report and compared dates a day off -- precisely the failure the timer's
+# comment claims is prevented. Siblings (reminders, ops-radar, odin,
+# chronicle) already set it.
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

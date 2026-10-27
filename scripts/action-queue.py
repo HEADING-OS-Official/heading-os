@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""Terminal-native Action Queue driver (console-first, daemon-free).
+
+Drives the queue entirely IN-PROCESS via the mutate helpers in
+``scripts/record_readers/sources/action_queue.py``, with no daemon and no HTTP.
+``approve`` is SYNCHRONOUS: it sends right then via ``send_card`` and shows
+``sent`` / ``send_failed (reason)`` in the same command - there is no async
+background send.
+
+Root discipline (the two-repo topology):
+  - the queue store lives under the DATA root  -> get_data_root()  (passed to
+    every action_queue helper, matching the depositors).
+  - scripts/send-email.py lives under the ENGINE root -> get_workspace_root()
+    (passed to send_card). These roots DIFFER on the CEO MAIN topology and must
+    not be conflated.
+
+The send-gate is untouched: send_card refuses anything that does not resolve
+``gated``; the human ``approve`` IS the explicit click; nothing auto-sends.
+
+Usage:
+    python scripts/action-queue.py list
+    python scripts/action-queue.py show <id-or-prefix>
+    python scripts/action-queue.py approve <id-or-prefix>     # synchronous send
+    python scripts/action-queue.py retry <id-or-prefix>       # re-send a failed card
+    python scripts/action-queue.py edit <id-or-prefix> [--to A] [--subject S] [--body-file F]
+    python scripts/action-queue.py dismiss <id-or-prefix> [--reason R]
+    python scripts/action-queue.py deposit --file <cards.json>
+    python scripts/action-queue.py sweep [--dry-run]           # apply notify-tier cards
+
+``sweep`` has no timer: run it by hand, or notify-tier cards stay pending.
+
+Exit codes: 0 ok, 1 request/usage error, 2 refused (the queue store is
+ambiguous).
+
+Coverage: none live. The 2026-09-21 test-suite split took the check that a
+corrupt queue file is read as corrupt rather than as empty. The code still
+does that; nothing goes red if it stops.
+"""
+import argparse
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.utils import dead_letter, recipient, tool_risk
+from scripts.utils.colors import BOLD, CYAN, GRAY, GREEN, RED, RESET, YELLOW
+from scripts.utils.workspace import get_data_root, get_workspace_root
+from scripts.record_readers.sources.action_queue import (
+    ACTIVE_STATUSES,
+    SENDING,
+    STALE_CLAIM_SECONDS,
+    append_cards,
+    apply_status,
+    approve_card,
+    claim_card_for_send,
+    dismiss_card,
+    edit_card,
+    list_action_queue,
+    release_claim,
+    store_address,
+)
+from scripts.utils.runtime_junk_moves import AmbiguousStore
+
+# send_card lives in the hyphenated scripts/action-queue-execute.py, which is not
+# importable by dotted path; load it by file. Exposed as _AQX so the per-card
+# subprocess can be patched in tests (the gate + send logic stays one copy).
+_spec = importlib.util.spec_from_file_location(
+    "action_queue_execute", Path(__file__).resolve().parent / "action-queue-execute.py")
+_AQX = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_AQX)
+send_card = _AQX.send_card
+
+# The statuses `approve` will send from. DERIVED from the queue's own active
+# set, minus two.
+#
+# `approved` — a card already in `approved` has been through this path once, and
+# sending it again is the duplicate this guard exists to stop.
+#
+# `SENDING` — a live claim. `claim_card_for_send` owns that decision (it also
+# knows when a claim has gone stale and may be taken over), so this set must not
+# offer a second opinion on it.
+#
+# Deriving it means a new active status cannot silently become sendable.
+SENDABLE_STATUSES = frozenset(ACTIVE_STATUSES) - {"approved", SENDING}
+
+
+def _resolve_id(items: list[dict], prefix: str) -> str:
+    """Resolve a full id or unique prefix against the active queue."""
+    exact = [c for c in items if c.get("id") == prefix]
+    if exact:
+        return exact[0]["id"]
+    matches = [c for c in items if str(c.get("id", "")).startswith(prefix)]
+    if not matches:
+        print(f"{RED}no active card matches '{prefix}'{RESET}", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"{RED}ambiguous prefix '{prefix}' ({len(matches)} matches){RESET}", file=sys.stderr)
+        sys.exit(1)
+    return matches[0]["id"]
+
+
+def _print_aq_row(c: dict) -> None:
+    prio = c.get("priority", "P3")
+    pcol = {"P1": RED, "P2": YELLOW, "P3": GRAY}.get(prio, GRAY)
+    status = c.get("status", "pending")
+    # `sending` is a live claim, not a resting state: it gets its own colour so
+    # a stuck claim is visible in the list instead of reading as one more
+    # ordinary row.
+    scol = {"approved": GREEN, "send_failed": RED, SENDING: YELLOW}.get(status, CYAN)
+    draft = c.get("draft_status")
+    dsuffix = f"  {GRAY}{draft}{RESET}" if draft else ""
+    print(f"  {pcol}{prio}{RESET} {c.get('id', '')[:8]} "
+          f"{scol}{status:<11}{RESET} {GRAY}{c.get('source', '-'):<11}{RESET} "
+          f"{c.get('title', '(untitled)')}{dsuffix}")
+
+
+# ============================================================
+# Core: synchronous approve-and-send (reusable / testable)
+# ============================================================
+
+def _record_unrecorded_send(data_root: Path, card: dict, why: str) -> None:
+    """Make a sent-but-unrecorded message durable somewhere, and say so loudly.
+
+    The queue is the record of what left, and this is the one case where it does
+    not have that record. `dead_letter.record` is the workspace's existing
+    "durable, trace-keyed artifact instead of vanishing" store, it never raises,
+    and its own docstring says an unknown classification coerces to `permanent`,
+    which forces re-approval rather than silent retry. That is the right
+    direction here: a human has to look.
+
+    The `kind` is deliberately NOT a send failure. The message succeeded; the
+    bookkeeping did not, and calling it a failure would send someone looking for
+    an undelivered mail that is already in the recipient's inbox.
+    """
+    path = dead_letter.record(
+        trace_id=card.get("trace_id") or "-",
+        kind="sent_unrecorded",
+        payload=card,
+        classification="permanent",
+        error=why,
+        workspace_root=data_root,
+    )
+    print(f"{RED}{BOLD}WARNING: the message WAS SENT and the queue does not "
+          f"know it.{RESET}")
+    print(f"{GRAY}  The card is still claimed as '{SENDING}'. That refuses a "
+          f"second approve for {STALE_CLAIM_SECONDS // 60} minutes and then "
+          f"allows one, so DISMISS the card rather than let the claim "
+          f"expire.{RESET}")
+    print(f"{GRAY}  Reason the write failed: {why or '(unstated)'}{RESET}")
+    if path:
+        print(f"{GRAY}  A durable record is at {path}.{RESET}")
+    else:
+        print(f"{RED}  The durable record could not be written either. This "
+              f"terminal is the only account of the send.{RESET}")
+
+
+def approve_and_send(engine_root: Path, data_root: Path, id_or_prefix: str) -> dict:
+    """Approve a card and, for a gated send card, SEND it synchronously.
+
+    Resolves the id against the active set, then:
+      - a send type (the ledger's ``send_capable`` set, or anything resolving
+        ``gated``): refuse if not gated; require draft_status ==
+        ready_for_review (email_send); call send_card(engine_root) and route the
+        transition through apply_status(data_root, sent|send_failed,
+        classification=None) - audit via the helper, NO auto-DLQ (the CEO retries).
+      - everything the ledger positively classifies autonomous or notify
+        (note/pipeline_update/alert/...): record the non-send disposition
+        (approve_card).
+
+    Which types are sends is DERIVED from ``tool_risk``, never listed here.
+
+    Returns a small result dict for the caller to print.
+    """
+    env = list_action_queue(data_root)
+    items = env.get("items", [])
+    aid = _resolve_id(items, id_or_prefix)
+    card = next(c for c in items if c["id"] == aid)
+    atype = card.get("action_type")
+
+    # THE GATE, and the tier is resolved for EVERY card, above any branch on the
+    # type. A card is on the send path here when the ledger calls its type
+    # send-capable OR it resolves `gated` - never because a tuple in this file
+    # names it.
+    #
+    # (A hardcoded send-type tuple keyed this branch until 2026-08-31 and let
+    # an unlisted send-capable type skip the check.)
+    #
+    # The `or tier == GATED` half is what an emptied `send_capable` cannot
+    # switch off: `tier_for` is total over action_types, so a type the ledger
+    # stops calling send-capable still reaches this branch as long as anything
+    # resolves it `gated` - including the unclassified-type fail-safe. And if
+    # BOTH halves of the ledger are lowered, the branch is not taken and the
+    # card is disposed rather than sent, which is the safe direction: nothing
+    # here sends outside this branch, and `send_card` re-asserts the same gate
+    # unconditionally before any transport runs.
+    tier = tool_risk.tier_for(atype)
+    if atype in tool_risk.send_capable_types() or tier == tool_risk.GATED:
+        if tier != tool_risk.GATED:
+            return {"result": "refused", "action_id": aid,
+                    "error": f"{atype} does not resolve gated - refusing to send"}
+        # A STATUS guard, which `cmd_retry` has and this did not, and it is a
+        # CLAIM rather than a read. Two defects in sequence live here.
+        #
+        # Nothing looked at `card["status"]` at all at first, so running
+        # `approve <id>` twice sent the same email twice -- a repeat keystroke,
+        # or a card already moved to `approved` by another surface, was enough.
+        # A plain read then fixed the repeat and left the concurrent case:
+        # measured 2026-08-30, two approves of one `pending` card both passed
+        # the read, the sender ran TWICE, and both calls returned `sent`.
+        #
+        # `claim_card_for_send` does the check and the status write inside ONE
+        # queue lock, so the second approve finds the card `sending` and is
+        # refused. The card holds `sending` for the life of the send, and
+        # `apply_status` below moves it to `sent` or `send_failed`.
+        #
+        # `SENDABLE_STATUSES` excludes both `approved` and `sending`.
+        #
+        # Every later check reads the CLAIMED card, not the snapshot above: the
+        # snapshot predates the lock, so a draft edited between the two would
+        # have been sent against a `ready_for_review` that no longer held.
+        claim = claim_card_for_send(data_root, aid, SENDABLE_STATUSES)
+        if not claim.get("ok"):
+            return {"result": "blocked", "action_id": aid,
+                    "error": claim.get("error", "")}
+        card = claim["card"]
+        prev_status = claim["prev_status"]
+        if atype == "email_send" and card.get("draft_status") != "ready_for_review":
+            release_claim(data_root, aid, prev_status)
+            return {"result": "blocked", "action_id": aid,
+                    "error": "draft not ready_for_review - edit it first"}
+        try:
+            res = send_card(engine_root, card)
+        except Exception:
+            # `send_card` returns a result for every failure it anticipates, so
+            # anything arriving here never reached a send. The claim goes back
+            # and the exception carries on to the caller exactly as it did
+            # before claiming existed. A card abandoned in `sending` is one no
+            # `approve` and no `retry` can move for the next five minutes.
+            release_claim(data_root, aid, prev_status)
+            raise
+        if res.get("result") in ("skipped", "refused"):
+            # A gated type with no executor, one the executor's own gate
+            # refused, or a card still addressed to a placeholder recipient.
+            # Nothing was attempted and nothing left the workspace, so
+            # put the claim back rather than record a send_failed for a send
+            # that never ran - `retry` would then offer to repeat it.
+            release_claim(data_root, aid, prev_status)
+            return {"result": res["result"], "action_id": aid,
+                    "error": res.get("error", "")}
+        if res.get("result") == "sent":
+            # The mail is GONE from here on. Everything below records that fact,
+            # and the return value of the recorder used to be discarded.
+            #
+            # `apply_status` returns {"ok": False, "error": "not found"} when the
+            # card is no longer in the queue - another process pruned it, or
+            # `_load_queue` quarantined a corrupt queue between the read above
+            # and this write - and in that case it writes NEITHER the status NOR
+            # the disposition-log entry. `_write_queue` can also raise OSError
+            # (full disk, permissions) straight out through here.
+            #
+            # Both paths used to end with "sent ... (delivered now)" and exit 0,
+            # or with a traceback, over an irreversible outbound message that
+            # nothing on disk knew about. The card then keeps its PRE-approval
+            # status, and `SENDABLE_STATUSES` includes `pending`, so the same
+            # mail can be approved and sent a second time - the one failure a
+            # send-gated queue exists to prevent.
+            try:
+                recorded = apply_status(data_root, aid, "sent", event="approved")
+            except OSError as exc:
+                recorded = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            if not recorded.get("ok"):
+                _record_unrecorded_send(data_root, card, recorded.get("error", ""))
+                return {"result": "sent_unrecorded", "action_id": aid,
+                        "error": recorded.get("error", "")}
+            return {"result": "sent", "action_id": aid}
+        # M2: stamp classification=None -> apply_status writes NO dead-letter entry.
+        #
+        # Guarded for the same two failures the `sent` path above guards, and for
+        # a while this one was guarded for neither. `apply_status` returns
+        # {"ok": False, "error": "not found"} when the card was pruned or the
+        # queue quarantined between the read above and this write, and it can
+        # raise OSError (full disk, permissions) straight out through here.
+        # Unguarded, the first case still printed `card kept as send_failed -
+        # fix and retry` about a card that is not in the queue, and `cmd_retry`
+        # only runs on a card whose status IS `send_failed`, so the advice named
+        # a command that cannot find it. The second case produced a raw
+        # traceback out of a file whose own contract is `Exit codes: 0 ok, 1
+        # request/usage error`.
+        send_error = res.get("error", "")
+        try:
+            recorded = apply_status(data_root, aid, "send_failed", event="send_failed",
+                                    error=send_error, classification=None)
+        except OSError as exc:
+            recorded = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not recorded.get("ok"):
+            return {"result": "send_failed_unrecorded", "action_id": aid,
+                    "error": send_error, "record_error": recorded.get("error", "")}
+        return {"result": "send_failed", "action_id": aid, "error": send_error}
+
+    # Non-send disposition (note / pipeline_update / alert).
+    approve_card(data_root, aid)
+    return {"result": "approved", "action_id": aid}
+
+
+# ============================================================
+# Subcommands
+# ============================================================
+
+def cmd_list(engine_root: Path, data_root: Path, args) -> int:
+    d = list_action_queue(data_root)
+    actionable = d.get("actionable", d.get("items", []))
+    fyi = d.get("fyi", [])
+    counts = f"{GRAY}sent {d.get('sent_count', 0)} · dismissed {d.get('dismissed_count', 0)}{RESET}"
+    if not actionable and not fyi:
+        print(f"{GRAY}queue clear{RESET} "
+              f"(sent {d.get('sent_count', 0)}, dismissed {d.get('dismissed_count', 0)})")
+        return 0
+    act_total = d.get("actionable_total", len(actionable))
+    print(f"{BOLD}{act_total} action(s) waiting{RESET}  {counts}")
+    for c in actionable:
+        _print_aq_row(c)
+    if fyi:
+        print(f"{GRAY}FYI - read-only context ({len(fyi)}){RESET}")
+        for c in fyi:
+            _print_aq_row(c)
+    return 0
+
+
+def cmd_show(engine_root: Path, data_root: Path, args) -> int:
+    items = list_action_queue(data_root).get("items", [])
+    aid = _resolve_id(items, args.id)
+    card = next(c for c in items if c["id"] == aid)
+    print(json.dumps(card, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_approve(engine_root: Path, data_root: Path, args) -> int:
+    res = approve_and_send(engine_root, data_root, args.id)
+    r = res.get("result")
+    aid = (res.get("action_id") or "")[:8]
+    if r == "sent":
+        print(f"{GREEN}sent{RESET} {aid} (delivered now - watched, not async)")
+        return 0
+    if r == "approved":
+        print(f"{GREEN}approved{RESET} {aid} (non-send disposition recorded)")
+        return 0
+    if r == "sent_unrecorded":
+        # Exit 1 and RED, because a clean exit here is what let an unrecorded
+        # send look like a completed one. The mail is out; the queue is wrong.
+        print(f"{RED}{BOLD}sent, NOT recorded{RESET} {aid}: {res.get('error', '')}\n"
+              f"{GRAY}see the warning above - do NOT approve this card again "
+              f"without checking Sent Items{RESET}", file=sys.stderr)
+        return 1
+    if r == "send_failed":
+        print(f"{RED}send failed{RESET} {aid}: {res.get('error', '')}\n"
+              f"{GRAY}card kept as send_failed - fix and `retry {aid}`{RESET}", file=sys.stderr)
+        return 1
+    if r == "send_failed_unrecorded":
+        # Nothing left the workspace, so this is not the `sent_unrecorded`
+        # emergency. It is still a lie to say the card was kept as send_failed:
+        # the queue write did not land, so the card holds its pre-approval
+        # status and `retry` will refuse it.
+        print(f"{RED}send failed, and the queue was not updated{RESET} {aid}: "
+              f"{res.get('error', '')}\n"
+              f"{GRAY}the queue write failed too ({res.get('record_error', '')}), so the "
+              f"card kept its pre-approval status and `retry {aid}` will not "
+              f"find it - fix the queue store, then approve again{RESET}",
+              file=sys.stderr)
+        return 1
+    print(f"{YELLOW}{r}{RESET} {aid}: {res.get('error', '')}", file=sys.stderr)
+    return 1
+
+
+def cmd_retry(engine_root: Path, data_root: Path, args) -> int:
+    items = list_action_queue(data_root).get("items", [])
+    aid = _resolve_id(items, args.id)
+    card = next(c for c in items if c["id"] == aid)
+    if card.get("status") != "send_failed":
+        print(f"{YELLOW}retry only applies to send_failed cards{RESET} "
+              f"({aid[:8]} is {card.get('status')})", file=sys.stderr)
+        return 1
+    return cmd_approve(engine_root, data_root, args)
+
+
+def cmd_dismiss(engine_root: Path, data_root: Path, args) -> int:
+    items = list_action_queue(data_root).get("items", [])
+    aid = _resolve_id(items, args.id)
+    dismiss_card(data_root, aid, reason=args.reason or "")
+    print(f"{YELLOW}dismissed{RESET} {aid[:8]} (suppressed from re-proposal for the cooldown window)")
+    return 0
+
+
+# The notify-tier types this command may apply without being asked twice
+# (from the bridge daemon, removed 2026-09-21, HOS-7).
+_AUTO_APPLY_TYPES = frozenset({"pipeline_update"})
+
+
+def cmd_sweep(engine_root: Path, data_root: Path, args) -> int:
+    """Apply the notify-tier cards, by hand; nothing runs this on a timer.
+
+    Without it notify-tier cards sit `pending` for ever with nothing reporting
+    it (it moved here from the bridge daemon, removed 2026-09-21, HOS-7).
+
+    The routing is unchanged and only the notify tier is dispatched:
+
+    - `gated` belongs to `approve` alone. A send is human-gated, always.
+    - `autonomous` display-only types (`note`, `alert`) are surfaced for the
+      operator to read and dismiss, never auto-disposed (operator decision
+      2026-06-04: a `note` card is advice he meant to read).
+    - `notify` types inside `_AUTO_APPLY_TYPES` are applied. Any `prev_value`
+      the producer stamped stays on the card, so a revert is a manual edit back
+      to it; nothing here invents pipeline state.
+
+    A `notify` card whose type is NOT in the allowlist is REPORTED rather than
+    silently skipped.
+
+    NOT held by any test. The run that resolved the allowlist through the real
+    ledger was parked in the 2026-09-21 test-suite split, so widening
+    `_AUTO_APPLY_TYPES` to something that is not notify-tier would be caught by
+    nobody. Read the tier check below before changing that frozenset.
+    """
+    items = list_action_queue(data_root).get("items", [])
+    applied, unhandled = [], []
+    for card in items:
+        aid, atype = card.get("id"), card.get("action_type")
+        if not aid or not atype or card.get("status") not in ACTIVE_STATUSES:
+            continue
+        if tool_risk.tier_for(atype) != tool_risk.NOTIFY:
+            continue
+        if atype in _AUTO_APPLY_TYPES:
+            if not args.dry_run:
+                apply_status(data_root, aid, "applied", event="auto_apply")
+            applied.append((aid, atype))
+        else:
+            unhandled.append((aid, atype))
+
+    verb = "would apply" if args.dry_run else "applied"
+    if applied:
+        for aid, atype in applied:
+            print(f"{GREEN}{verb}{RESET} {aid[:8]}  {atype}")
+    if unhandled:
+        print(f"{YELLOW}not applied{RESET}: {len(unhandled)} notify-tier card(s) "
+              f"of a type this command does not handle. They stay pending:")
+        for aid, atype in unhandled:
+            print(f"  {aid[:8]}  {atype}")
+    if not applied and not unhandled:
+        print(f"{GRAY}no notify-tier cards{RESET}")
+    return 0
+
+
+def cmd_edit(engine_root: Path, data_root: Path, args) -> int:
+    # Usage errors first, cheapest first: nothing to edit, then an unreadable
+    # body file, then the id. The read used to sit after the id lookup and was
+    # unguarded, so a mistyped --body-file path produced a raw OSError traceback
+    # against a file whose own contract says "Exit codes: 0 ok, 1 request/usage
+    # error". Checking it first also names the typo the operator actually made.
+    if args.to is None and args.subject is None and not args.body_file:
+        print(f"{RED}nothing to edit - pass --to, --subject and/or --body-file{RESET}",
+              file=sys.stderr)
+        return 1
+    # A recipient correction is checked WHEN TYPED, not only at approve. The
+    # send-time gate in `send_card` is the real guard and is unconditional; this
+    # one exists so a typo is named at the keystroke that made it rather than
+    # after the operator believes the card is ready.
+    if args.to is not None:
+        why = recipient.refusal_reason(args.to)
+        if why:
+            print(f"{RED}refusing that recipient{RESET}: {why}", file=sys.stderr)
+            return 1
+    body = None
+    if args.body_file:
+        try:
+            body = Path(args.body_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"{RED}cannot read --body-file {args.body_file}: {e}{RESET}",
+                  file=sys.stderr)
+            return 1
+    items = list_action_queue(data_root).get("items", [])
+    aid = _resolve_id(items, args.id)
+    edit_card(data_root, aid, to=args.to, subject=args.subject, draft_body=body,
+              draft_status="ready_for_review")
+    print(f"{GREEN}edited{RESET} {aid[:8]} (draft_status -> ready_for_review)")
+    return 0
+
+
+def cmd_deposit(engine_root: Path, data_root: Path, args) -> int:
+    # `UnicodeDecodeError` is a sibling of `json.JSONDecodeError` under
+    # `ValueError`, not a subclass, and the decode fails inside `read_text`
+    # before any parse. Without it a cards file holding one non-UTF-8 byte
+    # raised a raw traceback out of a module whose contract is
+    # `Exit codes: 0 ok, 1 request/usage error`. MEASURED 2026-09-01.
+    try:
+        cards = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"{RED}cannot read cards file{RESET}: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(cards, list):
+        print(f"{RED}cards file must be a JSON array of card objects{RESET}", file=sys.stderr)
+        return 1
+    res = append_cards(data_root, cards)
+    # `append_cards` refuses ATOMICALLY: one unclassified `action_type` and
+    # nothing at all is written. Until 2026-09-02 this line read only `added`
+    # and `skipped`, so a total refusal printed a green `deposited added=0
+    # skipped=0` and exited 0. The caller was told it had deposited nothing
+    # successfully, when in fact its whole batch had been thrown away. The
+    # `logger.error` inside `append_cards` reached stderr through
+    # `logging.lastResort`, which is a message beside a contradicting green
+    # line and a zero exit, and the exit code is what a script reads.
+    if not res.get("ok", True):
+        print(f"{RED}refused{RESET}: {res.get('error', 'append_cards returned ok=False')}",
+              file=sys.stderr)
+        for bad in res.get("rejected") or []:
+            print(f"  card {bad.get('index')}: action_type="
+                  f"{bad.get('action_type')!r} {bad.get('reason', '')}", file=sys.stderr)
+        print("  nothing was written.", file=sys.stderr)
+        return 1
+    print(f"{GREEN}deposited{RESET} added={res.get('added', 0)} skipped={res.get('skipped', 0)}")
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Terminal-native Action Queue driver (daemon-free).")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list", help="list active cards")
+    p_show = sub.add_parser("show", help="print one card's full JSON")
+    p_show.add_argument("id")
+    p_app = sub.add_parser("approve", help="approve + send synchronously (gated cards)")
+    p_app.add_argument("id")
+    p_ret = sub.add_parser("retry", help="re-send a send_failed card")
+    p_ret.add_argument("id")
+    p_dis = sub.add_parser("dismiss", help="tombstone a card")
+    p_dis.add_argument("id")
+    p_dis.add_argument("--reason", default="")
+    p_edit = sub.add_parser("edit", help="rewrite an email card's recipient/subject/body")
+    p_edit.add_argument("id")
+    p_edit.add_argument("--to", default=None,
+                        help="correct the recipient address before approving")
+    p_edit.add_argument("--subject", default=None)
+    p_edit.add_argument("--body-file", default=None)
+    p_dep = sub.add_parser("deposit", help="append cards from a JSON array file (daemon-free)")
+    p_dep.add_argument("--file", required=True)
+    p_swp = sub.add_parser("sweep", help="apply notify-tier cards (no timer runs this)")
+    p_swp.add_argument("--dry-run", action="store_true",
+                       help="report what would be applied and change nothing")
+    args = ap.parse_args(argv)
+
+    engine_root = get_workspace_root()
+    data_root = get_data_root()
+
+    # WHICH store answered, said out loud, for every subcommand rather than in
+    # `cmd_list` alone: a card approved from a store the operator did not know
+    # he was reading is an irreversible send out of the wrong file. Stderr, so
+    # `show`'s JSON stays pipeable. Nothing here moves the store; that is
+    # HELM's, by hand, with the daemons stopped.
+    try:
+        address = store_address(data_root)
+    except AmbiguousStore as exc:
+        print(f"{RED}REFUSED{RESET}: {exc}", file=sys.stderr)
+        return 2
+    if address.legacy:
+        print(f"{YELLOW}store at {address.path}{RESET}\n"
+              f"{GRAY}That is the address before the one-time runtime-junk move, which "
+              f"has not run. Reads and writes both land there.{RESET}", file=sys.stderr)
+
+    dispatch = {
+        "list": cmd_list, "show": cmd_show, "approve": cmd_approve, "retry": cmd_retry,
+        "dismiss": cmd_dismiss, "edit": cmd_edit, "deposit": cmd_deposit,
+        "sweep": cmd_sweep,
+    }
+    return dispatch[args.cmd](engine_root, data_root, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

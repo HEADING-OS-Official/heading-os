@@ -1,0 +1,584 @@
+"""Cheap classifier: runs on every inbound email and makes no LLM call.
+
+Aggregates signal weights from explicit YAML overrides, CRM contacts,
+pipeline state, active threads, calendar, and time-sensitivity regex.
+Returns a tier guess (HIGH_LIKELY / MAYBE / LOW) + breakdown of what
+contributed.
+
+Sovereignty discipline: this module reads emails but NEVER logs body,
+subject text, or full sender address. Log entries (added by daemon, not
+here) get sender_domain + subject_length only. This module's return dict
+carries no email content -- just tier_guess + weight + reason_breakdown
+strings.
+
+Signals weighted:
+- sender_override (always_critical -> HIGH_LIKELY immediately, +inf effective)
+- sender_override (always_important -> contributes weight 3, no short-circuit)
+- sender_override (always_normal -> LOW immediately, -inf effective)
+- keyword_override (promote_to_critical -> HIGH_LIKELY immediately)
+- keyword_override (promote_to_important -> +3)
+- CRM contact with matching email -> +1 baseline
+- CRM contact with relationship in {tribe, customer, investor, prospect} -> +2 additional
+- pipeline.md mentions sender domain -> +2
+- a `threads-business` record mentions sender (recent 30d) -> +1
+- calendar event with sender (+-7d) -> +1
+- time-sensitivity regex match -> +1
+
+Aggregate:
+- weight >= 4         -> HIGH_LIKELY
+- weight 2 or 3       -> MAYBE
+- weight 0 or 1       -> LOW
+
+DATA reads resolve at the POINT OF USE with `data_root=self.data_root` passed
+explicitly, never at import, because this module runs inside the inbox daemon:
+the CRM cards and the business threads through `data_read("crm-contacts")` and
+`data_read("threads-business")`, the pipeline through the shared
+`crm.pipeline_path(data_root)`.
+"""
+from __future__ import annotations
+
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, List, Optional
+
+import yaml
+
+from scripts.utils.crm import pipeline_path as _pipeline_path
+from scripts.utils.data_path import data_read
+from scripts.utils.markdown import split_frontmatter
+
+if TYPE_CHECKING:
+    from scripts.inbox_pulse.overrides import RulesEngine
+
+
+# Time-sensitivity regex -- matches urgent language in subject/body
+_TIME_SENSITIVITY_RE = re.compile(
+    r"\b(urgent|asap|eod|today|tomorrow|deadline|by\s+\w+day|by\s+end\s+of)\b",
+    re.IGNORECASE,
+)
+
+# Time window for "recent" thread mentions
+_RECENT_THREAD_DAYS = 30
+# Time window for calendar events on either side of "now"
+_CALENDAR_WINDOW_DAYS = 7
+
+# Body preview cap -- limit how many chars we scan for keywords/time-sensitivity
+_BODY_PREVIEW_CHARS = 500
+
+# CRM relationship types that add the extra +2 bonus
+_HIGH_VALUE_RELATIONSHIPS = frozenset({
+    "tribe",
+    "tribe-leadership",
+    "customer",
+    "investor",
+    "investor-active",
+    "investor-declined",
+    "prospect",
+    "prospect-partner",
+})
+
+
+def _short_circuit(tier: str, weight: int, marker: str,
+                   keyword_override: Optional[str] = None) -> dict:
+    """Build a short-circuit classification result dict.
+
+    Used by the recipient-aware rule block in CheapClassifier.classify() to
+    return early without running the 7-signal classifier.
+
+    Args:
+        tier:    "HIGH_LIKELY" | "MAYBE" | "LOW"
+        weight:  Effective weight to report (99 for always-important, 0 for always-normal).
+        marker:  Identifies which short-circuit branch fired, stored in
+                 reason_breakdown["sender_override"]. Valid markers:
+                   tl_to_important            -- internal TL sender + CEO in To
+                   internal_nonlead_to_normal -- internal non-leadership sender + CEO in To
+                   internal_cc_normal         -- internal sender (any role) + CEO in CC only
+        keyword_override: What `match_keywords` actually returned for this
+                 message. This field was hardcoded to None, which is not the
+                 same claim as "no keyword matched": the rule had not been
+                 consulted at all, and the breakdown reported the absence as a
+                 finding. A caller reading the breakdown to explain a LOW
+                 verdict was told the keywords were checked and were clean.
+    """
+    return {
+        "tier_guess": tier,
+        "weight": weight,
+        "reason_breakdown": {
+            "sender_override": marker,
+            "keyword_override": keyword_override,
+            "crm_contact": 0,
+            "pipeline": 0,
+            "threads": 0,
+            "calendar": 0,
+            "time_sensitivity": 0,
+        },
+    }
+
+
+class CheapClassifier:
+    """No-LLM classifier. Aggregates signals into a tier_guess + breakdown.
+
+    Caller passes:
+      rules:          RulesEngine instance (already loaded YAML)
+      workspace_root: Path to the engine workspace root (config/ etc.)
+      account:        Optional exchangelib Account for calendar lookups.
+                      If None, calendar signal is skipped (returns 0).
+      data_root:      Optional Path to the DATA root (crm/, threads/,
+                      context/). HEADING OS engine/data split: CRM contacts,
+                      pipeline, and threads are DATA, so they resolve under
+                      ``data_root``. Defaults to ``workspace_root`` when not
+                      supplied.
+
+    All file system reads are read-only. CRM/pipeline/threads files are
+    parsed lightly (regex + simple frontmatter lookup; no full markdown parse).
+    """
+
+    def __init__(
+        self,
+        rules: "RulesEngine",
+        workspace_root: Path,
+        account: Optional[Any] = None,
+        my_email: Optional[str] = None,
+        data_root: Optional[Path] = None,
+    ) -> None:
+        self.rules = rules
+        self.data_root = data_root if data_root is not None else workspace_root
+        self.account = account
+        self.my_email = my_email
+        self._crm_index: Optional[dict] = None
+
+    def _crm_by_email(self) -> dict:
+        """Lower-cased address to merged contact record, built once per instance.
+
+        Delegates to `scripts.utils.crm.contact_index_by_email`, the shared
+        reader, which reads both an inline `email:` key and the entity schema
+        (`entity_ref` plus the entity's `canonical_email`).
+
+        Built once and held, because both callers ask about the same corpus. A
+        classifier instance is constructed per run, so the index cannot go stale
+        within one, and the seam is resolved at the moment of use.
+
+        The cards are the directories the registry name `crm-contacts` answers;
+        each is handed to `contact_index_by_email`, which globs one level.
+        """
+        if self._crm_index is None:
+            from scripts.utils.crm import contact_index_by_email
+            index: dict = {}
+            for directory in data_read("crm-contacts", data_root=self.data_root):
+                index.update(contact_index_by_email(
+                    contacts_dir=directory, workspace_root=self.data_root))
+            self._crm_index = index
+        return self._crm_index
+
+    def classify(
+        self,
+        sender_email: str,
+        subject: str,
+        body_preview: str = "",
+        now: Optional[datetime] = None,
+        recipients_to: Optional[List[str]] = None,
+        recipients_cc: Optional[List[str]] = None,
+    ) -> dict:
+        """Classify an inbound email into HIGH_LIKELY / MAYBE / LOW.
+
+        Args:
+            sender_email:   Full email address of sender (used internally for
+                            lookup; NOT logged anywhere by this method).
+            subject:        Email subject line (used for keyword + time-sensitivity).
+            body_preview:   First ~500 chars of body (used for time-sensitivity).
+                            Caller should truncate; this method enforces the cap.
+            now:            Override "now" for testability. Defaults to
+                            datetime.now(UTC). A naive value is read as UTC
+                            rather than rejected, so it can never reach the
+                            aware/naive comparison in `_score_threads`.
+            recipients_to:  List of To recipient addresses (transient -- NOT stored).
+                            Used by the `tribe-leadership`+To/CC rule only.
+            recipients_cc:  List of Cc recipient addresses (transient -- NOT stored).
+                            Used by the `tribe-leadership`+To/CC rule only.
+
+        Returns:
+            {
+                "tier_guess": "HIGH_LIKELY" | "MAYBE" | "LOW",
+                "weight": int,
+                "reason_breakdown": {
+                    "sender_override": "always_critical" | "always_important" | "always_normal" | None,
+                    "keyword_override": "promote_to_critical" | "promote_to_important" | None,
+                    "crm_contact": int,         # 0/1/3 (1 for match, +2 for tribe/cust/inv/prospect)
+                    "pipeline": int,            # 0 or 2
+                    "threads": int,             # 0 or 1
+                    "calendar": int,            # 0 or 1
+                    "time_sensitivity": int,    # 0 or 1
+                },
+            }
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            # A naive override is read as UTC, which is what the default one
+            # line up already is. `_parse_date` returns UTC-AWARE datetimes and
+            # `_score_threads` compares `last_touched < cutoff` against them,
+            # so a naive `now` made `cutoff` naive and raised "can't compare
+            # offset-naive and offset-aware datetimes" straight out of
+            # `classify`, killing the whole classification run. Unlike
+            # `_score_calendar`, nothing on that path swallows it. The
+            # docstring offered `now` as an override for testability and never
+            # said it had to carry a zone, so `datetime(2026, 9, 1)` was a
+            # reasonable thing for a caller to pass.
+            now = now.replace(tzinfo=timezone.utc)
+
+        body_preview = body_preview[:_BODY_PREVIEW_CHARS] if body_preview else ""
+
+        # Resolved before step 0, because step 1 below claims sender overrides
+        # take ABSOLUTE precedence and until 2026-08-23 that was false: step 0
+        # returned first, so an internal colleague on `always_critical` was
+        # silently demoted to LOW whenever they wrote to the operator directly.
+        # That is the one case the allowlist exists for -- the operator saying
+        # "always show me this person" -- and it did not work for anyone inside
+        # the team, with the breakdown blaming `internal_nonlead_to_normal`.
+        #
+        # Only the two SHORT-CIRCUITING verdicts skip the recipient block.
+        # `always_important` never claimed precedence ("acts as a weight"), so
+        # the 2026-05-29 directive still governs it.
+        sender_match = self.rules.match_sender(sender_email)
+
+        # `promote_to_critical` is resolved here for the SAME reason the two
+        # short-circuiting sender verdicts above are: the recipient block below
+        # returns before step 2 ever runs, so the operator's critical keywords
+        # could not fire for internal mail at all. A colleague inside the team
+        # writing "PRODUCTION DOWN" straight to him classified LOW, and the
+        # breakdown blamed `internal_nonlead_to_normal` while reporting
+        # `keyword_override: None` as though the words had been read.
+        #
+        # `promote_to_important` deliberately does NOT jump the block. It is a
+        # weight (3), never a verdict, exactly like `always_important` one line
+        # up - but it is now REPORTED by the short circuit rather than erased.
+        keyword_match = self.rules.match_keywords(subject, body_preview)
+        overridden = (sender_match in ("always_critical", "always_normal")
+                      or keyword_match == "promote_to_critical")
+
+        # 0. Recipient-aware rule (CEO directive 2026-05-29, extended from bbdfde5).
+        # Applies ONLY when sender is internal (sender's domain in rules.internal_domains).
+        # External senders bypass this entire block -- they use the 7-signal classifier.
+        #
+        # Internal sender + CEO in To  + team leadership   -> always_important (HIGH_LIKELY)
+        # Internal sender + CEO in To  + NOT leadership     -> always_normal (LOW)
+        # Internal sender + CEO in CC (and not To)          -> always_normal (LOW, role-independent)
+        # Internal sender + CEO in neither (BCC/forward)    -> fall through
+        #
+        # Degrades gracefully (falls through) when my_email is unset, no recipient lists
+        # are provided, internal_domains is empty, or sender domain is not internal.
+        if not overridden and self.my_email and (recipients_to or recipients_cc):
+            sender_domain = sender_email.split("@")[-1].lower() if "@" in sender_email else ""
+            internal_domains_lower = [d.lower() for d in self.rules.internal_domains]
+            is_internal = bool(sender_domain and sender_domain in internal_domains_lower)
+
+            if is_internal:
+                my_email_lower = self.my_email.lower()
+                in_to = any(addr.lower() == my_email_lower for addr in (recipients_to or []))
+                in_cc = any(addr.lower() == my_email_lower for addr in (recipients_cc or []))
+
+                if in_to:
+                    relationship = self._lookup_relationship_type(sender_email)
+                    # PREFIX, not a free substring. `"tribe-leadership" in ...`
+                    # also fired on `ex-tribe-leadership` and
+                    # `former-tribe-leadership`, promoting a past leader to
+                    # HIGH_LIKELY weight 99 -- the opposite of what the
+                    # 2026-05-29 directive in this block says a non-leadership
+                    # internal sender must get.
+                    #
+                    # Not an equality test either: subtypes are deliberate, so
+                    # `tribe-leadership-active` must fire and an exact compare
+                    # would drop a real leader.
+                    #
+                    # KNOWN GAP: a NEGATING SUFFIX still passes, so
+                    # `tribe-leadership-alumni` is treated as current. Nothing
+                    # in the repo defines the subtype vocabulary, and guessing a
+                    # denylist would be inventing a taxonomy. Named here rather
+                    # than silently half-fixed.
+                    is_tl = bool(relationship
+                                 and relationship.strip().lower()
+                                 .startswith("tribe-leadership"))
+                    if is_tl:
+                        return _short_circuit("HIGH_LIKELY", 99, "tl_to_important",
+                                              keyword_match)
+                    else:
+                        return _short_circuit("LOW", 0, "internal_nonlead_to_normal",
+                                              keyword_match)
+
+                if in_cc:
+                    return _short_circuit("LOW", 0, "internal_cc_normal",
+                                          keyword_match)
+        # else: not internal OR sender domain is empty OR my_email unset
+        #        OR neither in_to nor in_cc -> fall through to existing classifier
+
+        breakdown: dict = {
+            "sender_override": None,
+            "keyword_override": None,
+            "crm_contact": 0,
+            "pipeline": 0,
+            "threads": 0,
+            "calendar": 0,
+            "time_sensitivity": 0,
+        }
+
+        # 1. Sender overrides take absolute precedence (resolved above step 0,
+        #    which is what makes the word "absolute" true).
+        breakdown["sender_override"] = sender_match
+        if sender_match == "always_critical":
+            return {"tier_guess": "HIGH_LIKELY", "weight": 99, "reason_breakdown": breakdown}
+        if sender_match == "always_normal":
+            return {"tier_guess": "LOW", "weight": 0, "reason_breakdown": breakdown}
+        # always_important does NOT short-circuit -- it acts as a weight (3)
+
+        # 2. Keyword overrides -- promote_to_critical short-circuits to HIGH_LIKELY
+        # Resolved above step 0, which is what lets a critical keyword
+        # outrank the recipient rule.
+        breakdown["keyword_override"] = keyword_match
+        if keyword_match == "promote_to_critical":
+            return {"tier_guess": "HIGH_LIKELY", "weight": 99, "reason_breakdown": breakdown}
+
+        weight = 0
+
+        # sender_override = always_important adds weight 3
+        if sender_match == "always_important":
+            weight += 3
+
+        # keyword_override = promote_to_important adds weight 3
+        if keyword_match == "promote_to_important":
+            weight += 3
+
+        # 3. CRM contact lookup
+        crm_score = self._score_crm_contact(sender_email)
+        breakdown["crm_contact"] = crm_score
+        weight += crm_score
+
+        # 4. Pipeline.md domain mention
+        pipeline_score = self._score_pipeline(sender_email)
+        breakdown["pipeline"] = pipeline_score
+        weight += pipeline_score
+
+        # 5. Active threads
+        threads_score = self._score_threads(sender_email, now)
+        breakdown["threads"] = threads_score
+        weight += threads_score
+
+        # 6. Calendar (only if account provided)
+        if self.account is not None:
+            calendar_score = self._score_calendar(sender_email, now)
+            breakdown["calendar"] = calendar_score
+            weight += calendar_score
+
+        # 7. Time-sensitivity regex
+        if _TIME_SENSITIVITY_RE.search(subject) or (
+            body_preview and _TIME_SENSITIVITY_RE.search(body_preview)
+        ):
+            breakdown["time_sensitivity"] = 1
+            weight += 1
+
+        # Aggregate to tier
+        if weight >= 4:
+            tier = "HIGH_LIKELY"
+        elif weight >= 2:
+            tier = "MAYBE"
+        else:
+            tier = "LOW"
+
+        return {
+            "tier_guess": tier,
+            "weight": weight,
+            "reason_breakdown": breakdown,
+        }
+
+    # ------------------------------------------------------------------
+    # Per-signal helpers
+    # ------------------------------------------------------------------
+
+    def _lookup_relationship_type(self, sender_email: str) -> Optional[str]:
+        """The relationship_type of the CRM contact owning `sender_email`.
+
+        Case-insensitive. None when no card owns the address, or the field is
+        empty. Reads through `_crm_by_email`, so it sees both card schemas.
+        """
+        record = self._crm_by_email().get(sender_email.lower())
+        if record is None:
+            return None
+        relationship = record.get("type", "")
+        return str(relationship) if relationship else None
+
+    def _score_crm_contact(self, sender_email: str) -> int:
+        """The CRM signal's weight for `sender_email`.
+
+        Returns 0 when no contact owns the address, 1 when one does, and 3 when
+        that contact's relationship_type is in the high-value set (tribe,
+        tribe-leadership, customer, investor-active, prospect, and the rest of
+        `_HIGH_VALUE_RELATIONSHIPS`).
+
+        `.strip()` before `.lower()`, matching the `tribe-leadership` test in
+        `classify`, which normalises the SAME field with
+        `relationship.strip().lower().startswith(...)`. This path only
+        lowercased, so a hand-edited card carrying `type: "customer "` was read
+        as current leadership by one reader and scored 1 instead of 3 by the
+        other. Two readers of one field disagreeing is enough to drop a
+        high-value external contact a whole tier.
+        """
+        record = self._crm_by_email().get(sender_email.lower())
+        if record is None:
+            return 0
+        if str(record.get("type", "")).strip().lower() in _HIGH_VALUE_RELATIONSHIPS:
+            return 3  # 1 baseline + 2 bonus
+        return 1
+
+    def _score_pipeline(self, sender_email: str) -> int:
+        """Check `pipeline` for sender's domain mention.
+
+        Returns 2 if found, 0 if not. File-not-found returns 0.
+
+        Through the shared `scripts/utils/crm.py::pipeline_path(data_root)`, rooted
+        where the caller says, so the suite never reads the real overlay.
+        """
+        pipeline_path = _pipeline_path(self.data_root)
+        if not pipeline_path.is_file():
+            return 0
+
+        domain = sender_email.split("@")[-1].lower()
+        text = pipeline_path.read_text(encoding="utf-8", errors="replace").lower()
+        if re.search(r"\b" + re.escape(domain) + r"\b", text):
+            return 2
+        return 0
+
+    def _score_threads(self, sender_email: str, now: datetime) -> int:
+        """Scan `threads-business` frontmatter for active threads mentioning sender.
+
+        Returns 1 if any thread file mentions sender's email/domain AND its
+        last_touched field is within the last _RECENT_THREAD_DAYS days.
+        Returns 0 otherwise.
+
+        Frontmatter has 'last_touched: YYYY-MM-DD'.
+
+        The directories are the registry name `threads-business`, which places
+        the business threads and nothing else: the private threads are a
+        different address, and so is the archive below them, because only
+        the top level of each directory is globbed. Until 2026-09-25 (HOS-5
+        section 6) this handed the PRE-MOVE spelling to the move's compatibility
+        layer and filtered the whole `status/matter` kind by it with (leak-guard: ok, history)
+        `compat.under_legacy`. That filter existed because a membership test over
+        the absolute path (`"business" in p.parts`, until 2026-09-14, Astra b2
+        #1 (#4)) admitted every thread, the CEO-only ones included, when an
+        ancestor of the data root was named `business`. A directory the registry
+        names cannot be widened that way: nothing above it is inspected.
+        """
+        addr_lower = sender_email.lower()
+        domain = sender_email.split("@")[-1].lower()
+        cutoff = now - timedelta(days=_RECENT_THREAD_DAYS)
+
+        # Every account's threads too (HOS-234 part 10): the C3 move takes them
+        # out of `threads-business`. `business_thread_dirs` answers only
+        # directories the registry names, so the reasoning above still holds.
+        from scripts.utils.threads_lib import business_thread_dirs
+        homes = list(data_read("threads-business", data_root=self.data_root))
+        homes += business_thread_dirs(data_root=self.data_root)
+        threads = sorted({
+            p for d in homes
+            if d.is_dir() for p in d.glob("*.md")
+            if not p.is_symlink() and p.is_file()})
+        for md_file in threads:
+            frontmatter = _extract_frontmatter(md_file)
+            if frontmatter is None:
+                continue
+
+            last_touched_raw = frontmatter.get("last_touched", "")
+            if not last_touched_raw:
+                continue
+
+            last_touched = _parse_date(str(last_touched_raw))
+            if last_touched is None:
+                continue
+
+            if last_touched < cutoff:
+                continue
+
+            # Check if sender email or domain appears anywhere in the file body
+            try:
+                body = md_file.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                continue
+
+            if addr_lower in body or re.search(r"\b" + re.escape(domain) + r"\b", body):
+                return 1
+
+        return 0
+
+    def _score_calendar(self, sender_email: str, now: datetime) -> int:
+        """Look for calendar events with sender as attendee +-_CALENDAR_WINDOW_DAYS.
+
+        Requires self.account (exchangelib Account). Returns 0 if account is None
+        OR if no events match. Returns 1 if at least one event matches.
+
+        Defensive: catch any exception (calendar API issues) and return 0 silently
+        -- calendar is enrichment, not blocking.
+        """
+        try:
+            start = now - timedelta(days=_CALENDAR_WINDOW_DAYS)
+            end = now + timedelta(days=_CALENDAR_WINDOW_DAYS)
+            sender_lower = sender_email.lower()
+
+            for event in self.account.calendar.view(start=start, end=end):
+                attendees = (event.required_attendees or []) + (
+                    event.optional_attendees or []
+                )
+                for att in attendees:
+                    addr = (
+                        (att.mailbox.email_address or "").lower()
+                        if att.mailbox
+                        else ""
+                    )
+                    if addr == sender_lower:
+                        return 1
+            return 0
+        except Exception:  # noqa: BLE001
+            return 0
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_frontmatter(md_file: Path) -> Optional[dict]:
+    """Parse YAML frontmatter from a markdown file.
+
+    Returns the parsed dict, or None if the file has no frontmatter,
+    fails to parse, or cannot be read. Fences are found by the shared
+    `scripts.utils.markdown.split_frontmatter`.
+    """
+    try:
+        text = md_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    raw_frontmatter, _body, _kind = split_frontmatter(text)
+    if raw_frontmatter is None:
+        return None
+    try:
+        parsed = yaml.safe_load(raw_frontmatter)
+    except yaml.YAMLError:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    return parsed
+
+
+def _parse_date(value: str) -> Optional[datetime]:
+    """Parse a YYYY-MM-DD string into a UTC-aware datetime at midnight.
+
+    Returns None if parsing fails.
+    """
+    try:
+        date_str = str(value).strip().strip("'\"")
+        dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, AttributeError):
+        return None

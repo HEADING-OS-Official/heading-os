@@ -1,0 +1,144 @@
+# Sentinel Configuration — TEMPLATE
+# ==================================
+# Unified comms monitor for email (Exchange) and Telegram. Analyzes incoming
+# messages for urgency and notifies via Telegram.
+#
+# This is the engine-shipped TEMPLATE. The live config is private instance DATA
+# and lives in the data overlay as sentinel_config.yaml under the registry name
+# `data-config` (get_data_config_dir()). Copy this file there and fill in your
+# own VIP senders, monitored chats, domains, protected blocks, day themes and
+# context files. Sentinel falls back to this template when no private config is
+# present, so a fresh clone runs out of the box, with no VIP, no monitored chat,
+# no protected block, no day theme and no business context until you add them.
+
+general:
+  check_interval_minutes: 15
+  urgency_threshold: 7        # 1-10 scale; notify if score >= this
+  timezone: "UTC"             # IANA name; omit to inherit HEADING_OS_TZ
+  log_level: "INFO"           # DEBUG, INFO, WARNING, ERROR
+  # legacy: every source alerts in real time, digests at morning_time and
+  # evening_time. guardian: real-time alerts for EMAIL only at
+  # urgency_threshold, Telegram goes to the digest only, and a digest at each
+  # time in digest.times ("matters" and "awaits your reply").
+  mode: "legacy"
+  # Real-time bar while the fallback rule scores (llm.provider qwen, model down).
+  rule_wake_threshold: 6
+
+email:
+  enabled: true
+  folder: "Inbox"
+  max_per_check: 50
+  # How far back the read-only Sent Items reader looks for your replies.
+  sent_lookback_days: 14
+
+  # Senders to always treat as high-priority (bypass LLM threshold floor)
+  vip_senders: []
+
+  # Senders / patterns to always ignore (never sent to LLM)
+  ignore_patterns:
+    - "noreply@*"
+    - "no-reply@*"
+    - "*newsletter*"
+    - "notifications@*"
+
+telegram:
+  enabled: true
+  check_personal_dms: true
+  max_messages_per_chat: 30
+
+  # Specific chats/channels/groups to monitor. Use @username, chat ID, or name.
+  # Each entry: { name: "<@username, chat ID, or name>", priority: "high" }.
+  monitored_chats: []
+
+  # Personal DMs to ignore even if they have unreads. An entry matches the
+  # display name, the @username (with the @), or the numeric user id; names
+  # are case-insensitive. List the id too: a display name changes when the
+  # contact renames, and the id never does.
+  ignore_chats: []
+
+digest:
+  enabled: true
+  morning_time: "08:00"       # overnight summary (local time)
+  evening_time: "22:00"       # full daily summary (local time)
+  # guardian mode only: one digest at each of these local times.
+  times: ["09:00", "13:00", "18:00", "22:00"]
+  matters_min_score: 5        # "matters": scored at or above this since the last digest
+  reply_min_score: 6          # "awaits your reply": at or above this, or the model asked for a reply
+  reply_window_days: 3        # how far back "awaits your reply" looks
+  max_rows: 12                # rows per section before "... and N more"
+
+notification:
+  # Where alerts land is NOT set here. Alerts go out over the notifications
+  # bot, to the chat id in SENTINEL_TELEGRAM_TARGET (falling back to
+  # ODIN_CADENCE_TELEGRAM_TARGET) in .env. A bot cannot resolve a
+  # human-readable channel name, so no name belongs in this file.
+  dedup_cooldown_minutes: 60
+  max_notifications_per_cycle: 10
+
+calendar:
+  enabled: true
+  auto_accept: true            # Auto-accept policy-compliant invites
+  auto_decline: true           # Auto-decline policy-violating invites (non-VIP)
+  use_llm_for_theme: true      # Use LLM to classify meeting topic for theme-day matching
+  # Empty -> the built-in default sentence in scripts/sentinel.py.
+  decline_message: ""
+
+  # RUNE override: a team member puts this bracketed tag in the invite subject
+  # to force the invite to the operator's personal decision (no auto-accept,
+  # no auto-decline -- it is escalated instead). Bracket-required, case-insensitive.
+  rune_override_enabled: true
+  rune_token: "[RUNE]"
+
+  # Domains treated as internal (team). Empty -> the operator's own email domain.
+  tribe_domains: []
+
+  # Optional full override of the team decline body. Placeholders: {subject},
+  # {alternative}, {rune_token}. Unset -> built-in default with a ready-to-copy
+  # "[RUNE] <subject>" example so recipients know exactly how to escalate.
+  tribe_decline_message: ""
+
+  # Senders to never auto-decline (always escalate)
+  vip_senders: []
+
+  # External domains that get escalation treatment (never auto-declined)
+  external_domains: []
+
+  # Protected time blocks (days: 0=Mon, 6=Sun). Each entry is a mapping with
+  # `days` and one of: `before: "HH:MM"`, `after: "HH:MM"`, `start` + `end`, or
+  # none of them for the whole day.
+  protected_blocks: []
+
+  # Weekly theme structure: weekday number (0=Mon) -> theme name. A day with
+  # no theme is never checked for alignment.
+  day_themes: {}
+
+  # Meeting rules
+  max_attendees: 6
+  min_gap_minutes: 15
+  max_consecutive: 4
+  max_duration_minutes: 80
+
+llm:
+  # Who scores email and Telegram. anthropic: the Claude path below.
+  # qwen: a private model through the local CLIProxyAPI (127.0.0.1:8317,
+  # CLIPROXY_API_KEY in .env), with the model-free rule as the outage fallback.
+  # The calendar invite analyzer stays on the anthropic path either way.
+  provider: "anthropic"
+  # provider qwen only:
+  qwen_model: ""                # the proxy's model alias for your Qwen model (required)
+  qwen_max_tokens: 600
+  qwen_timeout_seconds: 120
+  qwen_batch_size: 1            # items per call; 1 is how the model was measured
+  # Fitted weights of the fallback rule, private data: a path relative to the
+  # data-config directory (registry name `data-config`), or absolute.
+  rule_weights_file: "sentinel-rule-weights.json"
+  # Unusable answers (cut off, not JSON) are retried this many times, then
+  # scored by the rule (email, provider qwen) or listed in the digest.
+  max_score_attempts: 3
+  # model: "<explicit model id>"   # optional pin for reproducing one run;
+  # omit it (the default) to track the newest Haiku via
+  # scripts/utils/claude_models.py
+  max_tokens: 500
+  # Context files loaded at startup for business-aware urgency scoring, each a
+  # path relative to the data root (then the engine root).
+  context_files: []

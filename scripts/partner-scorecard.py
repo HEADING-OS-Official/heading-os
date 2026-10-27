@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Generate the partner scorecard in partners.md from the pipeline.
+
+`partners` opens with a Partner Scorecard Summary table.
+
+A second hand-maintained copy of a list drifts. So the summary table is
+generated from the pipeline, exactly the way `pipeline-summary.py` already
+generates the Pipeline Summary block, and everything a human wrote outside
+the two markers survives untouched. The detailed per-partner profiles below
+the table stay hand-written on purpose: that is judgement, not a list.
+
+Usage:
+    python scripts/partner-scorecard.py             # print the table
+    python scripts/partner-scorecard.py --update    # splice it into partners.md
+    python scripts/partner-scorecard.py --check     # exit 1 if partners.md has drifted
+"""
+from __future__ import annotations
+import argparse
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.utils.atomic import atomic_write_text  # noqa: E402
+from scripts.utils.colors import GREEN, RED, YELLOW, BOLD, RESET  # noqa: E402
+from scripts.utils.crm import partners_path, pipeline_path  # noqa: E402
+
+BEGIN = "<!-- BEGIN GENERATED SCORECARD -->"
+END = "<!-- END GENERATED SCORECARD -->"
+
+# Health is derived from the pipeline Stage cell, never invented here. An
+# unmapped stage stays blank rather than guessing a colour: a wrong GREEN on a
+# partner nobody has spoken to since March is worse than an empty cell.
+STAGE_HEALTH = {
+    "active": "GREEN",
+    "demo/poc": "GREEN",
+    "strategic asset": "GREEN",
+    "discussions initiated": "YELLOW",
+    "post-mwc": "YELLOW",
+    "parked": "--",
+}
+
+
+def parse_partnerships(content: str) -> list[dict]:
+    """Read the Partnership Discussions table out of pipeline.md."""
+    rows, in_table, seen_sep = [], False, False
+    for line in content.split("\n"):
+        if line.strip().startswith("#") and "partnership discussions" in line.lower():
+            in_table, seen_sep = True, False
+            continue
+        if in_table and line.strip().startswith("|"):
+            # Split on UNESCAPED pipes only. GitHub-flavoured markdown writes a
+            # literal pipe inside a cell as `\|`, and a plain `split("|")` does
+            # not honour that escape. Measured on a row whose topic read
+            # `JV \| licensing talks`: topic came out `JV \`, and every later
+            # column shifted one left, so stage got `licensing talks`, priority
+            # got the real stage `Active`, and stage_date got the priority. The
+            # row still had five cells, so nothing skipped it -- it was parsed
+            # wrong and rendered into partners.md as fact, with `_health()`
+            # reading `licensing talks` and returning `--` for a GREEN partner.
+            #
+            # The `\|` is deliberately LEFT escaped rather than unescaped here:
+            # `render_scorecard` writes the topic cell through verbatim, so an
+            # unescaped pipe would break the generated table open at exactly the
+            # column this fix repaired.
+            cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+            if not seen_sep:
+                # A GitHub-flavoured separator row may carry alignment colons:
+                # `|:---|---:|:---:|`. `startswith("---")` matched none of
+                # those, so `seen_sep` never flipped, every data row was skipped
+                # and `main` exited 2 with "no Partnership Discussions rows
+                # found" over a table that was right there. The live
+                # `pipeline` uses the plain form today, so this is
+                # latent until somebody aligns a column.
+                if cells and re.fullmatch(r":?-{3,}:?", cells[0]):
+                    seen_sep = True
+                continue
+            if len(cells) < 5:
+                continue
+            # "Globex (Jane Roe)" is one partner. The parenthetical is the
+            # contact, and carrying it into the name makes the same partner
+            # unmatchable the moment the contact changes.
+            name = re.sub(r"\s*\([^)]*\)\s*$", "", cells[0]).strip()
+            rows.append({
+                "partner": name,
+                "topic": cells[1],
+                "stage": cells[2],
+                "priority": cells[3],
+                "stage_date": cells[4],
+            })
+        elif in_table and seen_sep and line.strip() and not line.strip().startswith("|"):
+            break
+    return rows
+
+
+def _health(stage: str) -> str:
+    """Map a stage string to a health colour on WORD boundaries.
+
+    Plain `key in s` made every stage containing the substring "active" GREEN,
+    "Inactive" included. This module's own docstring says a wrong GREEN on a
+    partner nobody has spoken to is worse than an empty cell, and a dead partner
+    rendering GREEN into partners.md is read as fact by /proposal and
+    /investor-pitch.
+    """
+    s = stage.lower()
+    for key, colour in STAGE_HEALTH.items():
+        if re.search(rf"(?<![a-z]){re.escape(key)}(?![a-z])", s):
+            return colour
+    return "--"
+
+
+def source_label(pipeline: Path) -> str:
+    """How the generated block should name the file it was generated FROM.
+
+    The overlay-relative path when there is one, else the bare filename. Both
+    are stable across machines: the data root is never part of the answer, so
+    two clones of the same overlay generate the same bytes and `--check` does
+    not report drift for having been run somewhere else.
+
+    Derived rather than written down, because the literal pre-move spelling of
+    `pipeline` that stood in `render_scorecard` until 2026-09-18 had already
+    gone false: MEASURED that day, the block inside the operator's partners.md
+    read the post-move address `pipeline` resolves to, while the generator that
+    claims to own that block still emitted the pre-move spelling. A hand-written path in a
+    GENERATED block is the second copy this whole script exists to abolish.
+    """
+    try:
+        from scripts.utils.workspace import get_data_root
+        return pipeline.resolve().relative_to(get_data_root().resolve()).as_posix()
+    except (ValueError, OSError):
+        # Outside the data root: an exec workspace, or a fixture anywhere. The
+        # name alone is true everywhere and is what a reader needs.
+        return pipeline.name
+
+
+def render_scorecard(rows: list[dict], source: str = "pipeline.md") -> str:
+    out = [
+        "| Partner | Topic | Stage | Priority | Stage date | Health |",
+        "|---------|-------|-------|----------|------------|--------|",
+    ]
+    for r in sorted(rows, key=lambda x: x["partner"].lower()):
+        stage = r["stage"].replace("|", "/")
+        out.append(
+            f"| {r['partner']} | {r['topic']} | {stage} | "
+            f"{r['priority']} | {r['stage_date']} | {_health(r['stage'])} |"
+        )
+    out.append("")
+    # `source`, not the literal pre-move `pipeline` spelling that stood here until
+    # 2026-09-18. See `source_label()` for what it resolves to and why this
+    # string is derived; the default keeps every unit caller deterministic and
+    # free of the environment.
+    out.append(f"_{len(rows)} partnerships. Generated from `{source}` by "
+               f"`scripts/partner-scorecard.py --update`. Do not hand-edit this block; "
+               f"edit the pipeline row instead._")
+    return "\n".join(out)
+
+
+def splice(partners_md: str, table: str) -> str:
+    """Replace the marked block, leaving every human-written line alone."""
+    if BEGIN not in partners_md or END not in partners_md:
+        raise ValueError(
+            f"partners.md is missing the {BEGIN} / {END} marker pair; a generator "
+            f"that silently writes nothing looks exactly like one that found no "
+            f"changes, so this is an error rather than a no-op"
+        )
+    pattern = re.compile(
+        re.escape(BEGIN) + r"[\s\S]*?" + re.escape(END), re.MULTILINE)
+    if not pattern.search(partners_md):
+        # Presence is not order. Measured on a partners.md whose two marker
+        # lines were swapped: both markers are present so the guard above
+        # passes, `BEGIN[\s\S]*?END` then matches nothing, `pattern.sub` returns
+        # the input untouched, and `--update` prints "wrote N partnerships"
+        # while `--check` prints "in sync" over the stale table. That is the
+        # silent no-op the ValueError above says must never happen, arriving
+        # through the one door the marker-presence check left open.
+        raise ValueError(
+            f"partners.md has the {BEGIN} / {END} marker pair out of order "
+            f"(END before BEGIN, or a stray marker between them); nothing can "
+            f"be spliced, and reporting success over an unchanged file is the "
+            f"failure this generator exists to prevent"
+        )
+    # A FUNCTION replacement, not a string one: as a string, `re.sub` reads
+    # backslashes in the generated table as escape sequences, so a partner name
+    # or topic holding a Windows path either corrupted the output or raised
+    # re.error, and `--check` then reported drift that no edit could clear.
+    block = f"{BEGIN}\n\n{table}\n\n{END}"
+    return pattern.sub(lambda _match: block, partners_md, count=1)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--update", action="store_true", help="Write into partners.md")
+    ap.add_argument("--check", action="store_true",
+                    help="Exit 1 if partners.md differs from the generated table")
+    args = ap.parse_args(argv)
+
+    # Two resolvers: `pipeline` and `partners` live in different homes, so no shared directory exists.
+    pipeline, partners = pipeline_path(), partners_path()
+    for f in (pipeline, partners):
+        if not f.exists():
+            print(f"{RED}missing: {f}{RESET}", file=sys.stderr)
+            return 2
+
+    rows = parse_partnerships(pipeline.read_text(encoding="utf-8"))
+    if not rows:
+        print(f"{RED}no Partnership Discussions rows found in {pipeline.name}{RESET}",
+              file=sys.stderr)
+        return 2
+    table = render_scorecard(rows, source_label(pipeline))
+    current = partners.read_text(encoding="utf-8")
+
+    if args.check:
+        try:
+            expected = splice(current, table)
+        except ValueError as exc:
+            print(f"{RED}{exc}{RESET}", file=sys.stderr)
+            return 1
+        if expected != current:
+            print(f"{RED}{BOLD}partners.md scorecard has drifted.{RESET} "
+                  f"Run `python scripts/partner-scorecard.py --update`.")
+            return 1
+        print(f"{GREEN}partner scorecard in sync{RESET} ({len(rows)} partnerships)")
+        return 0
+
+    if args.update:
+        try:
+            # Atomic: partners.md holds human-written prose around the generated
+            # block, and a torn write loses it.
+            atomic_write_text(partners, splice(current, table))
+        except ValueError as exc:
+            print(f"{RED}{exc}{RESET}", file=sys.stderr)
+            return 1
+        print(f"{GREEN}wrote{RESET} {len(rows)} partnerships into {partners.name}")
+        return 0
+
+    print(table)
+    print(f"\n{YELLOW}(preview only - pass --update to write){RESET}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

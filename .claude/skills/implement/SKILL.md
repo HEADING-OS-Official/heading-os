@@ -1,0 +1,266 @@
+---
+name: implement
+description: Execute an approved implementation plan step by step, with optional trajectory logging and a post-run evaluation pass. Use to build out a plan produced by /create-plan. Trigger when the user says "implement", "execute the plan", or "build it". Do NOT use for planning itself (use /create-plan).
+argument-hint: "[plan-path] [--no-trajectory] [--evaluate]"
+allowed-tools: "Read, Write, Edit, Bash(.venv/bin/python:*), Glob, Grep"
+metadata:
+  author: Misha Hanin
+  email: misha.hanin@headingos.com
+  version: "1.8"
+x-heading-capability:
+  what: >
+    Executes an implementation plan created by /create-plan step by step, writing complete files
+    and emitting a structured JSONL trajectory for every phase so the run can be audited later.
+  how: >
+    Run /implement <plan-path>. Trajectory writes to _trajectory_<run_id>.jsonl under the runtime address runtime:implement/logs
+    (suppress with --no-trajectory). Pass --evaluate to check each artifact with scripts/artifact-evaluator.py after execution.
+  when: >
+    Use to build out an approved plan. To write the plan first use /create-plan; to audit a finished
+    run use /scrutinize trajectory:<run_id>.
+x-heading-routing:
+  category: Operations
+  triggers:
+    - implement
+    - execute the plan
+    - build it
+  exclusions:
+    - Planning -> /create-plan
+  compound: 'No'
+  router: auto
+---
+# Implement
+
+Execute an implementation plan created by `/create-plan`. Read the plan thoroughly, execute each step in order, emit a structured trajectory for every phase boundary, and report on the completed work.
+
+The **Trajectory emission contract** below carries the authoritative invariants, restated in Phase 2, Phase 5, and the NEVER list; the per-version changelog is in `references/implement-details.md`.
+
+## Trajectory emission contract
+
+The trajectory is `_trajectory_<run_id>.jsonl` under the directory `.venv/bin/python scripts/data-path.py path runtime:implement/logs` prints, via `data_write_dir("runtime:implement/logs")`. It is the input to `/scrutinize trajectory:<run_id>` audits (Agent-as-a-Judge, DevAI benchmark) and a verbatim audit record. Emit through the helper only; never edit it. All emission is skipped under `--no-trajectory`. The invariants, enforced by the phases below and self-checked by `--verify`:
+
+- **Pairing.** Every `step_start` has a matching `step_end` (same step number); step 0 (plan-load) is paired too. Every `wave_start` has a `wave_end`.
+- **Sequencing (sequential waves / no-wave runs).** Emit each `step_end` before the next `step_start`; never open step N+1 while step N is open. **The helper enforces this at emit time (v1.7).** A `step_start` opened while another step is still open exits `5` and does not land. A `step_end` for an unopened step does the same. To clear it, emit the missing marker first, or open a parallel `wave_start` for legitimate interleaving. If work genuinely reorders, emit a `deviation` that records the swap (the M1 discipline). Emit a step-scoped `deviation` as well when a run defers a plan-declared terminal action. The final `[0 0]` push that a step's success criteria mandate is one such action. The same holds when a run reverses an approved decision mid-run, or diverges from explicit plan text at all. Even a trivial, functionally-identical substitution such as re-sourcing an import counts. A `step_end` note alone is not enough, because the structured trajectory must match the plan's Deviations section. Parallel-wave member steps may legitimately interleave inside their wave bracket, because an open parallel wave suspends the guard.
+- **Wave bracketing.** `wave_start` precedes the wave's first `step_start`, and `wave_end` follows all member `step_end`s. `wave_end.successes` equals the count of bracketed `step_end` with status `ok` or `deviation`, not the declared membership. Once a run emits any wave event, EVERY step but step 0 belongs to a bracket, and every `wave_start` carries `--step-count` and `--parallel`/`--no-parallel`. **`--verify` checks all three since v1.8** (an orphan `wave_end` no longer buys its `successes` claim a free pass).
+- **Literal paths.** `--file` takes one literal path per real file touched: no globs, brace-shorthand, or count strings (the N1 discipline).
+- **Whole-wave deferral.** A wave not executed at all emits no `wave_start`/`wave_end`; instead one wave-scoped `deviation` keyed to the wave's first step (`--scope wave --wave N`).
+
+## Variables
+
+plan_path: $ARGUMENTS (path to the plan file, e.g., `YYYY-MM-DD-add-guest-research-command.md` under `plans`)
+
+--no-trajectory: opt out of trajectory emission for this run only. Skips Phase 0: Trajectory Setup and all per-phase emission calls. Use for throwaway / smoke-test runs.
+
+--evaluate: run `scripts/artifact-evaluator.py` on each created or modified artefact after Phase 3 (Phase 4).
+
+---
+
+## Instructions
+
+### Phase 0: Trajectory Setup
+
+**Skip this entire phase if `--no-trajectory` was passed.**
+
+1. Mint a new `run_id` via the trajectory helper:
+
+   ```bash
+   run_id=$(.venv/bin/python scripts/implement-trajectory-log.py --new --plan {plan_path})
+   ```
+
+   The helper derives slug as `Path(plan_path).stem` with leading `YYYY-MM-DD-` stripped if present, then mints `run_id` = `YYYY-MM-DD_HHMMSS_<slug>`. The `run_start` event (including plan path, slug, working dir, git HEAD) is written automatically.
+
+2. Capture the `run_id` for use in every subsequent emission call.
+
+3. Print: `Trajectory: run_id={run_id}. JSONL: runtime:implement/logs/_trajectory_{run_id}.jsonl`.
+
+4. Carry `run_id` through Phases 1-5. Every emission point below uses it.
+
+### Phase 1: Understand the Plan
+
+1. **Read the plan file completely.** Do not skim — understand every section.
+2. **Verify prerequisites:**
+   - Are there open questions that need answers before proceeding?
+   - Are there dependencies on external resources or user decisions?
+   - If blockers exist, stop and ask the user before proceeding.
+3. **Confirm the plan is ready:**
+   - Status should be "Draft" or "Ready"
+   - All sections should be filled out (no placeholder text remaining)
+
+4. **Emit the step-0 (plan-load) summary as a PAIRED `step_start`/`step_end`** — unless `--no-trajectory`:
+   - `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type step_start --step 0 --title "plan loaded"`
+   - Immediately emit the matching `step_end` so step 0 is paired like every real step. The trajectory audit lens flags any unpaired `step_start`. `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type step_end --step 0 --status ok --notes "plan-load marker; no work performed"` (`files_affected` defaults to `[]`).
+
+---
+
+### Phase 2: Execute the Plan
+
+**Step 1: Detect wave headers.**
+
+Scan the plan for `### Wave` headers.
+
+- If **no wave headers found**: execute all steps sequentially using the standard rules below.
+- If **wave headers found**: switch to wave execution mode (see below).
+
+**Standard sequential execution (no waves):**
+
+1. **Follow the Step-by-Step Tasks in exact order.**
+   - Complete each step fully before moving to the next
+   - If a step involves creating a file, write the complete file — not a stub
+   - If a step involves modifying a file, read the file first, then apply changes precisely
+
+2. **For each task — trajectory emission discipline** (skip if `--no-trajectory`):
+   - **At step start**: `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type step_start --step N --title "<step title from plan>"`.
+   - **Read any files that will be affected**
+   - **Make the changes specified**
+   - **Verify the change is correct before proceeding**
+   - **At step end**: `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type step_end --step N --file <path> --file <path> --status ok|issues|deviation [--notes "<optional>"]`. Pass **one `--file` per literal, fully-qualified path** actually touched. No globs (`.claude/skills/*/triggers.json`), no brace-shorthand (`{a,b,c}/SKILL.md`), no count strings (`+3 customize.toml`); the deterministic file-diff audit reconciles literal paths (the N1 discipline). Omit `--file` entirely for a no-file step (`files_affected` defaults to `[]`).
+
+3. **Handle issues gracefully:**
+   - If a step can't be completed as written, note the issue and adapt if the intent is clear
+   - If you're unsure how to proceed, ask the user rather than guessing
+   - **Emit a `deviation` event** when you adapt a step. Emit one as well when the work diverges from explicit plan text at all. Even a trivial functionally-identical substitution, such as re-sourcing an import, belongs in the plan's Deviations section: `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type deviation --step N --reason "<why>" --what-changed "<vs plan>"`. A notes-only `step_end status: ok` is NOT sufficient for a plan-text divergence. Also record it in the plan's `## Deviations from Plan`, in the same commit as the change.
+
+**Wave execution mode:**
+
+When the plan has `### Wave` headers, execute waves in order with parallel-agent dispatch. Bracket each wave: `wave_start` comes before the wave's first `step_start`, and `wave_end` comes after all member `step_end`s. Hold the sequential-ordering invariant inside single-step waves. For a wave the run never executes, emit one wave-scoped `deviation` keyed to the wave's first step, and no `wave_start`/`wave_end` pair. The full wave procedure — the parallel sub-agent brief contents, the `wave_end.successes` reconciliation rule, and the deferred-wave `deviation` form — is in **`references/implement-details.md`**. Read it when a plan actually contains waves; most runs are sequential and never load it.
+
+---
+
+### Phase 3: Validate
+
+1. **Run through the Validation Checklist** from the plan
+   - Check off each item
+   - Note any that fail
+   - **For each check** (skip if `--no-trajectory`): `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type validation_check --check "<name>" --passed|--failed --detail "<one-line>"`.
+
+2. **Verify Success Criteria** are met
+   - Confirm each criterion is satisfied
+   - Note any gaps
+   - **Derive the scan list, never assemble it.** `.venv/bin/python scripts/implement-trajectory-log.py --list-files --run-id {run_id}` prints the deduped union of every step's `files_affected`; feed THAT to the hidden-character scan. A hand-built list scanned 11 files for a run that touched 22 (2026-08-09 /scrutinize, M3).
+
+3. **Check cross-references and consistency:**
+   - Ensure new files are referenced where they should be
+   - Verify CLAUDE.md is updated if workspace structure changed
+   - Confirm naming conventions are followed
+
+---
+
+### Phase 4: Evaluate (Optional)
+
+If the user included `--evaluate` in the arguments or explicitly requested evaluation after implementation:
+
+1. **Run `.venv/bin/python scripts/artifact-evaluator.py --path <artifact>`** on each created or modified artifact (skills, scripts, reference files, rules). Add `--plan <plan-path>` to check it against the plan's success criteria.
+2. **If every check passes**: Proceed to Phase 5.
+3. **If a check fails**:
+   - Read the failing checks from the report
+   - Apply the specific fixes
+   - Re-run the evaluator on the fixed artifact
+   - Maximum 3 rework cycles. If a check still fails after 3 cycles, report the remaining failures to the user.
+4. **If a failure falls outside the plan's scope**: Stop. Report the full evaluation to the user.
+5. **Track iteration count** in the Implementation Notes section.
+6. **For each evaluation** (skip if `--no-trajectory`): `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type evaluation_result --artefact "<path>" --grade "PASS|FAIL" --iteration <n>`.
+
+---
+
+### Phase 5: Update Plan Status
+
+After implementation (and optional evaluation), update the plan file:
+
+1. Change `**Status:** Draft` to `**Status:** Implemented` (or `**Status:** Implemented (Evaluated)` if Phase 4 was run)
+2. Add an Implementation Notes section at the end:
+
+```markdown
+---
+
+## Implementation Notes
+
+**Implemented:** <YYYY-MM-DD>
+
+### Summary
+
+<Brief summary of what was done>
+
+### Deviations from Plan
+
+<List any changes made during implementation, or "None">
+
+### Issues Encountered
+
+<List any problems hit and how they were resolved, or "None">
+
+### Trajectory
+
+`_trajectory_<run_id>.jsonl` (under the runtime address `runtime:implement/logs`) — audit with `/scrutinize trajectory:<run_id>`.
+```
+
+**Final emission** (skip if `--no-trajectory`): `.venv/bin/python scripts/implement-trajectory-log.py --event --run-id {run_id} --type run_end --summary "<one-line>" --plan-status Implemented` (`run_id` and `trajectory_path` auto-fill).
+
+**Self-check** (skip if `--no-trajectory`): `.venv/bin/python scripts/implement-trajectory-log.py --verify --run-id {run_id}`. This is **advisory** — it NEVER hard-fails a completed run (CEO sovereignty holds). But if it exits non-zero, the reported defects MUST reach the Report's Deviations section **verbatim, as a named defect list**. Do not gloss them as an optional footnote. A non-zero self-check that is not surfaced verbatim is itself a discipline violation. Run this self-check BEFORE any `git commit` or `git pull`. The run-level files reconciliation compares the current engine working tree against `run_start.git_head`. It is only meaningful while the tree holds only this run's changes. A re-run after a merge or pull over-flags the pulled files, which is expected and advisory, not a regression. No temp files are written anymore, so there is no `_tmp/` cleanup step.
+
+---
+
+## Quality Standards
+
+- **Thoroughness:** Every step in the plan is executed, not skipped
+- **Precision:** Changes match what the plan specifies
+- **Completeness:** Files are fully written, not stubbed out
+- **Consistency:** All cross-references and documentation updated
+- **Traceability:** Deviations are documented
+
+---
+
+## Report
+
+After implementation, provide:
+
+1. **Summary:** Bulleted list of work completed
+2. **Files changed:** List all files created, modified, or deleted
+3. **Validation results:** Status of each checklist item
+4. **Deviations:** Any changes from the original plan
+5. **Next steps:** Any follow-up actions needed (if applicable)
+6. **Audit offer:** `"Execution complete. Run /scrutinize to audit what was done?"`
+
+Format:
+
+```
+## Implementation Complete
+
+### Summary
+- <What was done>
+- <What was done>
+
+### Files Changed
+**Created:**
+- `path/to/new-file.md`
+
+**Modified:**
+- `path/to/modified-file.md`
+
+**Deleted:**
+- (none)
+
+### Validation
+- [x] <Passed check>
+- [x] <Passed check>
+
+### Deviations from Plan
+<None, or list deviations>
+
+### Plan Status
+Updated `YYYY-MM-DD-{name}.md` (under `plans`) status to "Implemented"
+```
+
+---
+
+## NEVER
+
+- Never skip a planned step without documenting why in the Deviations section
+- Never finish implementation without running security evaluation - scan for hidden characters (`sanitize-text.py --scan`), compile-check Python files (`py_compile`), and verify no secrets in new/modified files
+- Never stub out a file - write complete, production-ready content or do not create the file at all
+- Never modify a file without reading it first - blind edits cause regressions and data loss
+- Never proceed past a blocker or ambiguity without asking the user - guessing at unclear steps produces wrong work
+- Never skip documentation propagation. After you create or modify a skill, script, reference file, or rule, update CLAUDE.md and `GETTING-STARTED.md` under `templates`. Update every other affected documentation target before you declare done
+- Never skip trajectory emission unless `--no-trajectory` was explicitly passed - trajectory is the input to `/scrutinize trajectory:<run_id>` audits
+- Never work around the emit-time sequencing guard (exit `5`) by reordering or dropping markers to silence it. The guard means a `step_end` or `step_start` is genuinely out of order. Emit the missing marker, or open a parallel `wave_start`, instead
+- Never gloss a non-zero `--verify` self-check - its defects MUST be surfaced verbatim as a named list in the Report Deviations (advisory does not mean optional-to-report)
+- Never call `scripts/implement-trajectory-log.py` with `--data-json` from inside `/implement` - that mode is bash-only / hand-runs only. Prefer the typed flags (`--step`, `--file`, `--status`, ...) for every event; `--data-file` / `--data-stdin` remain the escape hatch for a genuinely arbitrary payload
+- Never write to `_trajectory_*.jsonl` under `runtime:implement/logs` directly - only through the helper script (it handles atomic-append concurrency on POSIX + Windows)

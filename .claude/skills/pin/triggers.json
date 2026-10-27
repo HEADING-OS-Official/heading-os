@@ -1,0 +1,13 @@
+[
+  { "query": "закрепи: Brave не трогай", "should_trigger": true },
+  { "query": "закрепи: отвечать только на английском до конца задачи", "should_trigger": true },
+  { "query": "/pin never push from this yard", "should_trigger": true },
+  { "query": "закрепи: порог 450 тыс. не менять", "should_trigger": true },
+  { "query": "/pin the staging data root is the scratch one", "should_trigger": true },
+
+  { "query": "запомни: после релиза переписать тесты", "should_trigger": false },
+  { "query": "Odin remember that the meeting went badly", "should_trigger": false },
+  { "query": "remember for all future sessions that I prefer short replies", "should_trigger": false },
+  { "query": "save a handover of this session", "should_trigger": false },
+  { "query": "pin this tab in the browser", "should_trigger": false }
+]

@@ -1,0 +1,38 @@
+[Unit]
+Description=Conversation Chronicle build (summarize new sessions into the dated history)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Incremental build: summarizes only sessions newer than the .last-chronicle
+# marker (and never one already chronicled), so a day's delta is a handful of
+# sessions -> minutes. Writes one dated entry per non-trivial conversation into
+# the DATA overlay's `chronicle` records, in its business and personal subfolders (resolve
+# the home with `python scripts/data-path.py path chronicle`). NEVER writes to
+# the brain and
+# NEVER sends anything -- safe to run unattended (the property that gates the
+# timer). Needs the generation model of config/inference-hosts.yaml up (ollama
+# by default); if it is down the build skips what it cannot summarize and the
+# next fire resumes, with no corruption. Personal tagging
+# fails toward "personal", so an unattended run can only over-wall.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/chronicle.py build
+# The catch-up window is derived from a naive `date.today()`, which reads libc,
+# which reads TZ. Without this line the build inherits the HOST's zone, and the
+# two hosts in the fleet disagree -- so the same nightly fire computes a window
+# starting a day apart. Note this is TZ and NOT HEADING_OS_TZ: nothing reads TZ
+# from `.env`, so it cannot become a staler second copy of the operator's zone,
+# whereas a unit-pinned HEADING_OS_TZ could never be corrected by `.env` again
+# (load_env uses setdefault).
+Environment=TZ={{TZ}}
+# NO HEADING_OS_INFERENCE_GENERATE_HOST here, deliberately. This unit used to
+# bake the address in at install time, and on 2026-08-23 the installed copy
+# still read `auto:11436` while the Windows daemon had moved to 11434 after an
+# auto-update - a value frozen in a rendered file cannot be corrected by
+# editing config.
+# `chronicle.py` resolves the host per run from `generate:` in the machine-local
+# `config/inference-hosts.yaml`. Set the variable here only to override one host
+# for this unit alone, and remember it then wins over the config forever.
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

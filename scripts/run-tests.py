@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""The single test-gate entry point. Both push-all.py and .githooks/pre-push call this.
+
+Default mode runs the whole suite. --pre-push runs the tests THIS push can
+reach, and is the only mode that ever runs less than everything.
+
+--pre-push, added 2026-09-04. It reads git's ref lines from stdin, hands the
+range to `scripts/utils/prepush_gate.decide`, and runs the selection that comes
+back. On any doubt at all the decision is the full suite, with the reason
+printed. A bare `python scripts/run-tests.py` is unchanged and still runs
+everything, which is what CI, the night run and anyone typing the command by hand
+get. Read `scripts/utils/prepush_gate.py` for the widening conditions and
+`scripts/utils/day_mode.py` for what a selection can miss.
+
+Usage:
+  python scripts/run-tests.py            # the whole suite
+  python scripts/run-tests.py --pre-push     # git's ref lines on stdin
+
+Neither mode measures coverage, and no coverage floor is enforced anywhere: the
+unit-tests step of .github/workflows/ci.yml only REPORTS coverage (no floor
+since the 2026-09-21 split). Set one again there, against a fresh measurement.
+"""
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.utils.venv_guard import ensure_venv  # noqa: E402
+
+ensure_venv()  # pytest/pytest-cov live only in .venv; re-exec if launched elsewhere
+
+from scripts.utils.canopus_contract import pytest_child_env  # noqa: E402
+from scripts.utils.colors import CYAN, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
+from scripts.utils.prepush_gate import decide  # noqa: E402
+
+
+def build_command(tests: list[str] | None = None) -> list[str]:
+    """Return the pytest argv: the whole suite, or the `--pre-push` selection.
+
+    No `--cov`: coverage belongs to the CI unit-tests step (see the module
+    docstring), and keeping it out of pyproject addopts means single-file
+    `pytest tests/x.py` runs are never blocked by partial coverage.
+
+    `tests` is the narrowed selection from `--pre-push`. It NARROWS the same
+    command rather than replacing it, so the only difference between a narrowed
+    run and a full one is the file list. `None` (or any empty value) means every
+    file, which is what a bare invocation gets.
+
+    `-m "not acceptance"` stays in the argv: no test carries that marker any
+    more, so it excludes nothing, and keeping it keeps the command the nightly
+    and the pre-push hook run byte for byte what it was.
+
+    `-n auto` stays whatever the selection size is. Measured 2026-09-04 and
+    recorded in `scripts/utils/day_mode.py`: on the same ten files, `-n 16` took
+    53.5 s, `-n 8` 57.6 s, `-n 4` 62.6 s and `-n 2` 86.6 s. Fewer workers is
+    strictly worse, because the sixteen pay the startup in parallel. Do not tune
+    the worker count by selection size.
+    """
+    # -n auto: distribute the suite across all CPU cores (pytest-xdist).
+    base = [sys.executable, "-m", "pytest", "-q"]
+    return base + ["-n", "auto", "-m", "not acceptance"] + list(tests or [])
+
+
+def child_env() -> dict[str, str]:
+    """The environment the pytest child gets: ours, minus everything PYTEST_.
+
+    The scrub itself lives in canopus_contract.pytest_child_env, with the
+    measurement behind it, because the contract child has to get the identical
+    treatment: the two runs are read against each other, so a discipline applied
+    to one of them alone makes the reading a photograph of the shell the operator
+    happened to be standing in.
+
+    CANOPUS_LAUNCHER is stamped so a reader of a child's environment can tell
+    which launcher produced it. It is provenance and not a verdict.
+    """
+    return pytest_child_env(CANOPUS_LAUNCHER="run-tests")
+
+
+def read_ref_lines() -> str:
+    """Git's pre-push ref lines from stdin, or "" when there is no push to read.
+
+    A TTY is checked FIRST and never read. `python scripts/run-tests.py
+    --pre-push` typed at a prompt would otherwise block on a terminal that is
+    never going to produce a ref line, and a gate that hangs is a gate that gets
+    bypassed. An empty string is not a failure here; `decide` reads it as "the
+    range is unknown" and returns the full suite.
+
+    Safe across the venv re-exec. `ensure_venv()` runs at import, before argparse
+    and before anything here reads, and `os.execv` carries file descriptor 0 into
+    the new process image. So a hook that falls back to a bare `python3` still
+    hands git's ref lines to the gate that relaunches under `.venv`. Anything that
+    reads stdin EARLIER than this function would break that, which is why nothing
+    does.
+    """
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return ""
+        return sys.stdin.read()
+    except (OSError, ValueError, UnicodeDecodeError):
+        # A closed, unreadable or non-UTF-8 stdin is exactly the "invoked by
+        # something that is not git" case, and it widens rather than crashing.
+        return ""
+
+
+def pre_push_selection(root: Path) -> list[str] | None:
+    """The tests this push can reach, or None for the whole suite. Prints why.
+
+    The reason is printed on BOTH branches, deliberately. A gate that announced
+    only its widenings would be indistinguishable, on a narrowed push, from one
+    that had quietly stopped narrowing months ago.
+
+    `flush=True`, because during a push stdout is a PIPE and not a terminal, so
+    these lines are block-buffered and land when this process exits. MEASURED
+    2026-09-05 on the first end-to-end run of the reinstalled hook: the gate line
+    arrived at line 568 of 569, after 307 seconds of pytest output, because the
+    CHILD writing to the same pipe flushes as it goes and the parent does not.
+    Nothing was lost, and the ordering is the whole value: a human waiting on a
+    push needs to know at second zero whether this is the full suite or a
+    selection. `main()` flushes again before it spawns the child, which is the
+    fix at the root — a print added here tomorrow inherits it.
+    """
+    decision = decide(root, read_ref_lines())
+    if decision.full:
+        print(f"{YELLOW}pre-push gate: FULL SUITE, because {decision.reason}{RESET}",
+              flush=True)
+        return None
+    print(f"{CYAN}pre-push gate: narrowed to {decision.reason}{RESET}", flush=True)
+    print(f"{GRAY}  routes: {', '.join(decision.notes)}{RESET}", flush=True)
+    print(f"{GRAY}  the full suite still runs in CI on this push, and nightly "
+          f"(python scripts/day-mode.py nightly){RESET}", flush=True)
+    return decision.tests
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="HEADING OS test gate.")
+    ap.add_argument("--pre-push", action="store_true",
+                    help="narrow to the tests this push can reach; reads git's "
+                         "ref lines from stdin and widens to everything on any doubt")
+    args = ap.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    selected = pre_push_selection(root) if args.pre_push else None
+    cmd = build_command(selected)
+    # THE ROOT FIX for the ordering above. Everything printed so far belongs
+    # ahead of the child's output, and into a pipe it is block-buffered and does
+    # not. One flush here covers every line printed before this point, including
+    # ones nobody has written yet; per-print `flush=True` covers only the prints
+    # that carry it, which is the shape that decays.
+    sys.stdout.flush()
+    proc = subprocess.run(cmd, cwd=str(root), env=child_env())
+    if proc.returncode == 0:
+        print(f"{GREEN}test gate: PASS{RESET}")
+    else:
+        print(f"{RED}test gate: FAIL (pytest exit {proc.returncode}){RESET}")
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""`heading` - a thin, vendor-independent dispatcher over the HEADING OS scripts.
+
+Part of the F-10.1 Option C hybrid: plugin-packaged skills call bundled scripts
+via ${CLAUDE_PLUGIN_ROOT} (the native happy path), and the SAME scripts are also
+reachable through this CLI, which is the stable invocation surface for the
+monorepo, the devcontainer, the headless runner (F-10.3), and the fallback if a
+Claude Code change ever breaks the plugin path variable.
+
+This is a DISPATCHER, never a fork of script logic. It resolves the workspace
+root via scripts/utils/paths.py and shells the target with the checkout's pinned
+.venv interpreter.
+
+Coverage: none live. Two runs held this dispatcher until the 2026-09-21
+test-suite split, so "never a fork of script logic" is now a rule to keep rather
+than one that is kept for you.
+
+Invocation. The engine is an installed uv package, so `heading` is a console
+script (`[project.scripts]` in pyproject.toml):
+
+  uv run heading run scripts/utils/paths.py
+  uv run heading health
+  uv run heading list
+  uv run heading skill odin reflect --propose
+
+The module form still works and is what the in-tree tests drive:
+
+  python scripts/heading_cli.py list
+
+`run` takes a path relative to the workspace root (a bare name is resolved under
+scripts/). Named subcommands are shortcuts in the registry below. `skill` runs an
+allowlisted skill headless via `claude -p`; runner flags (`--budget`, `--model`)
+MUST precede the skill name, since everything after the name is passed through to
+the skill as its own args.
+"""
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.utils.paths import get_data_root, get_workspace_root  # noqa: E402
+from scripts.utils.data_path import data_path  # noqa: E402
+from scripts.utils.venv_guard import venv_python  # noqa: E402
+
+# Stable named shortcuts -> repo-relative script paths. Extend as bundles grow.
+REGISTRY = {
+    "health": "scripts/workspace-health.py",
+    "classification": "scripts/classification-health.py",
+}
+
+# --- Headless skill runner (F-10.3) -----------------------------------------
+
+DEFAULT_BUDGET_USD = 0.50
+
+# The "propose" tier's write grant is scoped to this one proposal-output
+# directory, and its WRITE deny (not a read deny: reflect must read the brain to
+# review it) is scoped to the brain directory -- both resolved absolute
+# (//-anchored) from the data root at call time, since the headless process's
+# cwd is the engine workspace root, not the data root. Both are REGISTRY NAMES,
+# resolved through `data_path()`. Until 2026-09-25 the grant was the pre-move
+# spelling of `odin-reflect-proposals` in the drained `outputs/` tree, which MEASURED that day
+# did not exist, while `scripts/odin-cadence-notify.py` already read the
+# proposals through this same name at its `("trace", "scratch")` home: the writer was
+# granted a directory the reader never looks in. The names are spelled at the
+# two calls below, so the leak guard can read which data each one names.
+# A first-cut default (4x the runner's normal $0.50) for a real reflect-cluster-
+# drafting pass -- tune after observing real costs (plan Open Question 2).
+PROPOSE_DEFAULT_BUDGET_USD = 2.00
+
+# Per-tier budget defaults, applied when the operator did not pass --budget.
+# This table is why the constant above is not decoration: until 2026-08-25
+# nothing referenced it, `--budget` defaulted to DEFAULT_BUDGET_USD for every
+# tier, and the one propose-tier skill therefore ran at a quarter of the
+# budget its own comment declared. A number that describes an intention nobody
+# reads is worse than no number: the comment made the cost gate look decided.
+TIER_DEFAULT_BUDGET_USD = {
+    "propose": PROPOSE_DEFAULT_BUDGET_USD,
+}
+
+# Default-deny: a skill runs headless only if listed here; the value names its
+# tier and, optionally, the exact leading args it is allowed to run with
+# (`args_prefix`) -- a skill with no args_prefix is allowed with any args.
+SKILL_ALLOWLIST = {
+    # odin is allowlisted for exactly ONE invocation shape: `reflect --propose`.
+    # Every other Odin mode (learn, log, teach, collect, consult, compile,
+    # skill-proposal, and reflect WITHOUT --propose) is refused before any
+    # vendor call -- the args_prefix gate is what makes the tier narrow in
+    # practice, not just at the tool-permission layer.
+    "odin": {"tier": "propose", "args_prefix": ["reflect", "--propose"]},
+}
+
+# The --allowedTools set per tier. The propose tier grants only Read here; its
+# write grant is a path-scoped pattern appended dynamically in
+# build_skill_command (it depends on the data root, resolved at call time).
+# A tier grants only what it needs, so the send transports are unreachable by
+# construction (the allowlist-first send boundary).
+TIER_ALLOWED = {
+    "propose": ["Read"],
+}
+
+# Defense-in-depth denylist: every outbound transport, blocked regardless of tier.
+# The allowlist above is the primary boundary; this is belt-and-suspenders.
+#
+# This list used to be held against a sweep of scripts/*.py that recomputed the
+# set from the scripts' own source (a transport library plus one of its send
+# verbs, or a bare *.py literal naming such a script in a module that can spawn
+# it), and the two had to agree exactly in both directions, so a new transport
+# either landed here or went red. That sweep was parked in the 2026-09-21
+# test-suite split. Maintaining the list is now entirely by hand, which is the
+# state that lost `gmail-send.py`: it landed 2026-08-08 and was absent here
+# until 2026-08-29, because the only checks over it read the constant back to
+# itself and could not notice an omission. Add a new transport in the same
+# change that creates it.
+SEND_DENY = [
+    # Direct transports: these call an outbound mail API themselves.
+    "Bash(python scripts/send-email.py:*)",
+    "Bash(python3 scripts/send-email.py:*)",
+    "Bash(python scripts/gmail-send.py:*)",
+    "Bash(python3 scripts/gmail-send.py:*)",
+    # One process hop from a direct transport: each spawns send-email.py.
+    "Bash(python scripts/action-queue-execute.py:*)",
+    "Bash(python3 scripts/action-queue-execute.py:*)",
+    # Subcommand-scoped, not whole-script: `list`/`show`/`dismiss` stay usable,
+    # `approve` is the synchronous send and is the one verb that must not run.
+    "Bash(python scripts/action-queue.py approve:*)",
+    "Bash(python3 scripts/action-queue.py approve:*)",
+]
+
+
+def _abs_pattern(root: Path, rel: str | Path, tool: str = "Edit") -> str:
+    """Build a `//`-anchored (filesystem-root-absolute) permission pattern for
+    `root / rel` and one tool, e.g. Edit(//home/.../knowledge/odin-brain/**).
+    An absolute `rel`, which is what `data_path()` returns, is used as it is:
+    `pathlib` discards `root` when the right operand is absolute.
+
+    Confirmed against code.claude.com/docs/en/permissions.md: `//` anchors an
+    absolute path (Read(//Users/alice/secrets/**) matches /Users/alice/secrets/**)
+    -- the resolved path's own leading `/` must be stripped first, since
+    interpolating it directly after `//` produces a three-slash string
+    (`Edit(///...)`) that matches nothing.
+
+    `tool` is a parameter because a permission pattern binds ONE tool: the same
+    doc page is why an `Edit(...)` deny constrains Edit and nothing else. A path
+    that must not be written needs one pattern per write tool.
+    """
+    return f"{tool}(//{str((root / rel).resolve()).lstrip('/')}/**)"
+
+
+def build_skill_command(skill, args, *, tier, budget_usd=DEFAULT_BUDGET_USD, model=None):
+    """Build the `claude -p` argv for a headless skill run.
+
+    Pure apart from a cheap deterministic data-root resolve (for the --add-dir
+    grant and the propose tier's path-scoped Edit(...) patterns). The send
+    boundary lives here: every tier's --allowedTools excludes the send
+    transports, and SEND_DENY names them under --disallowedTools.
+    """
+    prompt = "/" + skill
+    if args:
+        prompt = prompt + " " + " ".join(args)
+    data_root = get_data_root()
+    # Fresh copies -- never bind directly to TIER_ALLOWED[tier]/SEND_DENY
+    # themselves, since a later .append() on an uncopied reference would
+    # permanently grow the shared module-level constant across every
+    # subsequent call in the same process.
+    allowed = list(TIER_ALLOWED[tier])
+    disallowed = list(SEND_DENY)
+    if tier == "propose":
+        # BOTH write tools, on the one directory this tier may write.
+        #
+        # `Edit` alone could not create the file the mode is specified to
+        # produce. Measured 2026-08-30 against the harness: the Edit tool
+        # refuses a path that does not exist ("File does not exist"). The mode
+        # spec appends to a DATED file, `YYYY-MM-DD_odin-reflect-proposal.md`,
+        # which by definition is absent on the first `--propose` of any day - so
+        # the tier could only ever amend yesterday's proposal, never open
+        # today's, and the in-code comment called the pattern "its Write grant"
+        # while emitting `Edit(...)`.
+        #
+        # This widens the grant, and the widening is bounded: `Edit` already
+        # allowed rewriting any file under this glob to any content, so `Write`
+        # on the SAME glob adds creation and nothing else. Both denies below
+        # still apply, and a deny beats a grant.
+        proposals = data_path("odin-reflect-proposals", data_root=data_root)
+        allowed.append(_abs_pattern(data_root, proposals))
+        allowed.append(_abs_pattern(data_root, proposals, tool="Write"))
+        # One deny per write tool. The brain deny was `Edit(...)` alone, and a
+        # permission pattern binds exactly the tool it names, so the mechanism
+        # covered one of the two tools that can write a file while the mode spec
+        # (.claude/skills/odin/references/mode-catalog.md, `--propose` mode)
+        # states flatly that `odin-brain` "is never written in this
+        # mode, regardless of confidence". The tier now DOES hold a Write grant,
+        # one line above, which is exactly the case that deny was written for.
+        #
+        # Reads are deliberately NOT denied. `reflect` reviews the brain; that is
+        # the whole mode. The deny protects write-integrity, not confidentiality.
+        brain = data_path("odin-brain", data_root=data_root)
+        disallowed.append(_abs_pattern(data_root, brain))
+        disallowed.append(_abs_pattern(data_root, brain, tool="Write"))
+    cmd = [
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "dontAsk",
+        "--max-budget-usd",
+        str(budget_usd),
+        "--allowedTools",
+        *allowed,
+        "--disallowedTools",
+        *disallowed,
+    ]
+    if model:
+        cmd += ["--model", model]
+    # Grant read access to the data overlay (H1): a skill's inputs can live under
+    # the data root, which the data-path-redirect hook rewrites OUTSIDE cwd. Claude
+    # limits file tools to cwd + --add-dir, so without this a headless read is denied.
+    if data_root != get_workspace_root():
+        cmd += ["--add-dir", str(data_root)]
+    return cmd
+
+
+class OutsideWorkspace(ValueError):
+    """The target resolved outside the workspace root."""
+
+
+def _resolve(target: str, root: Path) -> Path:
+    """Resolve a target to an absolute script path under the workspace root.
+
+    A bare name (no slash) is looked up under scripts/. A relative path is taken
+    as-is from the workspace root.
+
+    CONTAINED, which the docstring already claimed and the code did not check.
+    An ABSOLUTE target replaced `root` entirely under pathlib (`root / "/tmp/x"`
+    is `/tmp/x`), and `../` walked out the same way. `heading` is a constrained
+    command surface, so "under the workspace root" has to be enforced rather
+    than described.
+    """
+    if PurePosixPath(target).is_absolute() or PureWindowsPath(target).is_absolute():
+        raise OutsideWorkspace(f"absolute paths are not accepted: {target}")
+    # Both separators, because the line above already reasons about Windows
+    # path shapes. Testing only "/" made `scripts\workspace-health.py` a BARE
+    # NAME, rewrote it to `scripts/scripts\workspace-health.py`, and reported
+    # "script not found" for a path the docstring says is taken as-is.
+    rel = target if ("/" in target or "\\" in target) else f"scripts/{target}"
+    resolved = (root / rel).resolve()
+    root_resolved = root.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise OutsideWorkspace(
+            f"{target} resolves to {resolved}, outside the workspace root {root_resolved}")
+    return resolved
+
+
+def _dispatch(script_path: Path, args: list[str]) -> int:
+    if not script_path.is_file():
+        print(f"heading: script not found: {script_path}", file=sys.stderr)
+        return 2
+    # The pinned interpreter, never sys.executable (M046.2): `uv run heading`
+    # and a bare `python` would otherwise hand the target whatever ran this.
+    return subprocess.run([str(venv_python()), str(script_path), *args]).returncode
+
+
+def run_skill(skill, args, *, budget_usd=None, model=None) -> int:
+    """Run an allowlisted skill headless via `claude -p`. Exit-code primary.
+
+    Returns 2 (refused: not allowlisted, or args don't match the skill's
+    required args_prefix -- either way, before any vendor call), 3 (claude
+    binary absent, degrade clearly), or the `claude` process exit code otherwise.
+
+    `budget_usd=None` means "the operator did not choose", and the tier decides
+    (TIER_DEFAULT_BUDGET_USD, falling back to DEFAULT_BUDGET_USD). An explicit
+    number always wins, including one that equals a default -- the caller asked
+    for it. The tier is only known after the allowlist lookup below, which is
+    why this cannot be resolved in the signature.
+    """
+    entry = SKILL_ALLOWLIST.get(skill)
+    if entry is None:
+        print(
+            f"heading: skill not allowlisted for headless run: {skill}",
+            file=sys.stderr,
+        )
+        return 2
+    args_prefix = entry.get("args_prefix")
+    if args_prefix and list(args[: len(args_prefix)]) != list(args_prefix):
+        print(
+            f"heading: skill '{skill}' is only allowlisted for headless run with "
+            f"args {args_prefix!r} as the leading arguments; refusing {args!r}",
+            file=sys.stderr,
+        )
+        return 2
+    if shutil.which("claude") is None:
+        print(
+            "heading: claude binary not found on PATH (headless skill run needs it)",
+            file=sys.stderr,
+        )
+        return 3
+    tier = entry["tier"]
+    if budget_usd is None:
+        budget_usd = TIER_DEFAULT_BUDGET_USD.get(tier, DEFAULT_BUDGET_USD)
+    cmd = build_skill_command(
+        skill, args, tier=tier, budget_usd=budget_usd, model=model
+    )
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # Exit code is authoritative; the JSON envelope is best-effort enrichment.
+    out = proc.stdout
+    try:
+        payload = json.loads(out)
+        if isinstance(payload, dict) and payload.get("result"):
+            out = payload["result"]
+    except (json.JSONDecodeError, ValueError) as exc:
+        # Undocumented / non-JSON output: fall back to raw stdout, and say so.
+        print(f"heading: claude output is not a JSON envelope ({exc}); "
+              "printing it raw", file=sys.stderr)
+    if out:
+        print(out)
+    if proc.stderr:
+        print(proc.stderr, file=sys.stderr)
+    return proc.returncode
+
+
+def main(argv=None) -> int:
+    # A named shortcut's tail belongs to the target script, INCLUDING a leading
+    # option-looking token, and argparse cannot say that. `nargs=REMAINDER` as
+    # the FIRST positional of a subparser matches ZERO arguments when the next
+    # token starts with `-`; the token is then read as an option of the parser
+    # itself and reported as unrecognized. MEASURED 2026-09-01:
+    # `heading classification --json` exited 2 with "unrecognized arguments:
+    # --json" while `heading run scripts/classification-health.py --json`
+    # printed the JSON. Every flag both registry targets accept is
+    # option-looking (`--json`, `--section`, `--max-days`, ...), so NO flag was
+    # reachable through a shortcut at all, on a surface whose whole promise is
+    # that the two invocation paths do not diverge.
+    #
+    # `run` and `skill` are unaffected and stay with argparse: each consumes a
+    # positional (`script`, `name`) first, which is exactly what lets REMAINDER
+    # start. A bare shortcut, and `-h`/`--help` after one, also stay with
+    # argparse so the subcommand still documents itself.
+    tail = list(sys.argv[1:] if argv is None else argv)
+    if (len(tail) > 1 and tail[0] in REGISTRY
+            and "-h" not in tail and "--help" not in tail):
+        try:
+            return _dispatch(
+                _resolve(REGISTRY[tail[0]], get_workspace_root()), tail[1:])
+        except OutsideWorkspace as exc:
+            print(f"heading: {exc}", file=sys.stderr)
+            return 2
+
+    ap = argparse.ArgumentParser(
+        prog="heading",
+        description="Thin dispatcher over HEADING OS scripts (F-10.1 hybrid).",
+    )
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p_run = sub.add_parser("run", help="run a script by path (relative to workspace root)")
+    p_run.add_argument("script", help="e.g. scripts/utils/paths.py or a bare name under scripts/")
+    p_run.add_argument("args", nargs=argparse.REMAINDER, help="arguments passed through")
+
+    p_skill = sub.add_parser(
+        "skill",
+        help="run an allowlisted skill headless via `claude -p` (runner flags precede the skill name)",
+    )
+    # Runner flags are declared before the positional `name` and MUST be passed
+    # before it: argparse.REMAINDER greedily captures every token after `name`
+    # (option-looking tokens included) as the skill's own passthrough args.
+    p_skill.add_argument(
+        "--budget", type=float, default=None,
+        help=f"max USD for the run (default {DEFAULT_BUDGET_USD:.2f}, or "
+             f"{PROPOSE_DEFAULT_BUDGET_USD:.2f} for a propose-tier skill); "
+             f"MUST precede the skill name",
+    )
+    p_skill.add_argument(
+        "--model", default=None, help="model override; MUST precede the skill name",
+    )
+    p_skill.add_argument("name", help="the allowlisted skill to run, e.g. odin")
+    p_skill.add_argument(
+        "args", nargs=argparse.REMAINDER,
+        help="args passed through to the skill (everything after the name)",
+    )
+
+    sub.add_parser("list", help="list the named shortcuts")
+    for name in REGISTRY:
+        sp = sub.add_parser(name, help=f"shortcut for {REGISTRY[name]}")
+        sp.add_argument("args", nargs=argparse.REMAINDER, help="arguments passed through")
+
+    args = ap.parse_args(argv)
+    root = get_workspace_root()
+
+    if args.command == "list":
+        for name, path in REGISTRY.items():
+            print(f"{name}\t{path}")
+        return 0
+    if args.command == "skill":
+        return run_skill(args.name, args.args, budget_usd=args.budget, model=args.model)
+    try:
+        if args.command == "run":
+            return _dispatch(_resolve(args.script, root), args.args)
+        # Named shortcut.
+        return _dispatch(_resolve(REGISTRY[args.command], root), args.args)
+    except OutsideWorkspace as exc:
+        print(f"heading: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,26 @@
+[Unit]
+Description=Send new and changed workspace files to Hindsight (hindsight-sync.py push)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# The script prints ledger lines on stdout and progress on stderr; the shell appends
+# stdout to the ledger under runtime:hindsight-sync/state, so the script itself
+# writes nothing into the data repository. --max-pending paces the backfill: a run
+# sends nothing while the server still has that many operations waiting.
+# Conversations are NOT sent from here: Hindsight's own Coding Agents plugin writes each
+# session back on Stop (operator decision 2026-09-30, conversations as Hindsight
+# recommends). The manual `turns` command that once re-sent captured turns was removed
+# on 2026-10-04 (HOS-198).
+# --detect (HOS-178, 2026-10-12): the version detector proposes families from each pass's
+# scan; it never confirms or decides. Family deletions stay off: no --allow-deletes here
+# until the operator says so.
+ExecStart=/bin/sh -c '{{PYTHON}} {{WORKSPACE}}/scripts/hindsight-sync.py push --wave all --limit {{LIMIT}} --max-pending {{MAX_PENDING}} --detect >> "{{STATE}}/ledger.jsonl"'
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800

@@ -1,0 +1,480 @@
+# Associative-memory index config
+#
+# Drives scripts/memory-index.py: which layers to embed, the local embedder,
+# the salience threshold, and the denylist. THIS FILE IS THE WHOLE DENYLIST as
+# of 2026-09-12: scripts/utils/air_gap.py applies what it is handed and carries
+# no unconditional denies of its own any more.
+#
+# The index lives at the registry name `runtime:memory-index/cache` (gitignored,
+# rebuildable -- "hippocampus", not source of truth).
+
+# Local embedder (ollama). bge-m3 is multilingual (RU/EN), 1024-dim.
+model: bge-m3
+# WHERE EMBEDDING RUNS: NOT HERE. This file is tracked and ships to every clone,
+# and a host address is a fact about one computer -- `auto:11434` means "whatever
+# answers at this machine's default gateway", which is the Windows side on a WSL2
+# laptop and a router anywhere else. A pin REFUSES rather than degrades
+# (operator directive, 2026-08-23), so for one day a pin written here made
+# `memory-index build` fail on every clone that was not this laptop, while the
+# clone's own ollama sat there working.
+#
+# The pin therefore lives in `config/inference-hosts.yaml`, gitignored, machine-
+# local, one entry for `embed` and one for `generate`. Template and the full
+# rationale: `config/inference-hosts.example.yaml`. No file there is a valid setup:
+# both jobs then use http://localhost:11434 and nothing is probed.
+#
+# `host:` below still WINS when it is set, because an operator who writes an
+# address into the shared config means it for the whole workspace. Leave it empty
+# unless you know every clone of this repo should follow.
+host:
+
+# WHICH PROGRAM answers at that address. Empty means `ollama`, which is what
+# every clone has always assumed. The other value this workspace has measured is
+# `lemonade`: Lemonade Server answers /api/embed, /api/tags and /api/version in
+# ollama's own wire format, byte for byte, and differs in exactly two things --
+# the address, and a required Authorization header.
+#
+# It is DECLARED and never inferred from the port. A resolver that concluded
+# "13305 means Lemonade" would be guessing, and would be wrong the first time the
+# port moved, which is the failure the `auto:` pin exists to end for addresses.
+#
+# What it buys: the name is stamped into every index beside the model and the
+# weight digest, so a store can say which of two producers wrote its rows. That
+# matters more than it used to, because a Lemonade host returns the SAME
+# `sha256:00000...` digest for every model it serves (measured 2026-09-23), so
+# the digest identifies nothing there and this is the only field left that does.
+# Vectors themselves are unaffected: the two were measured that day at 1024 wide
+# both, cosine 1.000000 on three texts, so an existing store stays valid across
+# the move and needs no rebuild.
+#
+# Like `host:`, this file is TRACKED and a value here is a claim about every
+# clone. `embed_provider:` in the gitignored `config/inference-hosts.yaml` is where
+# a one-machine answer belongs; this line wins over it when it is filled in.
+provider:
+
+# The NAME of the environment variable holding the embed host's bearer token.
+# Never the token: that is read by scripts/utils/api.py's `load_api_key` from the
+# environment or the gitignored `.env`, and no code path prints, logs or stores
+# its value.
+#
+# Empty means the host authenticates nothing, which is ollama, and which is
+# today's behaviour on every clone that leaves this alone. A Lemonade host needs
+# `LEMONADE_API_KEY` here, or `embed_api_key_env:` in
+# `config/inference-hosts.yaml` -- same precedence as `provider:` above, and the
+# machine-local file is the better home for the same reason.
+#
+# Naming a variable that is not set is a HARD failure, not a silent
+# unauthenticated request: the alternative produces a 401 three layers down that
+# reads as "the embedder is unreachable" and sends the reader to repair the
+# wrong thing.
+api_key_env:
+
+# How long ollama keeps the embed model resident after a request. Ollama's own
+# default is 5 minutes, and a working session pauses for longer than that
+# constantly, so the FIRST query after a pause paid a full model reload.
+# Measured 2026-08-22 on this machine: 7.00 s cold against 0.87 s warm — the
+# 6.1 s gap is bge-m3 being read back into video memory, nothing else. It hit
+# the `recall-inject` hook too, which fires on 80% of prompts.
+# Cost of holding it: 664 MB resident. Lower this to trade speed back for
+# memory; `0` restores ollama's unload-immediately behaviour, `-1` never unloads.
+keep_alive: "30m"
+
+# Salience threshold: hits cluster 0.56-0.61, empty 0.49-0.53 (tested on Odin).
+threshold: 0.55
+
+# Near-miss window below the confidence threshold. When NOTHING clears
+# `threshold` and no lexical match exists, hits within this distance of the
+# threshold are returned FLAGGED as below-confidence instead of the query being
+# reported as a gap. Rationale (measured 2026-08-07): a question-shaped query
+# scores systematically lower than a keyword query against the same document
+# (0.459 vs 0.663 on one episode record), so an absolute threshold calibrated on
+# keywords reports a false gap on questions. A false "not in memory" closes the
+# subject; a flagged weak hit does not. Set to 0 to restore the old behaviour.
+near_miss_margin: 0.12
+
+# Max ranked hits returned by query.
+top_k: 8
+
+# R7 ranking: after the RRF candidate set is built, reorder by a weighted blend
+# of semantic relevance (cosine), recency, and importance. Ship defaults per
+# the plan; tune from observed recall.
+rank_weights:
+  semantic: 0.60       # cosine relevance
+  recency: 0.20        # exponential decay (half-life below); status:evergreen floors at ~0.7
+  importance: 0.20     # confidence high/medium/low -> 1.0/0.7/0.4; episodes biased down
+recency_decay: exponential
+recency_halflife_days: 180
+
+# R8 PageRank associative recall: optional enrichment over the wiki-links graph.
+# Personalised PageRank seeds from the query's matching entities, then propagates
+# importance along [[wiki-links]] -- surfacing multi-hop associations that
+# similarity search alone misses (HippoRAG). Disabled by default; /odin recall
+# activates it. Pure-Python (scripts/odin_pagerank.py), no new dependency.
+pagerank:
+  enabled: false                 # set true to activate PPR recall enrichment
+  convergence_threshold: 1.0e-6  # power-iteration stopping criterion
+  max_iterations: 100            # safeguard iteration cap
+  mode: "r7+ppr"                # ppr | r7+ppr | hybrid
+  blend_weights:                 # used in r7+ppr and hybrid modes
+    relevance: 0.50              # lexical/semantic relevance component
+    pagerank: 0.50               # graph-proximity (PPR) component
+  seed_threshold: 0.45           # min match score to seed PPR (broadens seed set)
+
+# Layers to index -- allowlist of globs, each tagged with a layer label.
+# Workspace-wide recall (2026-06-11): the four original BUSINESS layers plus the
+# rest of the workspace's meaningful prose (content) and a separate `code`
+# collection (skills, rules). Allowlist subtrees keep caches, _sync/, browser/,
+# state.json and binaries out by construction; only *.md is indexed (binary
+# source-of-truth enters via its *-extract.md companion). The whole index is
+# ceo-only and never synced. Order matters: the FIRST layer to claim a path
+# keeps it (so odin-brain stays in `odin`, not the broader `knowledge` layer).
+# HEADING OS 2 (2026-09-14): a glob that begins `{a/b/,...}` carries the
+# `<family>/<leaf>/` prefixes of one move, derived from its plan by
+# scripts/dev/derive-memory-index-globs.py (`--check` re-derives). Two rules
+# hold for every such glob, checked by hand: no bare option whose address no
+# longer holds a file (a record at two addresses would be indexed twice;
+# operator instruction 2026-09-19, "there cannot be a file lying at both
+# addresses.", translated), and no tail reachable under two prefixes of one glob. A record
+# written to a dropped address enters no index.
+#
+# REGISTRY-NAMED LAYERS, C3, 2026-10-13. The prefix groups above follow ONE
+# move and nothing after it: the subject-tree move repoints registry names, and
+# a literal prefix stays behind. So a data layer now names its directories:
+# `names:` (registry names of directories, `glob:` taken relative to each),
+# `files:` (registry names of single files), `groups:` / `file_groups:` (named
+# sets of either, shared with the readers that walk the same set, declared in
+# the data registry's `groups:` and resolved by `scripts/utils/data_homes.py`)
+# and `literal:` (root-relative globs for what no
+# name covers yet). `scripts/utils/memory_layers.py` folds them
+# into one root-relative glob at load time, so repointing a name in the data
+# registry is the whole change. The two refusals above still hold for
+# `literal:`; `scripts/dev/derive-memory-index-globs.py` leaves named layers
+# alone. What is still literal, and why: `subject-research` (its directory
+# has no registry name yet), `doc-companion` (the whole root), and the
+# engine-side and runtime-store layers below.
+layers:
+  - layer: odin
+    # Episodes (lived evidence, dated) join the brain layer for recall. They are
+    # tagged ntype=episode, so consult still ranks them below positions -- the
+    # trust gradient is applied downstream in synthesis, not in this recall index.
+    names: [odin-principles, odin-positions, odin-sources, odin-episodes]
+    glob: "*.md"
+  - layer: thread
+    groups: [business-threads]   # threads-business and every account's account-threads (HOS-234 part 10)
+    glob: "*.md"
+  - layer: crm
+    names: [crm-contacts]   # ceo-only business CRM, indexed on purpose (Decision 6)
+    glob: "*.md"
+  - layer: linkedin
+    names: [linkedin-archive]  # The operator's published posts/articles (public, ceo-only). Recall layer only -- NOT distilled into Odin's brain (that is a separate curated pass).
+    glob: "**/*.md"
+  # --- content collection (workspace-wide prose) ---
+  - layer: context
+    # strategy, people, pipeline, personal-info (ceo-only, local). The context
+    # homes by name, and the single files by name too, because the C3 move
+    # splits two of those homes by file and only the file names follow.
+    groups: [context-homes]
+    glob: "*.md"
+    file_groups: [context-files]
+  - layer: context-personal
+    # Added 2026-09-12 with the air-gap removal. This subtree was held out
+    # TWICE: by the hard-coded `personal` deny, and by the non-recursive
+    # `*.md` glob of the `context` layer above, which would still have missed
+    # it after the deny went. A layer of its own rather than widening `context`
+    # to `**`, because the `archive/` beside a context home is a separate
+    # question nobody has asked.
+    # MEASURED 2026-09-12: 1 file. The subtree had no registry name of its
+    # own until HOS-234 (2026-10-13) gave it `context-personal`.
+    names: [context-personal]
+    glob: "**/*.md"
+  - layer: reference
+    names: [reference-docs]
+    glob: "**/*.md"
+  - layer: plans
+    names: [plans]       # active + archive
+    glob: "**/*.md"
+  - layer: outputs
+    # Allowlisted deliverable subtrees only -- excludes browser/, _sync/, caches,
+    # state.json, clipboard, and any non-.md by construction.
+    #
+    # C3, 2026-10-13: every registry name whose directory was inside the old
+    # outputs glob over intel, deliverables, negotiations, research, operations
+    # and content, umbrellas AND children, because the move splits the umbrellas and
+    # each child then lands in its own place. The list is the registry group
+    # `output-dirs`, shared with /next. MEASURED 2026-10-13: these names
+    # covered all but 126 of the 3716 files that glob claimed; the 126 sit in
+    # two subtrees that were kept by a literal glob until HOS-234 named them
+    # (`deliverable-content`, `deliverable-deliverables`).
+    groups: [output-dirs]
+    names: [deliverable-content, deliverable-deliverables]
+    glob: "**/*.md"
+  - layer: subject-research
+    # C3 move, 2026-10-13: the surveys the `outputs` layer above reached (registry
+    # name `research-surveys`, the research-survey record kind) moved to the subject tree. Workspace-subject research
+    # went to `system-research` (this layer); the rest went to `research-surveys`,
+    # which the `knowledge` layer below already reaches. MEASURED 2026-10-13: the
+    # index held 0 paths under system/ after the move.
+    names: [system-research]
+    glob: "**/*.md"
+  - layer: knowledge
+    names: [knowledge-base]   # general /zk notes; odin-brain already claimed by `odin` above (first-claim)
+    glob: "**/*.md"
+  - layer: datastore-extract
+    # Every markdown file in the datastore, not only the `-extract.md`
+    # companions. MEASURED 2026-09-02: the old glob, `**/*-extract.md` under
+    # the top-level `datastore` directory that no longer exists, left 33 hand-written markdown files reachable by NO layer at all, 13 of
+    # them under intelligence/ and 7 under projects/, so `/recall` could not see
+    # notes the operator had written by hand inside the source-of-truth tree.
+    # The linkedin layer claims its own subtree first. The personal datastore,
+    # the `personal` subtree of the inbound-document datastore today, used to be held out by the hard-coded `personal` air-gap deny; that deny
+    # was removed on 2026-09-12 (operator directive: nothing on this machine is
+    # withheld from the index), so this glob now reaches it. MEASURED that day:
+    # 453 files before, 484 after, the 31 new ones all in the personal datastore.
+    groups: [datastore-homes]  # binary companions AND hand-written notes
+    glob: "**/*.md"
+  - layer: doc-companion
+    # HOS-149 (2026-09-26): the `-extract.md` companion of every document
+    # OUTSIDE the DataStore homes, which `scripts/datastore-extract.py` now
+    # writes across the nine family roots. The layers above claim first, so a
+    # companion under a DataStore home or an allowlisted `outputs` subtree keeps
+    # its layer; this one takes the rest. The nine names are the family roots
+    # of `scripts/heading_os_2/families.py`, typed here because YAML cannot
+    # import them. The one-time load of enabling it was measured before it was
+    # enabled; the figures belong to one overlay and are recorded on HOS-149,
+    # not in this public file.
+    #
+    # C3, 2026-10-13: the subject-tree roots hold companions too, so the walk
+    # is the whole data root rather than a list of roots that has to grow with
+    # every move. The runtime store, `_secure/` and `_work/` stay out through
+    # the denies. MEASURED 2026-10-13: the whole-root walk took 1.2 s, and 171 indexable
+    # companions sat under roots the nine-family list did not reach.
+    glob: "**/*-extract.md"
+  - layer: memory
+    names: [auto-memory]  # canonical data auto-memory (kept in sync with the native harness store by .claude/hooks/memory-reconcile.py)
+    glob: "*.md"
+  # --- hindsight-snapshot collection (HOS-203, 2026-10-05) ---
+  # The daily copy of what lives ONLY in the Hindsight bank, written by
+  # `scripts/hindsight-snapshot.py take`. It sits under the runtime store so that
+  # `hindsight-sync.py` never sends it back into the bank, and `under_runtime_store`
+  # lifts the store deny for this layer alone (`layer_deny_prefixes`); it names the
+  # one service directory by its `runtime:` address, so the store's place is the
+  # registry's (`runtime_store:`, HOS-241), and its glob takes only the `current/`
+  # snapshot, never a half-built `next-*` or the knowledge-base change logs. A collection of its own, outside
+  # `content`, because it is the fallback for when Hindsight does not answer and an
+  # ordinary recall must not show Hindsight's facts twice.
+  - layer: hindsight-snapshot
+    under_runtime_store: true
+    names: ["runtime:hindsight-snapshot/cache"]
+    glob: "current/{observations,documents,mental-models,directives}/*.md"
+  # --- chronicle collection (dated history of past sessions, queried separately) ---
+  - layer: chronicle
+    names: [chronicle-business]  # business chronicle -> content-side, ranked below brain
+    glob: "**/*.md"
+  - layer: chronicle-personal
+    # An ordinary layer since 2026-09-12. It was NOT one until then: the
+    # `personal` segment was a hard-coded air-gap deny, so personal chronicle
+    # entered no persistent index at all and recall over it was on-the-fly only
+    # (`scripts/chronicle.py personal-recall`, which reads at query time and
+    # persists nothing). The operator's directive that day removed the deny, so
+    # the entries are indexed like any other dated session record; the
+    # on-the-fly command still works and is now a narrower duplicate of a
+    # `--collection chronicle` query. MEASURED 2026-09-12: 17 files.
+    names: [chronicle-personal]
+    glob: "**/*.md"
+  # --- code collection (the machinery, queried separately) ---
+  - layer: skill
+    glob: ".claude/skills/**/SKILL.md"
+  - layer: rule
+    glob: ".claude/rules/*.md"
+  # --- commit corpora (why a change was made; `source: git-log`, not a glob) ---
+  # A commit is not a file, so these layers carry no `glob`. The builder reads
+  # `git log` from the store's own root, which is what keeps the seam honest:
+  # commit-engine sits in the `code` collection (ENGINE root, engine store) and
+  # commit-data in `history` (DATA root, data store). Neither can reach the
+  # other's repository. Measured 2026-08-21: 605 indexable engine commits and 485
+  # data ones, after 153 `chore: workspace backup` subjects are dropped as noise
+  # (a fifth of data history, near-identical vectors that crowd real hits) and 14
+  # data commits were refused for touching a `personal` path. That last number
+  # is HISTORY as of 2026-09-12: the `personal` deny_segment was removed that
+  # day, so those 14 commits are now indexed like the rest. Re-measure before
+  # quoting the totals; they were taken under the old denylist.
+  # `body_paths` is the A/B knob the design spec calls for: it puts the changed-
+  # path list in the embedded text, which answers "what touched the action queue"
+  # by meaning but dilutes the vector with filenames. Measure both, keep the
+  # winner, and record BOTH numbers.
+  # --- symbol corpus: BUILT, MEASURED, WITHDRAWN 2026-08-21 -------------------
+  # Embedding all 9,608 CodeGraph symbols answered 46% of grep-blind intent
+  # queries at top-5, against a 70% bar and a 50% kill line agreed before the
+  # build: name-search, which `git grep` and CodeGraph already do. Commented, not
+  # deleted, so a retry starts from a measured negative: restore the four lines
+  # and add `symbol` to the `code` collection (`scripts/utils/symbol_source.py`
+  # stays). Design: the 2026-08-21 semantic-index record, registry name `spec-docs`.
+  #
+  # - layer: symbol
+  #   source: codegraph
+  #   graph_db: .codegraph/codegraph.db
+  #   threshold: 0.45
+  - layer: commit-engine
+    source: git-log
+    repo_label: engine
+    body_paths: true
+    # Measured, not guessed (2026-08-21, 25-query set): a paraphrased or Russian
+    # question finds its commit at cosine 0.456-0.597, while a keyword query hits
+    # the same index at 0.590-0.697. The prose-calibrated 0.55 therefore calls a
+    # gap on 7 of 23 answers it did in fact rank first. 0.45 gives 85% against
+    # the agreed 80% bar; 0.50 and 0.55 both give 77%. Cost, measured on six
+    # nonsense queries: one false-confident hit at 0.45, none at 0.55.
+    threshold: 0.45
+  - layer: commit-data
+    source: git-log
+    repo_label: data
+    body_paths: true
+    # Same measurement and threshold as commit-engine above.
+    threshold: 0.45
+
+# Collections -- named groups of layers for `query --collection`. `content` is the
+# default (what we know / decided); `code` is the machinery (how skills/rules work),
+# kept out of the default result set so the two registers don't mix. `all` = both.
+#
+# TWO PHYSICAL STORES (2026-06-16): the `content` collection builds from the DATA
+# root into `index.db` under `runtime:memory-index/cache`; the `code` collection (skill/rule) builds from
+# the ENGINE root into .memory-index-code/index.db (inside the engine clone). Each
+# artifact on its own side of the engine/data seam -- no cross-seam join, engine
+# self-sufficient for code search, no public-code rows in the private data repo.
+# `build` fills both; `query` opens the store(s) the collection needs (`all` pools
+# both and fuses once). Both stores are gitignored, rebuildable caches.
+collections:
+  content: [odin, thread, crm, linkedin, context, context-personal, reference, plans, outputs, subject-research, knowledge, datastore-extract, doc-companion, memory]
+  # `symbol` is deliberately absent here, and its layer definition above is
+  # commented out for the same reason -- see the block that carries the numbers.
+  code: [skill, rule, commit-engine]
+  # history: why a change was made. A DATA-side collection sharing the physical
+  # content store (see _store_targets), queried SEPARATELY so the default
+  # /recall never mixes commit prose into an answer about what we decided.
+  history: [commit-data]
+  # chronicle: dated history of past sessions. A DATA-side collection: its rows
+  # live in the same physical store as `content` (see _store_targets), but it is
+  # queried SEPARATELY (`query --collection chronicle`) and is NOT in `content`,
+  # so the default /recall never mixes it in. /recall runs it as a secondary pass
+  # and appends its hits BELOW the brain -- the structural below-brain guarantee.
+  chronicle: [chronicle, chronicle-personal]
+  # hindsight-snapshot: queried only by `scripts/hindsight-snapshot.py query`, the
+  # fallback when Hindsight does not answer (HOS-203).
+  hindsight-snapshot: [hindsight-snapshot]
+
+# Chunking (2026-06-11): long documents are split into overlapping chunks, each
+# embedded as its own row (id = path for chunk 0, path#N for the rest), so content
+# buried past the first window is recallable. Only long-form layers are chunked;
+# short/atomic layers (crm, memory, odin, linkedin, context, skill, rule) stay
+# one-row. max_chunks caps cost on giant extract tables. Query dedups to the best
+# chunk per file.
+chunk:
+  enabled_layers: [datastore-extract, doc-companion, outputs, reference, plans, knowledge, thread]
+  max_chars: 700        # target chunk size (characters)
+  overlap: 120          # characters carried between consecutive chunks
+  max_chunks: 12        # hard cap per file (bounds cost on huge extracts)
+  # The ceiling on ONE embed text, applied to every row from every source
+  # whether or not its layer is in `enabled_layers` above. That list is an
+  # opt-in and it had a hole: a glob layer outside it is bounded anyway, at 500
+  # characters, by `parse_note`'s snippet -- but the `git-log` and `codegraph`
+  # sources build their own `embed_text` and never call `parse_note`, so they
+  # reached the unchunked branch with no bound at all. MEASURED 2026-09-24 over
+  # the 1229 engine commits on this branch: median 1,897 characters, largest
+  # 89,834, of which 81,054 were the appended list of 1,550 changed paths.
+  #
+  # Why 6000, and it is argued against the DENSEST content rather than the
+  # friendliest. The server's wall is bge-m3's 8192-token context and it
+  # REFUSES rather than truncating: HTTP 500, returned in 0.0s, so it is a
+  # pre-flight length check and not a model timeout. The wall is in tokens, so
+  # its position in characters depends entirely on what the characters are.
+  # MEASURED 2026-09-24 by binary search against the live endpoint, single
+  # input, model bge-m3:
+  #
+  #     repeated ASCII letter        passes 40,000   fails 41,562
+  #     Russian prose                passes 35,540   fails 35,698
+  #     list of file paths           passes 20,330   fails 20,488
+  #     dense Cyrillic, no spaces    passes  8,037   fails  8,198
+  #
+  # A bound picked at the 40,000 the first row suggests would fail on the third
+  # row, which is exactly what this corpus is made of. The last row is about one
+  # token per character, the floor for a subword tokenizer on in-vocabulary
+  # text; 8,000 characters of adversarial mixed-script noise and 8,000 of
+  # repeated emoji both still passed, so nothing measured here exceeds that
+  # floor. 6000 sits a quarter below it, and that quarter is not decoration: it
+  # is for byte-fallback on characters outside the model's vocabulary, which no
+  # probe here established a bound for, and for the shape this corpus actually
+  # holds -- Russian, English, code identifiers and paths in one text -- which
+  # no single-character filler reproduces.
+  #
+  # Oversized text is SPLIT, not truncated, by the same `chunk_text` everything
+  # else uses, so the tail stays retrievable as its own row rather than being
+  # dropped. `max_chunks` still bounds the total.
+  embed_max_chars: 6000
+
+# Per-prompt recall injection (.claude/hooks/recall-inject.py, UserPromptSubmit).
+# The only memory injection this workspace runs.
+# timeout_seconds is a HARD give-up, and a cold start must cost the prompt
+# nothing. MEASURED 2026-10-16 at a machine load near 19 to 20: a query took
+# 4.8 to 4.9s warm and 12.9 to 37.1s cold, so the earlier 3.5 let almost no run
+# deliver. 11 fits inside the 11.5s wait of hindsight-recall-inject.py, which
+# runs beside it.
+# min_prompt_chars is a length heuristic separating conversational filler from a
+# question aimed at memory, measured on real messages with the subject replaced
+# by the neutral placeholder "Омега" at the same length: "продолжай" is 9
+# characters and "спасибо, давай дальше" is 21, against "почему мы не пошли в
+# Омегу" at 26 and "что мы решили по Омеге и почему" at 31. A cut at 25 splits
+# those measurements. It is not exact, and it cannot be: a short prompt can be a
+# real question and a long one can be filler. It is tuned to fail toward
+# silence, because missing one pointer costs less than roughly 250 tokens and a
+# backend round trip on every "продолжай".
+recall_inject:
+  enabled: true
+  timeout_seconds: 11
+  top_k: 5
+  min_prompt_chars: 25
+
+# Index denylist. The ONLY denies that exist: scripts/utils/air_gap.py applies
+# what it is handed and nothing else, since 2026-09-12.
+#   deny_prefixes -- path starts with any of these.
+#   deny_segments -- any path segment equals one of these.
+#
+# `personal` was a deny_segment here, and a HARD-CODED one in air_gap.py, until
+# the operator's directive of 2026-09-12: this machine has one user, nothing on
+# it is withheld from the index or from memory, and `CEO-Only` marks a record as
+# not-for-other-executives rather than not-indexed. Executive publishing was
+# removed on 2026-09-25 (HOS-130); the whole data repository is one privacy
+# class (M007), so the marking has no effect on this index.
+#
+# `_secure/` stays, and is deliberately the only entry left. The vault it names
+# was removed in Plan 5 and no such directory exists in the data overlay
+# (verified 2026-09-12), so it denies nothing today. It is kept because it is
+# what makes this file's denylist a LIVE path rather than an unexercised one:
+# scripts/utils/commit_source.py, scripts/utils/symbol_source.py and
+# scripts/memory-index.py all pass these two lists through, and a pair of empty
+# lists proves nothing about whether they still arrive. Delete it and that
+# mechanism has no witness.
+deny_prefixes:
+  - "_secure/"
+  # The runtime store by its default registry name, `runtime-junk`
+  # (scripts/utils/runtime_dir.py; `store_denies` adds the live tree's own
+  # name at build time): calendar and inbox
+  # dumps, caches, locks, queues, rebuildable indexes. A calendar dump is not a
+  # memory; the calendar is. No layer glob reaches it today, so this line is
+  # the stated rule rather than the incidental one (design 2026-09-14).
+  - "runtime-junk/"
+  # The operator's holding pens are NOT listed here and must not be added back.
+  # They are a fact about his tree rather than a policy of this index, they were
+  # spelled in five separate files (HOS-28), and `load_config` in
+  # `scripts/memory-index.py` now folds them in from
+  # `scripts/utils/excluded_dirs.py`, which is also where their declared on-disk
+  # state is recorded so that a name pointing at nothing says so.
+# `_work` (HOS-195, the working folder beside a document) is NOT listed here
+# either: a segment here also drops every commit that touched such a path, and
+# `file_deny_segments` in `scripts/memory-index.py` adds it to the file walk only.
+deny_segments: []
+
+# Hygiene audit knobs (scripts/memory-hygiene.py). near_dup_threshold feeds
+# scan_redundancy() in scripts/utils/memory_health.py -- cosine similarity at
+# or above this value flags an advisory redundancy-merge candidate.
+audit:
+  near_dup_threshold: 0.86   # cosine >= this => redundancy merge candidate (advisory)

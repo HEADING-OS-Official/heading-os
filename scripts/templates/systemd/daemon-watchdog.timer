@@ -1,0 +1,16 @@
+[Unit]
+Description=Daemon liveness watchdog - one pass every two minutes
+
+[Timer]
+# Two minutes, the cadence the watchdog ran at in-process before it had a
+# timer of its own. The default beat threshold is three minutes (60s expected
+# plus 120s grace), and the dedup state in the data repository keeps a sustained
+# outage to one alert per re-alert window however often this fires.
+OnBootSec=3min
+OnUnitActiveSec=2min
+# Deliberately no Persistent=true: a missed pass is not worth replaying, the
+# next one looks at the CURRENT heartbeats, which is the only state that matters.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

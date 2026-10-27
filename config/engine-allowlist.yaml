@@ -1,0 +1,768 @@
+# What the engine repository may carry. Everything else is a leak.
+#
+# Operator decision 2026-09-25 (HOS-131), his words, translated: "any information in the
+# engine that is not the engine itself (scripts, hooks, plugins, skills) counts as
+# a leak and must NOT be in it!" The definition he accepted the same day, proposed
+# by HELM, translated: "the engine is code and what that code cannot run or
+# install without; everything else is a leak". The classes below are HELM's recommendations, which he
+# accepted; the per-file entries are a yard's reading of each file, written with
+# the reason so a reviewer can refuse one.
+#
+# Read by scripts/check-engine-only.py, at pre-commit and as the sixth push
+# ratchet. A tracked file is engine when a class pattern or a per-file entry
+# below covers it. A file covered by neither is refused unless it is listed in
+# config/engine-only-baseline.json, the migration list that may only shrink.
+#
+# Patterns: `*` never crosses a slash, `**/` is zero or more directories, `?` is
+# one character. A pattern or entry that matches nothing refuses as stale, and
+# anything here that also matches the checker's NEVER list (examples/, records/,
+# docs/ beyond the install guide, images, office files, brand folders) refuses:
+# a content class cannot be allowlisted from this file, only by changing the
+# checker, which is code a reviewer reads.
+
+classes:
+  - class: engine-code
+    reason: the engine's executable code, which is what the engine is
+    patterns:
+      - "scripts/**/*.py"
+      - "scripts/**/*.sh"
+      - ".claude/hooks/*.py"
+      - ".claude/skills/**/*.py"
+      - ".githooks/*"
+
+  - class: engine-instruction
+    reason: instructions the harness loads and executes as behaviour; a skill, a rule and an agent definition are the engine for an LLM runtime
+    patterns:
+      - ".claude/skills/*/SKILL.md"
+      - ".claude/skills/*/triggers.json"
+      - ".claude/rules/*.md"
+      - ".claude/commands/*.md"
+      - ".claude/agents/*.md"
+
+  - class: engine-tests
+    reason: test code; its data is generated at run time, so only code is covered here
+    patterns:
+      - "tests/**/*.py"
+
+  - class: install-and-ci
+    reason: what installs, locks, wires and checks the engine
+    patterns:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
+      - "requirements-dev.txt"
+      - ".python-version"
+      - ".pre-commit-config.yaml"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/**/*.yml"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".devcontainer/devcontainer.json"
+      - "scripts/templates/systemd/*.service"
+      - "scripts/templates/systemd/*.timer"
+      - ".claude/settings.json"
+      - ".claude/settings.local.*.json"
+
+  - class: the-four-documents
+    reason: the operator's list of the documents that stay, README, LICENSE, SECURITY and the install guide; which docs/ page is the install guide is a yard's proposal (docs/DEPLOYMENT.md, "the complete, zero-to-running guide") awaiting his word
+    patterns:
+      - "README.md"
+      - "LICENSE"
+      - "SECURITY.md"
+
+# Files a pattern cannot decide. Each names what in the engine reads it or which
+# rule or skill loads it as procedure, as found by the HOS-131 inventory on
+# 2026-09-25 (git grep per file; the rows are in the data repository beside the
+# inventory). A reviewer refuses an entry by deleting it; the file then refuses
+# until it leaves or is re-argued.
+files:
+- path: docs/AGENTVIEW.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/CLIPROXY.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/HERDR.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/HINDSIGHT.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/LIFIC.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/RULES-AND-PROTECTIONS.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS-COMMUNICATION.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS-CONTENT.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS-DAILY.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS-INTEL.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS-STRATEGY.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS-SYSTEM.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/SKILLS.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/WHATS-NEW.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/WORKING-WITH-HEADING-OS.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/YARDS.md
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/assets/how-it-works.svg
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/assets/install-steps.svg
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: docs/assets/security.svg
+  class: official-documentation
+  reason: "documentation of the official distribution, laid into docs/ by its build; README.md and docs/INSTALL.md link it."
+- path: CLAUDE.md
+  class: official-distribution
+  reason: "scripts/official-build.py lays it over the official snapshot as that repository's CLAUDE.md."
+- path: NOTICE
+  class: official-distribution
+  reason: "the official distribution's notice that accompanies its license; laid over the snapshot by scripts/official-build.py."
+- path: docs/INSTALL.md
+  class: official-distribution
+  reason: "the official distribution's install guide, its counterpart of the four documents; laid over the snapshot by scripts/official-build.py."
+- path: install.sh
+  class: official-distribution
+  reason: "the official installer, code the distribution cannot be installed without; laid over the snapshot by scripts/official-build.py."
+- path: SUPPORT.md
+  class: official-distribution
+  reason: "the official distribution's support page, which GitHub shows beside its issues; laid over the snapshot by scripts/official-build.py."
+- path: CONTRIBUTING.md
+  class: official-distribution
+  reason: "the official distribution's contribution policy, which GitHub shows beside its issues; laid over the snapshot by scripts/official-build.py."
+- path: CHANGELOG.md
+  class: official-distribution
+  reason: "the official distribution's release history; laid over the snapshot by scripts/official-build.py."
+- path: .claude/skills/brain-audit/evals/cases/case-1-three-checks.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/brain-audit/evals/cases/case-2-degenerate-sources.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/brain-audit/evals/cases/case-3-boundaries.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/brain-audit/references/modalities.md
+  class: skill-reference-instruction
+  reason: .claude/skills/brain-audit/SKILL.md § 2.2 Modality coverage tells the model to read it for the modality list.
+- path: .claude/skills/burst/references/variation-axes.md
+  class: skill-reference-instruction
+  reason: .claude/skills/burst/SKILL.md § Block B - N variants tells the model to read it before generating Block B.
+- path: .claude/skills/calibrate/references/detection-prompts.md
+  class: skill-reference-instruction
+  reason: .claude/skills/calibrate/SKILL.md § Phase 2 - Six-category detection tells the model to load it in Phase 2.
+- path: .claude/skills/calibrate/references/output-prose-style.md
+  class: skill-reference-instruction
+  reason: .claude/skills/calibrate/SKILL.md § Output-prose plain-English mandate points the voice rules at it.
+- path: .claude/skills/calibrate/references/patch-application-protocol.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/calibrate/SKILL.md § Step 5.4: Ask for the commit, then stage exactly what this run wrote names it as the Phase 5 template."
+- path: .claude/skills/calibrate/references/presentation-format.md
+  class: skill-reference-instruction
+  reason: .claude/skills/calibrate/SKILL.md § Numbered candidate presentation names it as the display format and grammar.
+- path: .claude/skills/canopus/references/planning-gate.md
+  class: skill-reference-instruction
+  reason: .claude/skills/canopus/SKILL.md § Step 3 — what makes a plan worth committing names it as the authoring detail for step 3.
+- path: .claude/skills/goldfish/references/standards.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/goldfish/SKILL.md § Phase 0 - Resolve the artifact names it as the standard the goldfish agent applies, one section per mode."
+- path: .claude/skills/goldfish/references/triage.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/goldfish/SKILL.md § Phase 2 - Triage and report tells the model to read it before triaging findings."
+- path: .claude/skills/goldfish/LICENSE-APACHE-2.0.txt
+  class: third-party-license
+  reason: "the Apache License 2.0 of Google's Elephant-Goldfish Model, from which references/standards.md is adapted; Apache-2.0 section 4(a) requires a copy with any redistribution of a derivative work."
+- path: .claude/skills/handover/references/handoff-template.md
+  class: skill-reference-instruction
+  reason: .claude/skills/handover/SKILL.md § Step 2 - Write the handoff with one command, and .claude/skills/clear-handover/SKILL.md § Step 2 - Write the handoff with one command, tell the model to read it before writing; bundled by build-plugins.
+- path: .claude/skills/council/references/roster-flags.md
+  class: skill-reference-instruction
+  reason: .claude/skills/council/SKILL.md § Determine which models to call tells the model to read it first in Phase 2.
+- path: .claude/skills/council/references/transcript-format.md
+  class: skill-reference-instruction
+  reason: .claude/skills/council/SKILL.md § Write the transcript has the model write transcripts to it; scripts/council-aggregate.py parses the headings it fixes.
+- path: .claude/skills/create-plan/references/plan-template.md
+  class: skill-reference-instruction
+  reason: .claude/skills/create-plan/SKILL.md § Plan Format requires its exact structure; bundled by build-plugins.
+- path: .claude/skills/crm/evals/cases/case-1-mode-routing.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/crm/evals/cases/case-2-add-required-fields.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/crm/evals/cases/case-3-radar-tiering.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/crm/references/actions.md
+  class: skill-reference-instruction
+  reason: .claude/skills/crm/SKILL.md § Actions tells the model to read it before running any action.
+- path: .claude/skills/design/references/models.md
+  class: skill-reference-instruction
+  reason: .claude/skills/design/SKILL.md § Model Reference points model selection at it.
+- path: .claude/skills/docparse/references/integration.md
+  class: skill-reference-instruction
+  reason: .claude/skills/docparse/SKILL.md § Integration points to it for full details; build-plugins rewrites its command lines in the bundle.
+- path: .claude/skills/flux-image/references/models.md
+  class: skill-reference-instruction
+  reason: .claude/skills/flux-image/SKILL.md § Model Selection points model selection at it.
+- path: .claude/skills/image-prompt/references/platforms.md
+  class: skill-reference-instruction
+  reason: .claude/skills/image-prompt/SKILL.md § Output Format points non-Midjourney platforms at it; bundled by build-plugins.
+- path: .claude/skills/implement/.eval-accept.json
+  class: config-read-by-code
+  reason: scripts/artifact-evaluator.py (load_accepted_warnings()) loads it when evaluating the skill.
+- path: .claude/skills/implement/references/implement-details.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/implement/SKILL.md § Phase 2: Execute the Plan sends wave execution to it."
+- path: .claude/skills/linkedin-archive/evals/cases/case-1-what-it-moves.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/linkedin-archive/evals/cases/case-2-confirm-before-disk.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/linkedin-archive/evals/cases/case-3-content-types.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/linkedin-post/evals/cases/case-2-no-emoji-no-hashtags-on-ask.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/marp/evals/cases/case-1-subcommands.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/marp/evals/cases/case-2-outputs.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/marp/evals/cases/case-3-routing-boundary.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/memory-hygiene/evals/cases/case-1-defect-classes.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/memory-hygiene/evals/cases/case-2-never-mutates.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/memory-hygiene/evals/cases/case-3-routing-boundary.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/notebooklm/evals/cases/case-1-capabilities.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/notebooklm/evals/cases/case-2-auth-first.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/notebooklm/evals/cases/case-3-source-types.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/notebooklm/references/mode-catalog.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/notebooklm/SKILL.md § Phase 2: Mode Execution dispatches each mode to its section."
+- path: .claude/skills/notebooklm/references/output-and-errors.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/notebooklm/SKILL.md § Phase 3: Output, Bridges, and Error Handling sends Phases 2-3 to it."
+- path: .claude/skills/odin/evals/cases/case-1-nine-modes.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/odin/evals/cases/case-2-committed-stance.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/odin/evals/cases/case-3-brain-grounded.json
+  class: skill-eval-fixture
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/odin/references/compile-pipeline.md
+  class: skill-reference-instruction
+  reason: .claude/skills/odin/SKILL.md § Mode Dispatch dispatches compile mode to it.
+- path: .claude/skills/odin/references/mode-catalog.md
+  class: skill-reference-instruction
+  reason: .claude/skills/odin/SKILL.md § Mode Dispatch dispatches every mode to its section.
+- path: .claude/skills/odin/references/templates.md
+  class: skill-reference-instruction
+  reason: .claude/skills/odin/SKILL.md § Mode Dispatch has learn, teach and log write files per it.
+- path: .claude/skills/odin/references/temporal-validity.md
+  class: skill-reference-instruction
+  reason: .claude/skills/odin/references/compile-pipeline.md § Pipeline cites it as the convention the lint enforces.
+- path: .claude/skills/osint-advanced/references/output-format.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/osint-advanced/SKILL.md § Phase 2: Synthesize Intelligence Brief names it as the canonical brief structure."
+- path: .claude/skills/osint-advanced/references/streams-deep-osint.md
+  class: skill-reference-instruction
+  reason: .claude/skills/osint-advanced/SKILL.md § Stream Catalogue tells the model to read it for stream execution.
+- path: .claude/skills/osint-advanced/references/tool-integration-guide.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/osint-advanced/SKILL.md § Phase 0: Context Loading lists it as a file to load."
+- path: .claude/skills/osint/references/output-format.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/osint/SKILL.md § Phase 2: Synthesize Intelligence Brief says the templates live here."
+- path: .claude/skills/osint/references/streams-company.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/osint/SKILL.md § Phase 1: Research Streams (Parallel) dispatches company mode to it."
+- path: .claude/skills/osint/references/streams-market.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/osint/SKILL.md § Phase 1: Research Streams (Parallel) dispatches market mode to it."
+- path: .claude/skills/osint/references/streams-person.md
+  class: skill-reference-instruction
+  reason: "osint/SKILL.md § Phase 1: Research Streams (Parallel) tells the model to load it as the PERSON-mode stream procedure."
+- path: .claude/skills/osint/references/streams-technology.md
+  class: skill-reference-instruction
+  reason: "osint/SKILL.md § Phase 1: Research Streams (Parallel) tells the model to load it as the TECHNOLOGY-mode stream procedure."
+- path: .claude/skills/playwright/references/selectors.md
+  class: skill-reference-instruction
+  reason: playwright/SKILL.md § Selector Patterns points the model to it for selector strategy.
+- path: .claude/skills/playwright/references/usage-cookbook.md
+  class: skill-reference-instruction
+  reason: playwright/SKILL.md § Core Browser Automation points the model to it for per-command usage.
+- path: .claude/skills/pptx-generator/references/brand-setup.md
+  class: skill-reference-instruction
+  reason: "pptx-generator/SKILL.md § PREREQUISITE: Brand Check tells the model to follow it when no brand exists."
+- path: .claude/skills/pptx-generator/references/carousel-workflow.md
+  class: skill-reference-instruction
+  reason: "pptx-generator/SKILL.md § Mode 2: Generate LinkedIn Carousels points the model to it as the carousel procedure."
+- path: .claude/skills/pptx-generator/references/generation-workflow.md
+  class: skill-reference-instruction
+  reason: "pptx-generator/SKILL.md § Step 5: Generate, Validate & Combine tells the model to read it for Step 5."
+- path: .claude/skills/pptx-generator/references/layout-crud.md
+  class: skill-reference-instruction
+  reason: "pptx-generator/SKILL.md § Mode 3: Manage Cookbook Layouts points the model to it for layout CRUD."
+- path: .claude/skills/pptx-generator/references/layout-guide.md
+  class: skill-reference-instruction
+  reason: "pptx-generator/SKILL.md § Step 2: Layout Discovery & Selection tells the model to read it for layout selection."
+- path: .claude/skills/pptx-generator/references/technical-reference.md
+  class: skill-reference-instruction
+  reason: pptx-generator/SKILL.md § Reference Files lists it for python-pptx usage.
+- path: .claude/skills/prime/evals/cases/case-1-identity-check.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/prime/evals/cases/case-2-parallel-health.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/prime/evals/cases/case-3-handoff-resume.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/prime/references/terminal-entry-points.md
+  class: skill-reference-instruction
+  reason: prime/SKILL.md § 5.1 Terminal Entry Points tells the model to read it before answering terminal-entry questions.
+- path: .claude/skills/radar/evals/cases/case-1-severity-and-command.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/radar/evals/cases/case-2-manual-actions.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/radar/evals/cases/case-3-crunch-floor.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-1-viia-structure.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-2-severity-tags.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-3-batched-approval.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-4-disprove-step.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-5-confidence-score.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-6-flag-as-fp.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-7-trajectory-target.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/evals/cases/case-8-deterministic-audit.json
+  class: skill-eval-case
+  reason: scripts/run-skill-eval.py globs evals/cases/*.json and grades the skill against it.
+- path: .claude/skills/scrutinize/references/approval-block.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory, and § Phase 3 - Approval Block names it.
+- path: .claude/skills/scrutinize/references/bias-mitigation.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/code-review-voice.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/eval-case-template.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/flags.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/observability.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/refutation-protocol.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/relentless-adaptive.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/report-format.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/role-lenses.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/severity-grid.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/target-detection.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/trajectory-evaluation.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/viia-framework.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/scrutinize/references/workspace-areas.md
+  class: skill-reference-instruction
+  reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/telegram/references/commands.md
+  class: skill-reference-instruction
+  reason: telegram/SKILL.md § Full Command Reference points the model to it for command usage.
+- path: .claude/skills/workspace-deep-audit/references/best-practices-rubric.md
+  class: skill-reference-instruction
+  reason: workspace-deep-audit/SKILL.md § Phase 4 — Best Practices Gap Analysis (skip on `--mode=quick`) tells the model to score against it.
+- path: .claude/skills/workspace-deep-audit/references/inventory-streams.md
+  class: skill-reference-instruction
+  reason: workspace-deep-audit/SKILL.md § Phase 1 — Parallel Inventory (up to 7 agents) tells the model to dispatch agents per it.
+- path: .claude/skills/workspace-deep-audit/references/output-template.md
+  class: skill-reference-instruction
+  reason: workspace-deep-audit/SKILL.md § Phase 7 — Output Rendering tells the model to produce the artifact per it.
+- path: .claude/skills/workspace-deep-audit/references/recommendation-rubric.md
+  class: skill-reference-instruction
+  reason: workspace-deep-audit/SKILL.md § Phase 6 — Prioritized Recommendations tells the model to prioritise per it.
+- path: .claude/skills/yt-pulse/references/configuration.md
+  class: skill-reference-instruction
+  reason: yt-pulse/SKILL.md § Configuration points the model to it for configuration.
+- path: .claude/skills/yt-pulse/references/output-template.md
+  class: skill-reference-instruction
+  reason: "yt-pulse/SKILL.md § Phase 5: Generate Brief (MD + HTML + PDF) tells the model to produce the brief per it."
+- path: .claude/skills/zk/references/subcommands.md
+  class: skill-reference-instruction
+  reason: zk/SKILL.md § Subcommand dispatch tells the model to read it before any subcommand.
+- path: .lint-baseline.json
+  class: ratchet-baseline
+  reason: scripts/lint-ratchet.py (BASELINE) loads it as the ratchet baseline.
+- path: .secrets.baseline
+  class: ratchet-baseline
+  reason: The detect-secrets pre-commit hook (.pre-commit-config.yaml, hook detect-secrets) and CI (ci.yml, step "detect-secrets baseline drift") read it.
+- path: .visual-baseline.json
+  class: ratchet-baseline
+  reason: scripts/utils/impeccable_engine.py (BASELINE_FILE) loads it.
+- path: AGENTS.md
+  class: harness-instruction
+  reason: Loaded by agent harnesses as instruction, and scripts/harness-audit.py (OUR_SURFACE_FILES) reads it as an own-surface file.
+- path: config/accepted-vulnerabilities.json
+  class: config-read-by-code
+  reason: scripts/utils/vuln_acceptance.py (ACCEPTANCE_FILE) loads it for the pre-commit and CI CVE gates.
+- path: config/census-bench-questions.json
+  class: config-read-by-code
+  reason: scripts/census-bench.py (QUESTIONS_FILE) loads it.
+- path: config/context-floor-baseline.json
+  class: ratchet-baseline
+  reason: scripts/context-floor-audit.py (BASELINE_PATH) loads it as the baseline.
+- path: config/council-models.json
+  class: config-read-by-code
+  reason: scripts/utils/council_models.py (CONFIG_RELPATH) loads it for every consult script.
+- path: config/data-path-pins-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/check-data-path-references.py (PINS_EXEMPTIONS_REL) loads it.
+- path: config/data-path-ratchet.json
+  class: ratchet-baseline
+  reason: scripts/check-data-path-references.py (RATCHET_REL) loads it.
+- path: config/engine-allowlist.yaml
+  class: config-read-by-code
+  reason: scripts/utils/engine_allowlist.py loads it (ALLOWLIST_REL) for scripts/check-engine-only.py and for the routing resolver in scripts/utils/workspace.py.
+- path: config/engine-only-baseline.json
+  class: ratchet-baseline
+  reason: scripts/check-engine-only.py loads it (BASELINE_REL) as the shrink-only migration list.
+- path: config/engine-dir-writes-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/dev/engine-dir-writes.py (EXEMPTIONS_REL) loads it.
+- path: config/import-env-purity-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/dev/import-env-purity.py (_EXEMPTIONS) loads it.
+- path: config/live-data-root-baseline.json
+  class: ratchet-baseline
+  reason: scripts/check-live-data-root.py (BASELINE_PATH) loads it.
+- path: config/llm_fallback.yaml
+  class: config-read-by-code
+  reason: scripts/utils/llm_fallback.py (CONFIG_PATH) loads it.
+- path: config/memory-index.yaml
+  class: config-read-by-code
+  reason: Loaded by scripts/memory-index.py (CONFIG_REL), .claude/hooks/recall-inject.py (CONFIG_PATH) and others.
+- path: config/nightly-skip-baseline.json
+  class: ratchet-baseline
+  reason: scripts/utils/skip_ceiling.py (SKIP_BASELINE_REL) loads it.
+- path: config/ordinary-english.txt
+  class: config-read-by-code
+  reason: scripts/utils/content_denylist.py (_ORDINARY_ENGLISH_PATH) loads it; engine_guard.py (CONTENT_SCAN_EXEMPT) exempts it.
+- path: config/outside-workspace-writes-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/dev/outside-workspace-writes.py (EXEMPTIONS_REL) loads it.
+- path: config/parked-tests.json
+  class: config-read-by-code
+  reason: scripts/utils/test_tree.py (MANIFEST_REL) loads it.
+- path: config/plugin-bundles.yaml
+  class: config-read-by-code
+  reason: scripts/dev/build-plugins.py (load_manifest()) loads it; publish-marketplace.yml triggers on it.
+- path: config/routing-map.yaml
+  class: config-read-by-code
+  reason: scripts/utils/workspace.py load_routing_map reads it; an engine path answers engine only when it and config/engine-allowlist.yaml both say so.
+- path: config/rule-split-inventory/development-standards.md.txt
+  class: ratchet-baseline
+  reason: scripts/rule_split_check.py (INVENTORY_DIR) reads snapshots from this directory by name.
+- path: config/rule-split-inventory/documentation.md.txt
+  class: ratchet-baseline
+  reason: scripts/rule_split_check.py (INVENTORY_DIR) reads snapshots from this directory by name.
+- path: config/schemas/crm-address-book.schema.json
+  class: config-read-by-code
+  reason: scripts/validate-crm-schema.py (load_schemas()) loads it.
+- path: config/schemas/crm-contact.schema.json
+  class: config-read-by-code
+  reason: scripts/validate-crm-schema.py (load_schemas()) loads it; pre-commit hook crm-schema-validate.
+- path: config/schemas/crm-relationship.schema.json
+  class: config-read-by-code
+  reason: scripts/validate-crm-schema.py (load_schemas()) loads it.
+- path: config/skill-data-paths-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/audit-skill-data-paths.py loads it (RATCHET_REL) as the shrink-only ceiling and the reviewed exemptions.
+- path: config/engine-data-paths-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/audit-skill-data-paths.py loads it (ENGINE_RATCHET_REL) under --engine as the shrink-only ceiling and the reviewed exemptions.
+- path: config/test-budget.json
+  class: ratchet-baseline
+  reason: scripts/check-test-budget.py and check-test-budget-raise.py (BUDGET_REL) load it.
+- path: config/test-vacuity-baseline.json
+  class: ratchet-baseline
+  reason: scripts/check-test-vacuity.py (BASELINE_PATH) loads it.
+- path: config/tmp-leak-baseline.json
+  class: ratchet-baseline
+  reason: tests/conftest.py (_TMP_LEAK_BASELINE) loads it.
+- path: config/tool-risk.json
+  class: config-read-by-code
+  reason: scripts/utils/tool_risk.py (_ledger_path()) loads it.
+- path: config/triggers-coverage-baseline.json
+  class: ratchet-baseline
+  reason: scripts/skill-metadata-check.py (BASELINE_REL) loads it.
+- path: config/update-registry.yaml
+  class: config-read-by-code
+  reason: scripts/update-manager.py (registry_path()) loads it.
+- path: config/user-agent-exemptions.json
+  class: ratchet-baseline
+  reason: scripts/check-user-agent.py (EXEMPTIONS) loads it; the reasoned list of outbound sites that do not send the workspace User-Agent.
+- path: config/user-agent.txt
+  class: config-read-by-code
+  reason: scripts/utils/user_agent.py (CONFIG) reads it; the one workspace User-Agent value every outbound call sends.
+- path: config/visual-check-profiles.json
+  class: config-read-by-code
+  reason: scripts/utils/impeccable_engine.py (PROFILES_FILE) loads it.
+- path: config/wizard-templates/business-info.md.tmpl
+  class: config-read-by-code
+  reason: Rendered by scripts/apply-wizard-answers.py via the template path in config/wizard-questions.yaml.
+- path: config/wizard-templates/calendar-policy.md.tmpl
+  class: config-read-by-code
+  reason: Rendered by scripts/apply-wizard-answers.py via the template path in config/wizard-questions.yaml.
+- path: config/wizard-templates/ceo-voice.md.tmpl
+  class: config-read-by-code
+  reason: Rendered by scripts/apply-wizard-answers.py via the template path in config/wizard-questions.yaml.
+- path: config/wizard-templates/personal-info.md.tmpl
+  class: config-read-by-code
+  reason: Rendered by scripts/apply-wizard-answers.py via the template path in config/wizard-questions.yaml.
+- path: reference/editorial-review.md
+  class: skill-reference-instruction
+  reason: /editorial-review SKILL.md step 1 tells the model to read it as its method.
+- path: reference/elicitation-methods.csv
+  class: config-read-by-code
+  reason: scripts/elicit.py opens it as its default technique catalog.
+- path: reference/elicitation-methods.md
+  class: skill-reference-instruction
+  reason: /council, /deep-think, /devil and /scrutinize SKILL.md files tell the model to consult it.
+- path: reference/forensic-evidence-grading.md
+  class: skill-reference-instruction
+  reason: /osint and /competitor-intel SKILL.md files point to it as the grading procedure.
+- path: reference/hidden-characters.md
+  class: skill-reference-instruction
+  reason: .claude/rules/hidden-chars.md names it as the full reference; /calibrate detection prompts load its banned set.
+- path: reference/humanization-banned-vocabulary.md
+  class: skill-reference-instruction
+  reason: .claude/rules/humanization.md and humanization-rule-detail.md tell the model to consult it before any outbound voice pass.
+- path: reference/humanization-rule-detail.md
+  class: skill-reference-instruction
+  reason: .claude/rules/humanization.md tells the model to read it before any outbound voice pass.
+- path: reference/memory-discipline-detail.md
+  class: skill-reference-instruction
+  reason: .claude/rules/memory-discipline.md tells the model to read it before writing or consolidating the index; /dream cites it.
+- path: reference/osint-advanced-toolkit.md
+  class: config-read-by-code
+  reason: scripts/osint-advanced-sync.py parses it (TOOLKIT_PATH); /osint-advanced SKILL.md loads it as its tool registry.
+- path: reference/persistence-detail.md
+  class: skill-reference-instruction
+  reason: .claude/rules/persistence.md defers the carve-outs and the full validation step to it.
+- path: reference/prompt-refinement-escalations.md
+  class: skill-reference-instruction
+  reason: .claude/rules/prompt-refinement.md points to it for the escalations and the corporate-docs interaction.
+- path: reference/scheduled-tasks.md
+  class: skill-reference-instruction
+  reason: .claude/rules/development-standards.md § Script Standards points to it when wiring a scheduled task.
+- path: reference/skill-graph.csv
+  class: config-read-by-code
+  reason: scripts/skill_graph.py opens it (used by scripts/next-signal.py and /next).
+- path: reference/skill-router/communication.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/skill-router/content.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/skill-router/crm.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/skill-router/design.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/skill-router/intel.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/skill-router/operations.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/skill-router/strategy.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md requires reading the category Detail file before selecting a skill; scripts/generate-skill-router.py writes and drift-checks it.
+- path: reference/templates/spec-core.md
+  class: skill-reference-instruction
+  reason: /create-plan plan-template and /proposal SKILL.md load it as the definitions and test.
+- path: reference/voss-negotiation.md
+  class: skill-reference-instruction
+  reason: .claude/rules/voss.md names it as the checklist and full framework; /voss and /meeting-prep load it.
+- path: reference/vpn-preflight.md
+  class: skill-reference-instruction
+  reason: .claude/rules/skill-router.md and /osint, /playwright, /yt-pulse, /setup-browser-cookies SKILL.md require applying it.
+- path: scripts/.impeccable-version
+  class: config-read-by-code
+  reason: scripts/utils/impeccable_engine.py (VERSION_PIN_FILE) reads it.
+- path: scripts/.marp-version
+  class: config-read-by-code
+  reason: scripts/marp_render.py (VERSION_PIN_FILE) reads it.
+- path: scripts/claude-mods/.claude-plugin/marketplace.json
+  class: install-file
+  reason: Claude Code reads it as the local marketplace listing the engine's own mods, so agent-watch installs with claude plugin marketplace add plus claude plugin install; HOS-225.
+- path: scripts/claude-mods/agent-watch/.claude-plugin/plugin.json
+  class: install-file
+  reason: Claude Code reads it as the manifest of the agent-watch mod when the folder is loaded as a plugin (claude --plugin-dir, or an install); HOS-225.
+- path: scripts/claude-mods/agent-watch/hooks/hooks.json
+  class: install-file
+  reason: Claude Code reads it to find the agent-watch hooks module; HOS-225.
+- path: scripts/claude-mods/agent-watch/hooks/register.tsx
+  class: engine-code
+  reason: the agent-watch mod itself, the hooks module Claude Code runs (band above the prompt, /agent-watch panel); HOS-225.
+- path: scripts/claude-mods/agent-watch/types/index.d.ts
+  class: engine-code
+  reason: the agent-watch mod's state contract, named in its plugin.json as "types" and checked by claude plugin validate against every $.state key the module uses; HOS-225.
+- path: scripts/herdr/heading-os-yard/data-overlay-pre-commit
+  class: install-file
+  reason: scripts/install-data-overlay-guard.py (BODY_PATH) reads it as the hook body it installs.
+- path: scripts/herdr/heading-os-yard/herdr-plugin.toml
+  class: install-file
+  reason: Herdr reads it as the plugin manifest when scripts/herdr/heading-os-yard is linked (herdr plugin link, per the herdr README in the data repository, registry name `spec-docs`).
+- path: tests/security/prompt-injection/attacks/injection-01-system-override.json
+  class: test-fixture
+  reason: tests/security/prompt-injection/run-adversarial-suite.py (ATTACKS_DIR) globs attacks/*.json; run by pre-commit (hook adversarial-suite-validate) and CI.
+- path: tests/security/prompt-injection/attacks/injection-03-exfiltrate-via-output.json
+  class: test-fixture
+  reason: tests/security/prompt-injection/run-adversarial-suite.py (ATTACKS_DIR) globs attacks/*.json; run by pre-commit (hook adversarial-suite-validate) and CI.
+- path: tests/security/prompt-injection/attacks/injection-04-role-confusion.json
+  class: test-fixture
+  reason: tests/security/prompt-injection/run-adversarial-suite.py (ATTACKS_DIR) globs attacks/*.json; run by pre-commit (hook adversarial-suite-validate) and CI.
+- path: tests/security/prompt-injection/attacks/injection-06-prompt-leak.json
+  class: test-fixture
+  reason: tests/security/prompt-injection/run-adversarial-suite.py (ATTACKS_DIR) globs attacks/*.json; run by pre-commit (hook adversarial-suite-validate) and CI.
+- path: tests/security/prompt-injection/attacks/injection-07-indirect-from-doc.json
+  class: test-fixture
+  reason: tests/security/prompt-injection/run-adversarial-suite.py (ATTACKS_DIR) globs attacks/*.json; run by pre-commit (hook adversarial-suite-validate) and CI.
+- path: tests/security/prompt-injection/attacks/injection-08-retrieved-content.json
+  class: test-fixture
+  reason: tests/security/prompt-injection/run-adversarial-suite.py (ATTACKS_DIR) globs attacks/*.json; run by pre-commit (hook adversarial-suite-validate) and CI.
+# Kept by the operator's decisions of 2026-09-25 (HOS-131 part 2): NOTICE
+# (decision 3), the Lific procedure half (decision 10), the wizard question bank
+# stripped of its example answers (decision 12), and every `*.example.*`
+# template emptied to structure (decision 8). Each reason names the reader.
+- path: reference/lific-integration-detail.md
+  class: skill-reference-instruction
+  reason: .claude/rules/lific.md names it in its header as the procedure detail behind the always-on Lific rule; this machine's setup half left for the data repository (decision 10).
+- path: reference/voice-examples.md
+  class: skill-reference-instruction
+  reason: ten drafting skills (/linkedin-post, /email-draft, /tribe-message and others it lists) tell the model to load voice examples by it.
+- path: config/wizard-questions.yaml
+  class: config-read-by-code
+  reason: scripts/apply-wizard-answers.py (QUESTIONS_REL_PATH, load_questions()) loads it as the setup wizard's question bank; its example answers are emptied (decision 12).
+- path: .env.example
+  class: example-template
+  reason: the setup step `cp .env.example .env` (CLAUDE.md Setup step 2, docs/DEPLOYMENT.md § Solo deploy) copies it; keys only, values emptied (decision 8).
+- path: config/inference-hosts.example.yaml
+  class: example-template
+  reason: the shape the private config/inference-hosts.yaml is copied from (its own header), cited by scripts/utils/inference_host.py beside MACHINE_HOSTS_FILE; values emptied (decision 8).
+- path: scripts/content-denylist.example.yaml
+  class: example-template
+  reason: the shape of the operator's private content denylist that scripts/utils/content_denylist.py reads; every category empty (decision 8).
+- path: scripts/data-names.example.yaml
+  class: example-template
+  reason: scripts/utils/data_path.py example_names_path() is the default registry a tree with no registry resolves from; bare structure, no operator address (decision 8).
+- path: scripts/operator.example.yaml
+  class: example-template
+  reason: scripts/utils/operator_identity.py (_EXAMPLE_PATH) names it as the shipped generic identity; values emptied (decision 8).
+- path: scripts/runtime-services.example.yaml
+  class: example-template
+  reason: scripts/utils/runtime_dir.py EXAMPLE_SERVICES_REL is the default service registry a fresh data root starts from; service names and descriptions only (decision 8).
+- path: scripts/sentinel_config.example.yaml
+  class: example-template
+  reason: scripts/sentinel.py (config_file()) and scripts/email-intelligence.py (sentinel_config()) load it as the fallback when the private config is absent; lists emptied (decision 8).
+- path: scripts/service-host.example.json
+  class: example-template
+  reason: scripts/pull-service-state.py loads it as the fallback when the private config is absent; its values are emptied, apart from any that equal a reader's own defaults (decision 8).
+
+# Files that left the engine for the data repository and may not come back.
+# A tracked path listed here refuses as `departed`. HOS-159, 2026-09-28: nine
+# scripts that were one document each, or one run of one tool, not the engine.
+departed:
+  - path: scripts/capture-design-exemplars-retry.py
+    reason: a one-off retry of three targets from one capture run
+  - path: scripts/generate-client-docx.py
+    reason: the generator of one commercial document, its text inline
+  - path: scripts/generate-odunone-docx.py
+    reason: the generator of one commercial document, its text inline
+  - path: scripts/generate-testing-framework-pptx.py
+    reason: the generator of one named presentation
+  - path: scripts/generate-usecases-docx.py
+    reason: the generator of one commercial document, its text inline
+  - path: scripts/md-to-docx-charter.py
+    reason: the generator of one letter, its text inline
+  - path: scripts/md-to-docx-competitive.py
+    reason: the converter of one named analysis
+  - path: scripts/md-to-docx-letter.py
+    reason: the converter of one personal letter
+  - path: scripts/md-to-docx-proposal.py
+    reason: the converter of one tender response, its cover inline

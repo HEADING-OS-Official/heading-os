@@ -1,0 +1,18 @@
+[Unit]
+Description=Pull the server's pgBackRest repository and keep verified snapshots (backup-pull.py pull)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Host alias, target directory and cipher-passphrase file come from HINDSIGHT_BACKUP_*
+# in the gitignored .env, so this template names nothing. A failed pull or a copy
+# that fails verification exits 1 and shows as `failed`, after backup-pull.py has
+# told the operator's own notification sinks (once per change of state).
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/backup-pull.py pull
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

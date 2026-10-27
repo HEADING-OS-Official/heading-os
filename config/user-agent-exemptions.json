@@ -1,0 +1,120 @@
+{
+  "_what": "Outbound call sites that deliberately do not send the workspace User-Agent (config/user-agent.txt). Read by scripts/check-user-agent.py, which refuses an entry that matches no site. Every entry says why; the operator's rule of 2026-09-27 is one value everywhere the workspace talks to the outside world, so an entry here must be a call that is NOT the outside world or one where the value would do harm.",
+  "exemptions": [
+    {
+      "path": "scripts/browser.py",
+      "function": "attach",
+      "reason": "Attaches over CDP to the operator's own dedicated Brave. That browser already sends a real Chrome-family User-Agent with matching client hints; overriding only the string creates a mismatch that marks automation."
+    },
+    {
+      "path": "scripts/linkedin-activity.py",
+      "function": "main",
+      "reason": "Approved by the operator on 2026-10-16 (engine audit). Launches the operator's own Brave binary (or, opt-in, bundled Chromium) carrying his LinkedIn session cookies, and sends the User-Agent that browser itself reports, headless marker removed, in both the page context and the pre-flight probe. The fixed Windows string would contradict the browser's own client hints and platform on this Linux machine, the same mismatch that exempts the dedicated Brave, and LinkedIn invalidates a session on signals of this kind."
+    },
+    {
+      "path": "scripts/linkedin-activity.py",
+      "function": "check_session_alive",
+      "reason": "Same decision as main in this file: the pre-flight must send the same string as the browser that holds the session."
+    },
+    {
+      "path": "scripts/browser.py",
+      "function": "_cdp_ready",
+      "reason": "Loopback: the CDP /json/version endpoint on 127.0.0.1 of the browser this script launched."
+    },
+    {
+      "path": "scripts/utils/proxy_transport.py",
+      "function": "_make_client",
+      "reason": "Loopback: the OpenAI client talks to the local CLIProxyAPI proxy (PROXY_BASE_URL), not the outside world."
+    },
+    {
+      "path": "scripts/utils/council_freshness.py",
+      "function": "_http_json",
+      "reason": "Loopback: PROXY_MODELS_URL, the local CLIProxyAPI proxy's model list."
+    },
+    {
+      "path": "scripts/chronicle.py",
+      "function": "summarize",
+      "reason": "Local model: the generation host resolved by scripts/utils/inference_host.py (ollama or Lemonade on this machine)."
+    },
+    {
+      "path": "scripts/utils/inference_host.py",
+      "function": "probe",
+      "reason": "Local model: probes the configured inference hosts' /api/version."
+    },
+    {
+      "path": "scripts/utils/embeddings.py",
+      "function": "model_digest",
+      "reason": "Local model: the configured embedding host's /api/tags."
+    },
+    {
+      "path": "scripts/utils/embeddings.py",
+      "function": "_post_with_retry",
+      "reason": "Local model: the configured embedding host's embed endpoint."
+    },
+    {
+      "path": "scripts/utils/ops_signals.py",
+      "function": "_embed_model_present",
+      "reason": "Local model: the configured inference host's /api/tags."
+    },
+    {
+      "path": "docs/DEPLOYMENT.md",
+      "function": "apt install",
+      "reason": "Not a request: installs the curl package itself."
+    },
+    {
+      "path": "docs/DEPLOYMENT.md",
+      "function": "nvm-sh/nvm",
+      "reason": "Bootstrap: runs before the engine is cloned, so config/user-agent.txt does not exist yet."
+    },
+    {
+      "path": "docs/DEPLOYMENT.md",
+      "function": "astral.sh/uv",
+      "reason": "Bootstrap: runs before the engine is cloned, so config/user-agent.txt does not exist yet."
+    },
+    {
+      "path": "official/overlay/docs/INSTALL.md",
+      "function": "apt install",
+      "reason": "The official install guide: not a request, installs the curl package itself."
+    },
+    {
+      "path": "official/overlay/docs/INSTALL.md",
+      "function": "nvm-sh/nvm",
+      "reason": "The official install guide: a stranger's bootstrap before the engine is cloned, so config/user-agent.txt does not exist yet."
+    },
+    {
+      "path": "official/overlay/docs/INSTALL.md",
+      "function": "astral.sh/uv",
+      "reason": "The official install guide: a stranger's bootstrap before the engine is cloned, so config/user-agent.txt does not exist yet."
+    },
+    {
+      "path": "scripts/hindsight-sync.py",
+      "function": "_api",
+      "reason": "Talks only to the operator's own Hindsight API through the SSH tunnel on loopback (default http://127.0.0.1:8888); no third-party site is reached, so there is no User-Agent contract to keep."
+    },
+    {
+      "path": "scripts/hindsight-health.py",
+      "function": "evaluate",
+      "reason": "Reads /health/ready of the operator's own Hindsight API on loopback through the SSH tunnel; no third-party site is reached."
+    },
+    {
+      "path": ".claude/hooks/hindsight-recall-inject.py",
+      "function": "main",
+      "reason": "UserPromptSubmit hook run by the harness with the system python3 and stdlib only; it calls the operator's own Hindsight API on loopback through the SSH tunnel, no third-party site."
+    },
+    {
+      "path": "scripts/server/hindsight-status.py",
+      "function": "pulse",
+      "reason": "Runs standalone on the memory server from a root timer, stdlib only, with no workspace modules installed there; it POSTs a dead-man ping to the operator's own Healthchecks.io check URL."
+    },
+    {
+      "path": "scripts/server/cliproxy-update.py",
+      "function": "http_get",
+      "reason": "Runs standalone on the memory server from a root timer, stdlib only, with no workspace modules installed there; it reads release metadata for the proxy's own update check."
+    },
+    {
+      "path": "scripts/server/cliproxy-update.py",
+      "function": "local",
+      "reason": "Runs standalone on the memory server; calls the proxy on loopback to verify an update, no third-party site."
+    }
+  ]
+}

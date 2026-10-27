@@ -1,0 +1,25 @@
+{
+  "_readme": [
+    "Advisories the operator has accepted, with the reason and the date the",
+    "acceptance expires. Read by BOTH CVE gates through",
+    "scripts/utils/vuln_acceptance.py -- the pre-commit `pip-audit-cve` hook and",
+    "scripts/audit-deps.py in CI -- so an acceptance cannot exist in one gate and",
+    "not the other.",
+    "",
+    "An entry is not a fix. It is a dated decision to ship a known defect, and it",
+    "STOPS BEING ONE on its expiry date: scripts/utils/vuln_acceptance.py refuses",
+    "an expired entry rather than ignoring it, so the gate goes red again and the",
+    "decision is retaken by a person instead of inherited by silence.",
+    "",
+    "Every field is required. A missing one is a refusal, not a default, because",
+    "an acceptance with no reason and no owner is indistinguishable from an",
+    "advisory somebody wanted to disappear.",
+    "",
+    "The prose record, with the full risk assessment, lives in the DATA overlay",
+    "under the registry name `security-findings`, not here:",
+    "that path routes `private` in",
+    "config/routing-map.yaml, and this repository is public.",
+    "This file stays in the engine because both gates read it at run time."
+  ],
+  "accepted": []
+}

@@ -1,0 +1,127 @@
+# Playwright — Usage Cookbook
+
+Consumed by: `.claude/skills/playwright/SKILL.md`.
+Last Updated: 2026-10-16
+
+Worked command examples for each `pw.py` subcommand. The SKILL body holds the
+Quick-Reference table and the data-path resolution rules; this file holds the verbose
+per-command examples so the body stays under the line budget.
+
+All commands run from the workspace root (`cd "$(git rev-parse --show-toplevel)"` first).
+`$BROWSER_TMP` denotes the resolved runtime store the SKILL § Output Location block
+defines, the runtime address `runtime:browser/tmp`; prefer OMITTING `-o` and letting the
+script auto-place there.
+
+## Screenshots
+
+```bash
+# Basic screenshot
+python ".claude/skills/playwright/scripts/pw.py" screenshot "https://example.com"
+
+# Full-page, mobile device, custom output
+python ".claude/skills/playwright/scripts/pw.py" screenshot "https://example.com" \
+  --full-page --device "iPhone 15" -o "$BROWSER_TMP/screenshots/example-mobile.png"
+
+# With visible browser for debugging
+python ".claude/skills/playwright/scripts/pw.py" screenshot "https://example.com" --headed
+```
+
+## Data extraction
+
+```bash
+# Extract all prices from a page
+python ".claude/skills/playwright/scripts/pw.py" extract "https://competitor.com/pricing" \
+  -s ".price" --all -f json
+
+# Extract navigation links
+python ".claude/skills/playwright/scripts/pw.py" extract "https://example.com" \
+  -s "nav a" --all -f csv -o "$BROWSER_TMP/data/nav-links.csv"
+
+# Wait for dynamic content before extracting
+python ".claude/skills/playwright/scripts/pw.py" extract "https://app.example.com" \
+  -s ".dashboard-metric" --all -f json --wait-for "selector:.dashboard-metric"
+```
+
+## Form filling
+
+```bash
+# Fill and submit a contact form
+python ".claude/skills/playwright/scripts/pw.py" fill "https://example.com/contact" \
+  --fields '{"#name": "Jane Roe", "#email": "jane.roe@example.com", "#message": "Test"}' \
+  --submit-selector "button[type=submit]" \
+  --screenshot-after "$BROWSER_TMP/screenshots/form-submitted.png"
+```
+
+## PDF generation
+
+```bash
+# Generate PDF (requires headless mode, which is default)
+python ".claude/skills/playwright/scripts/pw.py" pdf "https://example.com/report" \
+  -o "$BROWSER_TMP/pdfs/report.pdf" --format A4
+
+# Landscape PDF
+python ".claude/skills/playwright/scripts/pw.py" pdf "https://example.com" \
+  -o "$BROWSER_TMP/pdfs/landscape.pdf" --landscape
+```
+
+## Batch screenshots
+
+```bash
+# From comma-separated URLs
+python ".claude/skills/playwright/scripts/pw.py" batch-screenshots \
+  "https://competitor1.com,https://competitor2.com,https://competitor3.com" \
+  --output-dir "$BROWSER_TMP/competitive-screenshots/"
+
+# From a file (one URL per line)
+python ".claude/skills/playwright/scripts/pw.py" batch-screenshots urls.txt \
+  --full-page --output-dir "$BROWSER_TMP/batch/"
+```
+
+## Website monitoring
+
+```bash
+# Check if site is up and a specific element exists
+python ".claude/skills/playwright/scripts/pw.py" monitor "https://example.com" \
+  --check-selector ".hero-section" --expected-text "Welcome"
+
+# Monitor with screenshot capture
+python ".claude/skills/playwright/scripts/pw.py" monitor "https://example.com" \
+  -o "$BROWSER_TMP/monitoring/site-status.png"
+```
+
+## Custom Playwright scripts
+
+For complex multi-step workflows, write a custom Python script and execute it:
+
+```bash
+SCRATCH="$(.venv/bin/python scripts/data-path.py path --create runtime:scratch/tmp)"
+python ".claude/skills/playwright/scripts/pw.py" execute "$SCRATCH/pw-custom-workflow.py"
+```
+
+When writing custom scripts, use this pattern:
+
+```python
+import os
+
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page()
+
+    # Your automation logic here
+    page.goto("https://example.com")
+    page.click("button.login")
+    page.fill("#username", "user")
+    page.fill("#password", "pass")
+    page.click("button[type=submit]")
+    page.wait_for_load_state("networkidle")
+
+    # Extract or screenshot
+    print(page.title())
+    page.screenshot(path=os.environ["BROWSER_TMP"] + "/result.png")  # BROWSER_TMP exported per SKILL § Output Location; never a bare cwd-relative path
+
+    browser.close()
+```
+
+Save custom scripts to `$SCRATCH/pw-custom-*.py`. That keeps them out of the engine tree and out of the system `/tmp`.

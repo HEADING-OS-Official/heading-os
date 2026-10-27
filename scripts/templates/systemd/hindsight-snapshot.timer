@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Hindsight snapshot (configured timezone)
+
+[Timer]
+# Daily, operator decision, 2026-10-05 (HOS-203). 04:10, five minutes before the hourly
+# index refresh at :15 (memory-index-refresh.timer), which embeds what changed.
+OnCalendar=*-*-* 04:10:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

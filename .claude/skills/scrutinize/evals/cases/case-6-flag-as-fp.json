@@ -1,0 +1,21 @@
+{
+  "id": "case-6-flag-as-fp",
+  "description": "Confirms /scrutinize supports the flag-as-fp approval command and that a flagged false positive is written into the shared run record (runs.jsonl under scrutiny-sheets) as an fp_flag row by scripts/scrutinize-flag-fp.py, beside the verdict rows it disagrees with. The separate aggregator and its _fp_aggregate.md were deleted 2026-08-09 after 75 runs produced zero flags.",
+  "input": "What does the flag-as-fp command do in /scrutinize, and where does the data go?",
+  "checks": {
+    "must_mention": [
+      "flag-as-fp",
+      "false positive",
+      "scrutinize-flag-fp.py",
+      "confidence",
+      "severity"
+    ],
+    "must_not_mention": [
+      "does not exist",
+      "not yet supported"
+    ],
+    "min_words": 80,
+    "max_words": 600,
+    "hidden_chars_clean": true
+  }
+}

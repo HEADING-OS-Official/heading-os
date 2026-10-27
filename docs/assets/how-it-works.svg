@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img" aria-labelledby="t d">
+  <title id="t">How HEADING OS works</title>
+  <desc id="d">You ask in plain words. Your assistant works across mail and calendar, contacts, research and documents, and hands you drafts to approve. Your data stays in a private vault on your own account.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#5b6b7c"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #0f2a44; }
+    .h { font-size: 19px; font-weight: 700; }
+    .b { font-size: 14px; }
+    .s { font-size: 12.5px; fill: #44566a; }
+    .w { fill: #ffffff; }
+  </style>
+  <rect x="0" y="0" width="880" height="400" rx="18" fill="#f6f8fa"/>
+
+  <!-- You -->
+  <circle cx="95" cy="160" r="58" fill="#0f2a44"/>
+  <text x="95" y="155" text-anchor="middle" class="h w">You</text>
+  <text x="95" y="177" text-anchor="middle" class="s" style="fill:#c9d6e3">ask in plain words</text>
+
+  <!-- arrows you <-> assistant -->
+  <line x1="160" y1="145" x2="262" y2="145" stroke="#5b6b7c" stroke-width="2.5" marker-end="url(#a)"/>
+  <text x="211" y="134" text-anchor="middle" class="s">a request</text>
+  <line x1="262" y1="182" x2="160" y2="182" stroke="#5b6b7c" stroke-width="2.5" marker-end="url(#a)"/>
+  <text x="211" y="204" text-anchor="middle" class="s">briefs, drafts</text>
+
+  <!-- Assistant -->
+  <rect x="268" y="82" width="250" height="156" rx="16" fill="#d97757"/>
+  <text x="393" y="128" text-anchor="middle" class="h w">Your assistant</text>
+  <text x="393" y="154" text-anchor="middle" class="b w">HEADING OS, running on Claude</text>
+  <text x="393" y="186" text-anchor="middle" class="s" style="fill:#fff3ec">prepares, researches, drafts</text>
+  <text x="393" y="206" text-anchor="middle" class="s" style="fill:#fff3ec">sends only when you approve</text>
+
+  <!-- arrows to tools -->
+  <line x1="518" y1="120" x2="590" y2="72" stroke="#5b6b7c" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="518" y1="145" x2="590" y2="134" stroke="#5b6b7c" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="518" y1="175" x2="590" y2="196" stroke="#5b6b7c" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="518" y1="200" x2="590" y2="258" stroke="#5b6b7c" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Tools -->
+  <g>
+    <rect x="596" y="46" width="250" height="50" rx="10" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="614" y="68" class="b" style="font-weight:600">Mail and calendar</text>
+    <text x="614" y="86" class="s">what came in, what is today</text>
+  </g>
+  <g>
+    <rect x="596" y="108" width="250" height="50" rx="10" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="614" y="130" class="b" style="font-weight:600">People and relationships</text>
+    <text x="614" y="148" class="s">who you know, who went quiet</text>
+  </g>
+  <g>
+    <rect x="596" y="170" width="250" height="50" rx="10" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="614" y="192" class="b" style="font-weight:600">Research</text>
+    <text x="614" y="210" class="s">companies, people, markets</text>
+  </g>
+  <g>
+    <rect x="596" y="232" width="250" height="50" rx="10" fill="#ffffff" stroke="#c9d6e3"/>
+    <text x="614" y="254" class="b" style="font-weight:600">Notes and documents</text>
+    <text x="614" y="272" class="s">decisions, meetings, reviews</text>
+  </g>
+
+  <!-- Vault -->
+  <rect x="40" y="310" width="806" height="64" rx="12" fill="#e7f1ee" stroke="#1f7a5c" stroke-width="1.5"/>
+  <g transform="translate(66 324)">
+    <rect x="0" y="14" width="26" height="22" rx="4" fill="#1f7a5c"/>
+    <path d="M5 14v-5a8 8 0 0 1 16 0v5" fill="none" stroke="#1f7a5c" stroke-width="3.5"/>
+  </g>
+  <text x="110" y="337" class="b" style="font-weight:700; fill:#14523e">Your data stays yours</text>
+  <text x="110" y="358" class="s" style="fill:#14523e">Everything you create lives in a private vault on your own account, kept apart from the shared code.</text>
+</svg>

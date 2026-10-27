@@ -1,0 +1,15 @@
+[
+  { "query": "check mattermost", "should_trigger": true },
+  { "query": "what's new on mattermost", "should_trigger": true },
+  { "query": "read my mattermost messages from Alex", "should_trigger": true },
+  { "query": "search mattermost for the release discussion", "should_trigger": true },
+  { "query": "send a message on mattermost to the dev channel", "should_trigger": true },
+  { "query": "any unread mattermost chats I should see", "should_trigger": true },
+
+  { "query": "check telegram", "should_trigger": false },
+  { "query": "send a telegram to Alex", "should_trigger": false },
+  { "query": "draft an email to this contact", "should_trigger": false },
+  { "query": "process my email inbox", "should_trigger": false },
+  { "query": "set up a mattermost bot integration", "should_trigger": false },
+  { "query": "run a bulk export of the mattermost server", "should_trigger": false }
+]

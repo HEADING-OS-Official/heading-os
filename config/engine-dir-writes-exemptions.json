@@ -1,0 +1,160 @@
+{
+  "_why": "Reviewed exemptions for scripts/dev/engine-dir-writes.py, the push ratchet that refuses an address inside the engine checkout that the checkout's own .gitignore ignores (HOS-5 section 7, 2026-09-25). One entry per finding, keyed by the file plus the sha256 of the statement; an entry that matches nothing fails the run, and so does a finding no entry covers. There is no field for a file or a directory.",
+  "entries": [
+    {
+      "path": ".claude/hooks/_dispatch.py",
+      "statement": "value = read_env_value(WORKSPACE / \".env\", _DATA_ROOT_PIN)",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": ".claude/skills/flux-image/scripts/generate_image.py",
+      "statement": "return read_env_value(get_workspace_root() / \".env\", \"REPLICATE_API_TOKEN\")",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": ".claude/skills/telegram/scripts/telegram_client.py",
+      "statement": "return read_env_value(get_workspace_root() / \".env\", name)",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/dev/build-plugins.py",
+      "statement": "out_root = Path(args.out).expanduser().resolve() if args.out else root / \"dist\" / \"marketplace\"",
+      "reason": "The plugin marketplace build output of scripts/dev/build-plugins.py: engine code packaged for publication, public by construction, carrying no private data. A build directory beside the source is where a publish step reads it from."
+    },
+    {
+      "path": "scripts/exchange-task.py",
+      "statement": "print(f\"{RED}[ERROR]{RESET} .env not found at {WORKSPACE_ROOT / '.env'}\")",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/gal-export.py",
+      "statement": "ENV_FILE = WORKSPACE_ROOT / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/google-contacts.py",
+      "statement": "SESSION_DIR = str(Path(WORKSPACE_ROOT) / \".sessions\" / \"google\")",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/google-contacts.py",
+      "statement": "TOKEN_PATH = str(Path(SESSION_DIR) / \"token.json\")",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/google-contacts.py",
+      "statement": "default_path = str(Path(SESSION_DIR) / \"credentials.json\")",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/harness-audit.py",
+      "statement": "candidates = [\n        repo / \".claude\" / \"settings.json\",\n        repo / \".claude\" / \"settings.local.json\",\n        user_settings_path(),\n    ]",
+      "reason": "The Claude Code harness reads its per-checkout settings from this file inside the project directory, and scripts/setup-platform.sh writes the hook registrations there. Its place is fixed by the harness, not chosen by the engine."
+    },
+    {
+      "path": "scripts/prime-health-parallel.py",
+      "statement": "proc = subprocess.run(\n        [sys.executable, str(script), str(template),\n         str(workspace_root / \".claude\" / \"settings.local.json\"), \"--check\"],\n        cwd=str(workspace_root),\n        capture_output=True,\n        text=True,\n        timeout=CHECK_TIMEOUT,\n    )",
+      "reason": "The Claude Code harness reads its per-checkout settings from this file inside the project directory, and scripts/setup-platform.sh writes the hook registrations there. Its place is fixed by the harness, not chosen by the engine."
+    },
+    {
+      "path": "scripts/release-journal.py",
+      "statement": "value = read_env_value(WORKSPACE / \".env\", _DATA_ROOT_PIN)",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/sentinel.py",
+      "statement": "ENV_FILE = WORKSPACE_ROOT / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/sentinel.py",
+      "statement": "TELEGRAM_SESSION_DIR = WORKSPACE_ROOT / \".sessions\" / \"telegram\"",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/sentinel.py",
+      "statement": "TELEGRAM_SESSION_PATH = TELEGRAM_SESSION_DIR / \"telegram\"",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/setup.py",
+      "statement": "identity_file = WORKSPACE_ROOT / \".workspace-identity.json\"",
+      "reason": "The per-machine workspace identity file that root resolution reads before any data root exists; setup.py writes it once from the operator's answers. Machine configuration kept beside the checkout by design, not a runtime artifact."
+    },
+    {
+      "path": "scripts/setup.py",
+      "statement": "env_file = WORKSPACE_ROOT / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/setup.py",
+      "statement": "identity_file = WORKSPACE_ROOT / \".workspace-identity.json\"",
+      "reason": "The per-machine workspace identity file that root resolution reads before any data root exists; setup.py writes it once from the operator's answers. Machine configuration kept beside the checkout by design, not a runtime artifact."
+    },
+    {
+      "path": "scripts/setup.py",
+      "statement": "env_file = WORKSPACE_ROOT / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/sync-exchange.py",
+      "statement": "ENV_FILE = WORKSPACE_ROOT / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/utils/git_push.py",
+      "statement": "return read_env_value(get_workspace_root() / \".env\", \"GH_TOKEN\")",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/utils/gmail_auth.py",
+      "statement": "return os.getenv(\n        \"GOOGLE_GMAIL_CREDENTIALS_PATH\",\n        os.getenv(\n            \"GOOGLE_CONTACTS_CREDENTIALS_PATH\",\n            str(PROJECT_ROOT / \".sessions\" / \"google\" / \"credentials.json\"),\n        ),\n    )",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/utils/gmail_auth.py",
+      "statement": "return str(PROJECT_ROOT / \".sessions\" / \"google\" / \"gmail_token.json\")",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    },
+    {
+      "path": "scripts/utils/paths.py",
+      "statement": "in_tree = (root / \"crm\" / \"contacts\").is_dir() or (root / \"knowledge\").is_dir()",
+      "reason": "The crm-then-contacts address. A read, not a write: get_data_root() asks whether a crm directory holding contacts, or a knowledge directory, sits in the checkout so that, on an engine tree, it can refuse it as a data root and log a warning (HOS-168). Nothing is created at either address; the check exists to keep the leak guard armed when stray data appears in the engine."
+    },
+    {
+      "path": "scripts/utils/paths.py",
+      "statement": "in_tree = (root / \"crm\" / \"contacts\").is_dir() or (root / \"knowledge\").is_dir()",
+      "reason": "The knowledge address, the second finding on the same statement. A read, not a write: get_data_root() asks whether a crm directory holding contacts, or a knowledge directory, sits in the checkout so that, on an engine tree, it can refuse it as a data root and log a warning (HOS-168). Nothing is created at either address; the check exists to keep the leak guard armed when stray data appears in the engine."
+    },
+    {
+      "path": "scripts/utils/paths.py",
+      "statement": "env_path = root / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "tests/conftest.py",
+      "statement": "_ENV_FILE = _ENGINE_ROOT / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
+      "path": "scripts/herdr/heading-os-yard/yard-bootstrap.sh",
+      "statement": "STATUS_FILE=\"$(pwd)/.claude/.yard-bootstrap-status\"",
+      "reason": "NOT converted by HOS-5 section 7 and named in its closing report: the yard bootstrap writes its status and two logs into the new worktree before the data root is wired, and the SessionStart hook reads them there. Moving them is an open item, not a sanction."
+    },
+    {
+      "path": "scripts/herdr/heading-os-yard/yard-bootstrap.sh",
+      "statement": "TREE_CLEAN_LOG=\"$(pwd)/.claude/.yard-bootstrap-tree-clean.log\"",
+      "reason": "NOT converted by HOS-5 section 7 and named in its closing report: the yard bootstrap writes its status and two logs into the new worktree before the data root is wired, and the SessionStart hook reads them there. Moving them is an open item, not a sanction."
+    },
+    {
+      "path": "scripts/herdr/heading-os-yard/yard-bootstrap.sh",
+      "statement": "CANARY_LOG=\"$(pwd)/.claude/.yard-bootstrap-canary.log\"",
+      "reason": "NOT converted by HOS-5 section 7 and named in its closing report: the yard bootstrap writes its status and two logs into the new worktree before the data root is wired, and the SessionStart hook reads them there. Moving them is an open item, not a sanction."
+    },
+    {
+      "path": "scripts/hindsight-snapshot-offsite.py",
+      "statement": "TOKEN = ROOT / \".sessions\" / \"google\" / \"drive_snapshot_token.json\"",
+      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
+    }
+  ]
+}

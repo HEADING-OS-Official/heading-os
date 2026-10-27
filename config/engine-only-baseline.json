@@ -1,0 +1,4 @@
+{
+  "_what": "Tracked engine files outside config/engine-allowlist.yaml on the day the engine-only gate went in (HOS-131, 2026-09-25). Each is a leak by the operator's definition and leaves for the data repository. This list may only shrink: scripts/check-engine-only.py refuses an entry absent from the list at HEAD or origin/main, and one whose file is gone or now covered.",
+  "files": []
+}

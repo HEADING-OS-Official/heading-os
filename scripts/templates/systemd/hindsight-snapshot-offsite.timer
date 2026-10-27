@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted off-machine copy of the Hindsight snapshot (configured timezone)
+
+[Timer]
+# Daily, operator decision, 2026-10-07 (HOS-210). 04:40, thirty minutes after the snapshot
+# itself (hindsight-snapshot.timer, 04:10), whose lock this run takes while it archives.
+OnCalendar=*-*-* 04:40:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

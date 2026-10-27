@@ -1,0 +1,149 @@
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "python-pptx==1.0.2",
+# ]
+# ///
+
+# /// layout
+# name = "carousel-single-point-slide"
+# format = "carousel"
+# dimensions = "square"
+# purpose = "One key point with supporting text - the workhorse slide"
+# best_for = [
+#     "Main content slides in carousel body",
+#     "Single concept that needs explanation",
+#     "Key takeaways or insights",
+#     "Standalone valuable points",
+# ]
+# avoid_when = [
+#     "First slide - use hook-slide instead",
+#     "Last slide - use cta-slide instead",
+#     "Numbered lists - use numbered-point-slide instead",
+#     "Quotes - use quote-slide instead",
+# ]
+# headline_max_chars = 40
+# body_max_chars = 150
+# instructions = [
+#     "Headline should be the KEY POINT in 40 chars or less",
+#     "Body text expands on the headline - max 150 chars",
+#     "One idea per slide - if you have multiple, split them",
+#     "Make headline readable at thumbnail size",
+# ]
+# ///
+"""
+LAYOUT: Carousel Single Point Slide
+PURPOSE: One key point with supporting explanation
+FORMAT: Square (1:1) for LinkedIn carousels
+
+CUSTOMIZE:
+- BRAND_* colors and fonts
+- HEADLINE: The main point (max 40 chars)
+- BODY_TEXT: Supporting explanation (max 150 chars)
+"""
+
+import os
+from pathlib import Path
+
+from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Inches, Pt
+
+
+def hex_to_rgb(hex_color: str) -> RGBColor:
+    h = hex_color.lstrip("#")
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def main() -> None:
+    # === OUTPUT DIRECTORY ===
+    # $DECK_DIR is the data-overlay deck directory, resolved and exported by the
+    # caller (SKILL.md Step 5). Resolved FIRST so a misconfigured run fails
+    # before it renders anything. A bare relative filename here would write the
+    # deck into the engine clone, which is public.
+    deck_dir = os.environ.get("DECK_DIR")
+    if not deck_dir:
+        raise SystemExit(
+            "DECK_DIR is not set. Export the data-overlay deck directory "
+            "first; see SKILL.md Step 5."
+        )
+
+    # === BRAND COLORS (get from $BRANDS/{name}/brand-system.md, see SKILL.md) ===
+    BRAND_BG = "REPLACE"              # background color
+    BRAND_TEXT = "REPLACE"            # primary text color
+    BRAND_TEXT_SECONDARY = "REPLACE"  # secondary/muted text color
+    BRAND_ACCENT = "REPLACE"          # accent color
+    BRAND_HEADING_FONT = "REPLACE"    # heading font name
+    BRAND_BODY_FONT = "REPLACE"       # body font name
+
+    # === CONTENT ===
+    HEADLINE = "REPLACE"  # Max 40 chars
+    BODY_TEXT = "REPLACE"  # Max 150 chars
+
+    # === SLIDE SETUP (Square 1:1) ===
+    prs = Presentation()
+    prs.slide_width = Inches(7.5)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    # Background
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = hex_to_rgb(BRAND_BG)
+
+    # Left accent bar
+    left_bar = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(0), Inches(0),
+        Inches(0.1), Inches(7.5)
+    )
+    left_bar.fill.solid()
+    left_bar.fill.fore_color.rgb = hex_to_rgb(BRAND_ACCENT)
+    left_bar.line.fill.background()
+
+    # Headline
+    headline_box = slide.shapes.add_textbox(
+        Inches(0.5), Inches(2.0),
+        Inches(6.5), Inches(2.0)
+    )
+    tf = headline_box.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = HEADLINE
+    p.font.name = BRAND_HEADING_FONT
+    p.font.size = Pt(40)
+    p.font.bold = True
+    p.font.color.rgb = hex_to_rgb(BRAND_TEXT)
+
+    # Accent underline
+    underline = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(0.5), Inches(4.1),
+        Inches(2.0), Inches(0.06)
+    )
+    underline.fill.solid()
+    underline.fill.fore_color.rgb = hex_to_rgb(BRAND_ACCENT)
+    underline.line.fill.background()
+
+    # Body text
+    body_box = slide.shapes.add_textbox(
+        Inches(0.5), Inches(4.5),
+        Inches(6.5), Inches(2.5)
+    )
+    tf = body_box.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = BODY_TEXT
+    p.font.name = BRAND_BODY_FONT
+    p.font.size = Pt(24)
+    p.font.color.rgb = hex_to_rgb(BRAND_TEXT_SECONDARY)
+
+    # Save
+    output = Path(deck_dir) / "carousel-single-point-slide.pptx"
+    prs.save(output)
+    print(f"Created {output}")
+
+
+if __name__ == "__main__":
+    main()

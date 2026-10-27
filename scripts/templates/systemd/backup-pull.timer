@@ -1,0 +1,14 @@
+[Unit]
+Description=Hourly pull of the server backup repository (and 5 min after start)
+
+[Timer]
+# The laptop is the off-server copy, so the pull runs whenever it is on: data lost
+# if the server dies is the time since the last verified snapshot. OnStartupSec
+# covers a laptop that was off; an unchanged repository costs one rsync listing.
+OnCalendar=hourly
+OnStartupSec=5min
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

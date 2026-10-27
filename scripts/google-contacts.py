@@ -1,0 +1,781 @@
+#!/usr/bin/env python3
+"""
+google-contacts.py -- Google Contacts CLI for Claude Code
+
+Standalone connector for Google Contacts. Search, add, edit, list,
+get, and delete contacts via the Google People API.
+
+Prerequisites:
+    uv sync --all-extras --group dev   (the Google client packages are pinned in pyproject.toml)
+
+Setup:
+    1. Go to Google Cloud Console -> APIs & Services -> Credentials
+    2. Create OAuth 2.0 Client ID (Desktop application type)
+    3. Enable the People API (APIs & Services -> Library -> search "People API")
+    4. Download the credentials JSON file
+    5. Place at .sessions/google/credentials.json
+       (or set GOOGLE_CONTACTS_CREDENTIALS_PATH in .env)
+    6. Run any command -- first run opens browser for OAuth consent (handles 2FA)
+    7. Token is cached at .sessions/google/token.json for subsequent runs
+
+Usage:
+    python scripts/google-contacts.py search "John"
+    python scripts/google-contacts.py add --name "John Doe" --email "john@example.com" --company "Acme"
+    python scripts/google-contacts.py get people/c1234567890
+    python scripts/google-contacts.py edit people/c1234567890 --phone "+1-555-0100"
+    python scripts/google-contacts.py list --limit 50
+    python scripts/google-contacts.py delete people/c1234567890
+
+Coverage: none live since the 2026-09-21 split; `edit` writes to a real Google
+account, so read the merge path before changing it.
+
+Environment:
+    GOOGLE_CONTACTS_CREDENTIALS_PATH  Path to credentials.json (optional)
+                                       Default: .sessions/google/credentials.json
+"""
+
+import argparse
+import json
+import os
+import sys
+
+# ---------------------------------------------------------------------------
+# Workspace root resolution
+# ---------------------------------------------------------------------------
+from pathlib import Path
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKSPACE_ROOT = os.path.dirname(SCRIPT_DIR)
+
+# Session paths
+SESSION_DIR = str(Path(WORKSPACE_ROOT) / ".sessions" / "google")
+TOKEN_PATH = str(Path(SESSION_DIR) / "token.json")
+
+# The central `.env` loader. It is CALLED in `main()`, not here: at module
+# level it wrote the whole file into `os.environ` for every importer of this
+# module, and that write is visible to every other module in the process.
+sys.path.insert(0, WORKSPACE_ROOT)
+from scripts.utils.workspace import load_env  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# ANSI colors
+# ---------------------------------------------------------------------------
+# Shared palette from scripts/utils/colors.py; DIM is not in that module, so it
+# stays local.
+from scripts.utils.colors import GREEN, YELLOW, RED, CYAN, BOLD, RESET  # noqa: E402
+from scripts.utils.atomic import atomic_write_text  # noqa: E402
+from scripts.utils.argtypes import positive_int  # noqa: E402
+from scripts.utils.google_user_agent import google_flow_user_agent, google_http, google_refresh_request  # noqa: E402
+DIM = "\033[2m"
+
+# ---------------------------------------------------------------------------
+# Google People API constants
+# ---------------------------------------------------------------------------
+SCOPES = ["https://www.googleapis.com/auth/contacts"]
+PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,biographies,addresses,urls,birthdays,events,metadata"
+
+# Paging bounds. MAX_PAGES caps both walks below; neither had one, and
+# `cmd_list` had no exit at all for a page that returns nothing while handing
+# back the same token, which is an unbounded call loop against a remote party.
+SEARCH_PAGE_SIZE = 30          # People API searchContacts maximum
+SEARCH_DEFAULT_LIMIT = 30      # what one page used to return, kept as the default
+LIST_PAGE_SIZE = 1000
+MAX_PAGES = 200
+
+
+# ===========================================================================
+# Dependency check
+# ===========================================================================
+def _check_dependencies():
+    missing = []
+    try:
+        from googleapiclient.discovery import build  # noqa: F401
+    except ImportError:
+        # `build` is the one import from google-api-python-client (2026-08-25).
+        missing.append("google-api-python-client")
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: F401
+    except ImportError:
+        missing.append("google-auth-oauthlib")
+    try:
+        from google.oauth2.credentials import Credentials  # noqa: F401
+        from google.auth.transport.requests import Request  # noqa: F401
+    except ImportError:
+        # Both of these are provided by google-auth (and the transport needs
+        # `requests`), NOT by google-auth-httplib2 and NOT by
+        # google-api-python-client. Naming the wrong package sent the operator
+        # to install something that cannot fix it.
+        if "google-auth" not in missing:
+            missing.append("google-auth")
+    if missing:
+        print(f"{RED}[ERROR] Missing packages: {', '.join(missing)}{RESET}", file=sys.stderr)
+        # The remedy names what is actually missing. A fixed line listing the
+        # whole set tells an operator who is missing one package to install
+        # four, and hides which of the three checks above failed.
+        print(f"        Run: pip install {' '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+
+# _check_dependencies() runs inside authenticate() (F-2.1: no import-time exit).
+
+
+# ===========================================================================
+# Authentication
+# ===========================================================================
+def _get_credentials_path():
+    """Resolve path to OAuth credentials.json."""
+    env_path = os.environ.get("GOOGLE_CONTACTS_CREDENTIALS_PATH")
+    if env_path:
+        resolved = env_path if os.path.isabs(env_path) else str(Path(WORKSPACE_ROOT) / env_path)
+        if os.path.exists(resolved):
+            return resolved
+        # A set override that cannot be read is an error, never a silent fall
+        # back to the default credentials, which may be a different account.
+        print(f"{RED}[ERROR] GOOGLE_CONTACTS_CREDENTIALS_PATH points at "
+              f"{resolved}, which does not exist.{RESET}", file=sys.stderr)
+        print("        Fix the path or unset the variable to use the default.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    default_path = str(Path(SESSION_DIR) / "credentials.json")
+    if os.path.exists(default_path):
+        return default_path
+
+    print(f"{RED}[ERROR] Google OAuth credentials.json not found.{RESET}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  Setup steps:", file=sys.stderr)
+    print("  1. Go to https://console.cloud.google.com/apis/credentials", file=sys.stderr)
+    print("  2. Create OAuth 2.0 Client ID (Desktop application)", file=sys.stderr)
+    print("  3. Enable the People API (Library -> search 'People API')", file=sys.stderr)
+    print("  4. Download the JSON file", file=sys.stderr)
+    print(f"  5. Save it as: {default_path}", file=sys.stderr)
+    print("     Or set GOOGLE_CONTACTS_CREDENTIALS_PATH in .env", file=sys.stderr)
+    sys.exit(1)
+
+
+def authenticate():
+    """Authenticate with Google and return a People API service object.
+
+    First run opens browser for OAuth consent (handles 2FA transparently).
+    Token is cached and auto-refreshed for subsequent runs.
+    """
+    _check_dependencies()
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
+    os.makedirs(SESSION_DIR, mode=0o700, exist_ok=True)
+    creds = None
+
+    # Load cached token
+    if os.path.exists(TOKEN_PATH):
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+
+    # Refresh or re-authenticate
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(google_refresh_request())
+            except Exception as exc:
+                print(f"{YELLOW}[WARN] token refresh failed ({type(exc).__name__}: {exc}); "
+                      f"re-authorising.{RESET}", file=sys.stderr)
+                creds = None
+        if not creds:
+            creds_path = _get_credentials_path()
+            flow = google_flow_user_agent(InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES))
+            creds = flow.run_local_server(port=0)
+            print(f"{GREEN}[OK] Authenticated with Google{RESET}", file=sys.stderr)
+
+        # tmp + os.replace, matching scripts/utils/gmail_auth.py. A plain
+        # open truncates the OAuth token in place, so a crash mid-write leaves
+        # an empty credential and the next run demands a browser login.
+        atomic_write_text(Path(TOKEN_PATH), creds.to_json(), mode=0o600)
+
+    return build("people", "v1", http=google_http(creds))
+
+
+# ===========================================================================
+# Search warmup
+# ===========================================================================
+def _warmup_search(service):
+    """Perform the required warmup call for searchContacts API.
+
+    Google People API requires an initial empty-query search before
+    real searches return results. Called once per invocation.
+    """
+    try:
+        service.people().searchContacts(query="", readMask="names").execute()
+    except Exception as e:
+        # Warmup is best-effort; real searches handle their own errors.
+        # We log to stderr so the failure is visible but non-fatal.
+        print(f"[debug] searchContacts warmup fallback: {e}", file=sys.stderr)
+
+
+# ===========================================================================
+# Output formatting
+# ===========================================================================
+def _format_summary(person):
+    """Format a contact as a summary dict for table display."""
+    resource = person.get("resourceName", "")
+    names = person.get("names", [])
+    name = names[0].get("displayName", "(no name)") if names else "(no name)"
+    emails = person.get("emailAddresses", [])
+    email = emails[0].get("value", "") if emails else ""
+    phones = person.get("phoneNumbers", [])
+    phone = phones[0].get("value", "") if phones else ""
+    orgs = person.get("organizations", [])
+    company = orgs[0].get("name", "") if orgs else ""
+    title = orgs[0].get("title", "") if orgs else ""
+    role = f"{title}, {company}" if title and company else title or company
+    return {
+        "resourceName": resource,
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "role": role,
+    }
+
+
+def _print_table(contacts):
+    """Print contacts as an aligned table."""
+    if not contacts:
+        print(f"{YELLOW}No contacts found.{RESET}")
+        return
+    print(f"\n{BOLD}{'Name':<30} {'Email':<35} {'Phone':<18} {'Role':<30}{RESET}")
+    print(f"{'-'*30} {'-'*35} {'-'*18} {'-'*30}")
+    for c in contacts:
+        print(f"{c['name'][:29]:<30} {c['email'][:34]:<35} {c['phone'][:17]:<18} {c['role'][:29]:<30}")
+    print(f"\n{DIM}{len(contacts)} contact(s){RESET}")
+
+
+def _format_date(d: dict) -> str:
+    """A People API date as YYYY-MM-DD, leaving out any part it does not carry."""
+    parts = []
+    if d.get("year"):
+        parts.append(str(d["year"]))
+    if d.get("month"):
+        parts.append(f"{d['month']:02d}")
+    if d.get("day"):
+        parts.append(f"{d['day']:02d}")
+    return "-".join(parts)
+
+
+def _print_detail(person):
+    """Print a single contact in detailed format."""
+    names = person.get("names", [])
+    name = names[0].get("displayName", "(no name)") if names else "(no name)"
+    resource = person.get("resourceName", "")
+    etag = person.get("etag", "")
+
+    print(f"\n{BOLD}{CYAN}{name}{RESET}")
+    print(f"{DIM}Resource: {resource}{RESET}")
+    print(f"{DIM}ETag: {etag}{RESET}")
+    print()
+
+    emails = person.get("emailAddresses", [])
+    if emails:
+        print(f"  {BOLD}Email:{RESET}")
+        for e in emails:
+            label = e.get("type", "other")
+            print(f"    {e['value']}  ({label})")
+
+    phones = person.get("phoneNumbers", [])
+    if phones:
+        print(f"  {BOLD}Phone:{RESET}")
+        for p in phones:
+            label = p.get("type", "other")
+            print(f"    {p['value']}  ({label})")
+
+    birthdays = person.get("birthdays", [])
+    if birthdays:
+        print(f"  {BOLD}Birthday:{RESET}")
+        for b in birthdays:
+            print(f"    {_format_date(b.get('date', {}))}")
+
+    events = person.get("events", [])
+    if events:
+        print(f"  {BOLD}Events:{RESET}")
+        for ev in events:
+            label = ev.get("formattedType", ev.get("type", ""))
+            print(f"    {_format_date(ev.get('date', {}))}  ({label})")
+
+    orgs = person.get("organizations", [])
+    if orgs:
+        print(f"  {BOLD}Organization:{RESET}")
+        for o in orgs:
+            title = o.get("title", "")
+            company = o.get("name", "")
+            parts = [x for x in [title, company] if x]
+            print(f"    {' at '.join(parts)}" if parts else "    (no details)")
+
+    addresses = person.get("addresses", [])
+    if addresses:
+        print(f"  {BOLD}Address:{RESET}")
+        for a in addresses:
+            formatted = a.get("formattedValue", a.get("streetAddress", ""))
+            label = a.get("type", "other")
+            print(f"    {formatted}  ({label})")
+
+    urls = person.get("urls", [])
+    if urls:
+        print(f"  {BOLD}URLs:{RESET}")
+        for u in urls:
+            print(f"    {u.get('value', '')}")
+
+    bios = person.get("biographies", [])
+    if bios:
+        print(f"  {BOLD}Notes:{RESET}")
+        for b in bios:
+            print(f"    {b.get('value', '')}")
+
+    print()
+
+
+# ===========================================================================
+# Commands
+# ===========================================================================
+def cmd_search(service, query, as_json=False, limit=SEARCH_DEFAULT_LIMIT):
+    """Search contacts by name, email, phone, etc.
+
+    Paged. One 30-result call used to be the whole answer: `nextPageToken` was
+    never followed and nothing said the list had been cut, so a query matching
+    31 contacts printed 30 and presented that as the result set. The operator
+    had no flag to ask for more and no sign that more existed. A truncated walk
+    now says so on stderr rather than passing a prefix off as the total.
+    """
+    _warmup_search(service)
+
+    people = []
+    token = None
+    seen_tokens = set()
+    truncated = False
+    for _ in range(MAX_PAGES):
+        kwargs = {"query": query, "readMask": PERSON_FIELDS,
+                  "pageSize": min(SEARCH_PAGE_SIZE, limit - len(people))}
+        if token:
+            kwargs["pageToken"] = token
+        results = service.people().searchContacts(**kwargs).execute()
+        people.extend(r.get("person", {}) for r in results.get("results", []))
+        token = results.get("nextPageToken")
+        if not token:
+            break
+        if len(people) >= limit:
+            truncated = True
+            break
+        if token in seen_tokens:
+            # Same two bounds as the Gmail pagers, for the same reason: a loop
+            # whose termination depends entirely on a remote party is a loop
+            # that can consume all memory.
+            print(f"{YELLOW}[WARN] the server repeated a search page token; "
+                  f"stopping after {len(people)} result(s){RESET}", file=sys.stderr)
+            truncated = True
+            break
+        seen_tokens.add(token)
+    else:
+        truncated = True
+        print(f"{YELLOW}[WARN] stopped at the {MAX_PAGES}-page cap with "
+              f"{len(people)} result(s){RESET}", file=sys.stderr)
+
+    if truncated:
+        print(f"{YELLOW}[WARN] more matches remain beyond the {len(people)} "
+              f"shown; raise --limit{RESET}", file=sys.stderr)
+
+    if as_json:
+        print(json.dumps(people, indent=2, ensure_ascii=False))
+    else:
+        summaries = [_format_summary(p) for p in people]
+        _print_table(summaries)
+    return people
+
+
+class ContactInputError(ValueError):
+    """A --name the People API cannot be given."""
+
+
+def split_name(name):
+    """(givenName, familyName) from one --name string.
+
+    `name.strip().split(None, 1)` then `parts[0]` raised IndexError on
+    `--name "   "`, which the dispatch catch-all printed as
+    "[ERROR] list index out of range" -- and in cmd_edit only AFTER the
+    contact had been fetched.
+    """
+    parts = str(name or "").strip().split(None, 1)
+    if not parts:
+        raise ContactInputError("--name is empty; give at least a given name")
+    return parts[0], (parts[1] if len(parts) > 1 else "")
+
+
+def cmd_add(service, name, email=None, phone=None, company=None, title=None,
+            notes=None, address=None, url=None, as_json=False):
+    """Create a new contact."""
+    given, family = split_name(name)
+    body = {"names": [{"givenName": given}]}
+    if family:
+        body["names"][0]["familyName"] = family
+
+    # Plain single-element lists: a new contact has nothing to preserve, so
+    # `_replace_first` (cmd_edit's merge helper) does not apply here.
+    if email:
+        body["emailAddresses"] = [{"value": email}]
+    if phone:
+        body["phoneNumbers"] = [{"value": phone}]
+    if company or title:
+        org = {}
+        if company:
+            org["name"] = company
+        if title:
+            org["title"] = title
+        body["organizations"] = [org]
+    if notes:
+        body["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
+    if address:
+        body["addresses"] = [{"formattedValue": address}]
+    if url:
+        body["urls"] = [{"value": url}]
+
+    result = service.people().createContact(
+        body=body,
+        personFields=PERSON_FIELDS,
+    ).execute()
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        display_name = result.get("names", [{}])[0].get("displayName", name)
+        resource = result.get("resourceName", "")
+        print(f"{GREEN}[OK] Contact created: {display_name}{RESET}")
+        print(f"     Resource: {resource}")
+    return result
+
+
+def cmd_get(service, resource_name, as_json=False):
+    """Get a single contact by resource name."""
+    result = service.people().get(
+        resourceName=resource_name,
+        personFields=PERSON_FIELDS,
+    ).execute()
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        _print_detail(result)
+    return result
+
+
+# The People API does not key every repeated field the same way. Emails,
+# phones and URLs carry their content under "value"; an Address carries it
+# under "formattedValue" and has no "value" member at all.
+_VALUE_KEYS = ("value", "formattedValue")
+
+
+def _replace_first(current: dict, field: str, entry: dict) -> list:
+    """`entry` as the FIRST value of `field`, with the contact's others kept.
+
+    `updatePersonFields` replaces a field's whole list with what the body
+    carries, so sending `[{"value": phone}]` deleted every other number the
+    contact had. Editing one phone is not a request to forget the other two.
+    The edited value goes first, which is what the People API treats as primary.
+
+    The de-duplication key comes from `entry`, never hardcoded. It WAS
+    hardcoded to "value", which for addresses compared `None != None` on both
+    sides: false for every element, so the tail emptied and `--address` sent a
+    one-element list. A contact with a home and an office address kept the one
+    just typed and silently lost the other. The docstring above was right and
+    the code was wrong, for the one field whose shape differs.
+
+    An entry carrying neither key is not understood well enough to de-duplicate
+    against, so no TAIL entry is dropped. The first is still replaced -- that is
+    what this function is for, on every path. The sentence used to read "nothing
+    is dropped", which is false about `existing[0]` and would describe an append,
+    not a replace. Keeping a duplicate in the tail is recoverable; the defect
+    this replaces was not.
+    """
+    existing = [e for e in (current.get(field) or []) if isinstance(e, dict)]
+    key = next((k for k in _VALUE_KEYS if k in entry), None)
+    if key is None:
+        return [entry] + existing[1:]
+    tail = [e for e in existing[1:] if e.get(key) != entry[key]]
+    return [entry] + tail
+
+
+def cmd_edit(service, resource_name, name=None, email=None, phone=None,
+             company=None, title=None, notes=None, address=None, url=None,
+             as_json=False):
+    """Update an existing contact. Fetches current state first (etag required)."""
+    current = service.people().get(
+        resourceName=resource_name,
+        personFields=PERSON_FIELDS,
+    ).execute()
+
+    etag = current.get("etag")
+    if not etag:
+        print(f"{RED}[ERROR] Could not get etag for {resource_name}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    update_fields = []
+    body = {"etag": etag, "resourceName": resource_name}
+
+    if name:
+        given, family = split_name(name)
+        # Through `_replace_first`: `names` is a list, and element [0] is
+        # replaced while the tail is kept. `familyName` is sent even when empty,
+        # deliberately: `--name` takes a WHOLE name, so a single-word rename
+        # must clear the old family name. `cmd_add` omits an empty family
+        # because there is nothing to clear; do not "harmonise" the two.
+        body["names"] = _replace_first(
+            current, "names", {"givenName": given, "familyName": family})
+        update_fields.append("names")
+    if email:
+        body["emailAddresses"] = _replace_first(current, "emailAddresses", {"value": email})
+        update_fields.append("emailAddresses")
+    if phone:
+        body["phoneNumbers"] = _replace_first(current, "phoneNumbers", {"value": phone})
+        update_fields.append("phoneNumbers")
+    if company or title:
+        # Keep every other organization: updatePersonFields replaces the WHOLE list.
+        orgs = [o for o in (current.get("organizations") or []) if isinstance(o, dict)]
+        org = dict(orgs[0]) if orgs else {}
+        if company:
+            org["name"] = company
+        if title:
+            org["title"] = title
+        body["organizations"] = [org] + orgs[1:]
+        update_fields.append("organizations")
+    if notes:
+        # `biographies` is a repeated field too; `_replace_first` keeps the rest.
+        body["biographies"] = _replace_first(
+            current, "biographies", {"value": notes, "contentType": "TEXT_PLAIN"})
+        update_fields.append("biographies")
+    if address:
+        body["addresses"] = _replace_first(current, "addresses", {"formattedValue": address})
+        update_fields.append("addresses")
+    if url:
+        body["urls"] = _replace_first(current, "urls", {"value": url})
+        update_fields.append("urls")
+
+    if not update_fields:
+        print(f"{YELLOW}No fields specified to update.{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    result = service.people().updateContact(
+        resourceName=resource_name,
+        body=body,
+        updatePersonFields=",".join(update_fields),
+        personFields=PERSON_FIELDS,
+    ).execute()
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        display_name = result.get("names", [{}])[0].get("displayName", resource_name)
+        print(f"{GREEN}[OK] Updated: {display_name}{RESET}")
+        _print_detail(result)
+    return result
+
+
+def cmd_list(service, limit=100, as_json=False):
+    """List contacts sorted by last modified.
+
+    Bounded three ways (page cap, repeated token, empty page with a token), so
+    termination never depends on the server cooperating.
+    """
+    all_contacts = []
+    page_token = None
+    seen_tokens = set()
+
+    for _ in range(MAX_PAGES):
+        page_size = min(limit - len(all_contacts), LIST_PAGE_SIZE)
+        if page_size <= 0:
+            break
+
+        results = service.people().connections().list(
+            resourceName="people/me",
+            pageSize=page_size,
+            personFields=PERSON_FIELDS,
+            pageToken=page_token,
+            sortOrder="LAST_MODIFIED_DESCENDING",
+        ).execute()
+
+        connections = results.get("connections", [])
+        all_contacts.extend(connections)
+
+        page_token = results.get("nextPageToken")
+        if not page_token or len(all_contacts) >= limit:
+            break
+        if not connections:
+            print(f"{YELLOW}[WARN] the server returned an empty page but asked "
+                  f"for another; stopping after {len(all_contacts)} "
+                  f"contact(s){RESET}", file=sys.stderr)
+            break
+        if page_token in seen_tokens:
+            print(f"{YELLOW}[WARN] the server repeated a page token; stopping "
+                  f"after {len(all_contacts)} contact(s){RESET}", file=sys.stderr)
+            break
+        seen_tokens.add(page_token)
+    else:
+        print(f"{YELLOW}[WARN] stopped at the {MAX_PAGES}-page cap with "
+              f"{len(all_contacts)} contact(s); more remain{RESET}",
+              file=sys.stderr)
+
+    if as_json:
+        print(json.dumps(all_contacts, indent=2, ensure_ascii=False))
+    else:
+        summaries = [_format_summary(c) for c in all_contacts]
+        _print_table(summaries)
+    return all_contacts
+
+
+def cmd_delete(service, resource_name):
+    """Delete a contact permanently."""
+    try:
+        current = service.people().get(
+            resourceName=resource_name,
+            personFields="names",
+        ).execute()
+        display_name = current.get("names", [{}])[0].get("displayName", resource_name)
+    except Exception as exc:  # noqa: BLE001 - the name is cosmetic; the delete proceeds
+        print(f"{YELLOW}[WARN] could not read the name of {resource_name}: "
+              f"{type(exc).__name__}{RESET}", file=sys.stderr)
+        display_name = resource_name
+
+    service.people().deleteContact(resourceName=resource_name).execute()
+    print(f"{GREEN}[OK] Deleted: {display_name} ({resource_name}){RESET}")
+
+
+# ===========================================================================
+# CLI entry point
+# ===========================================================================
+def main():
+    parser = argparse.ArgumentParser(
+        description="Google Contacts CLI -- search, add, edit, list, get, delete contacts",
+        epilog=(
+            "Examples:\n"
+            '  python scripts/google-contacts.py search "John Doe"\n'
+            '  python scripts/google-contacts.py add --name "Jane Smith" --email "jane@co.com"\n'
+            "  python scripts/google-contacts.py get people/c1234567890\n"
+            '  python scripts/google-contacts.py edit people/c1234567890 --phone "+1-555-0100"\n'
+            "  python scripts/google-contacts.py list --limit 50\n"
+            "  python scripts/google-contacts.py delete people/c1234567890\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", help="Command to run")
+
+    # search
+    p_search = sub.add_parser("search", help="Search contacts by name, email, phone")
+    p_search.add_argument("query", help="Search query (prefix matching)")
+    p_search.add_argument("--limit", "-l", type=positive_int, default=SEARCH_DEFAULT_LIMIT,
+                          help=f"Max results (default: {SEARCH_DEFAULT_LIMIT}). "
+                               f"Without this flag the search stops at one page "
+                               f"and says so.")
+    p_search.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # add
+    p_add = sub.add_parser("add", help="Create a new contact")
+    p_add.add_argument("--name", "-n", required=True, help="Full name")
+    p_add.add_argument("--email", "-e", help="Email address")
+    p_add.add_argument("--phone", "-p", help="Phone number")
+    p_add.add_argument("--company", "-c", help="Company name")
+    p_add.add_argument("--title", "-t", help="Job title")
+    p_add.add_argument("--notes", help="Notes / biography")
+    p_add.add_argument("--address", help="Mailing address")
+    p_add.add_argument("--url", help="Website URL")
+    p_add.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # get
+    p_get = sub.add_parser("get", help="Get a single contact by resource name")
+    p_get.add_argument("resource", help="Resource name (e.g., people/c1234567890)")
+    p_get.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # edit
+    p_edit = sub.add_parser("edit", help="Update an existing contact")
+    p_edit.add_argument("resource", help="Resource name (e.g., people/c1234567890)")
+    p_edit.add_argument("--name", "-n", help="Full name")
+    p_edit.add_argument("--email", "-e", help="Email address")
+    p_edit.add_argument("--phone", "-p", help="Phone number")
+    p_edit.add_argument("--company", "-c", help="Company name")
+    p_edit.add_argument("--title", "-t", help="Job title")
+    p_edit.add_argument("--notes", help="Notes / biography")
+    p_edit.add_argument("--address", help="Mailing address")
+    p_edit.add_argument("--url", help="Website URL")
+    p_edit.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # list
+    p_list = sub.add_parser("list", help="List all contacts")
+    p_list.add_argument("--limit", "-l", type=positive_int, default=100,
+                        help="Max contacts (default: 100)")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # delete
+    p_delete = sub.add_parser("delete", help="Delete a contact permanently")
+    p_delete.add_argument("resource", help="Resource name (e.g., people/c1234567890)")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Read the `.env` before authenticating, which is the first thing here that
+    # needs it. Nothing at module scope reads the environment, so moving the
+    # load down from import time changes no constant in this file.
+    load_env(Path(WORKSPACE_ROOT))
+
+    # Authenticate
+    try:
+        service = authenticate()
+    except Exception as e:
+        print(f"{RED}[ERROR] Authentication failed: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Dispatch
+    try:
+        if args.command == "search":
+            cmd_search(service, args.query, as_json=args.json, limit=args.limit)
+        elif args.command == "add":
+            cmd_add(service, args.name, email=args.email, phone=args.phone,
+                    company=args.company, title=args.title, notes=args.notes,
+                    address=args.address, url=args.url, as_json=args.json)
+        elif args.command == "get":
+            cmd_get(service, args.resource, as_json=args.json)
+        elif args.command == "edit":
+            cmd_edit(service, args.resource, name=args.name, email=args.email,
+                     phone=args.phone, company=args.company, title=args.title,
+                     notes=args.notes, address=args.address, url=args.url,
+                     as_json=args.json)
+        elif args.command == "list":
+            cmd_list(service, limit=args.limit, as_json=args.json)
+        elif args.command == "delete":
+            cmd_delete(service, args.resource)
+    except ContactInputError as e:
+        # A validation failure, printed as one. Falling into the API branch
+        # below dressed "--name is empty" as an unexplained runtime error.
+        print(f"{RED}[ERROR] {e}{RESET}", file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:
+        error_str = str(e)
+        if "HttpError 404" in error_str:
+            res = getattr(args, "resource", "")
+            print(f"{RED}[ERROR] Contact not found: {res}{RESET}", file=sys.stderr)
+        elif "HttpError 400" in error_str:
+            print(f"{RED}[ERROR] Bad request -- check your arguments. Details: {e}{RESET}", file=sys.stderr)
+        elif "HttpError 403" in error_str:
+            print(f"{RED}[ERROR] Permission denied (403).{RESET}", file=sys.stderr)
+            print(f"{DIM}{e}{RESET}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("  Likely causes:", file=sys.stderr)
+            print("  1. People API not enabled -- go to:", file=sys.stderr)
+            print("     https://console.cloud.google.com/apis/library/people.googleapis.com", file=sys.stderr)
+            print("     and click 'Enable'", file=sys.stderr)
+            print(f"  2. Stale token -- delete {TOKEN_PATH}", file=sys.stderr)
+            print("     and re-run to re-authenticate", file=sys.stderr)
+        elif "HttpError 429" in error_str:
+            print(f"{RED}[ERROR] Rate limited by Google. Wait a moment and retry.{RESET}", file=sys.stderr)
+        else:
+            print(f"{RED}[ERROR] {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

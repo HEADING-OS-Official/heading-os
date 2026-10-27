@@ -1,0 +1,21 @@
+[Unit]
+Description=Encrypted off-machine copies of the Hindsight snapshot and the machine config to Google Drive (HOS-210, HOS-219)
+After=network-online.target hindsight-snapshot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Archives `current/` of `runtime:hindsight-snapshot/cache` under the snapshot's own lock,
+# encrypts it with gpg (passphrase file named by HINDSIGHT_OFFSITE_PASSPHRASE_FILE in .env),
+# uploads it, downloads it back and runs `hindsight-snapshot.py restore-check` before the
+# copy is accepted. A failure exits 1, leaves the last verified copy in place, and tells
+# the operator's own sink once per change from ok to failing. Never opens a browser.
+# The same run then makes the second kind, machine-config (HOS-219): the files listed in the
+# data repository's `machine-config-manifest`, secrets included, each with a README, verified
+# by hash after the download-back. Each kind fails, alarms and keeps its copies on its own.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/hindsight-snapshot-offsite.py run
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

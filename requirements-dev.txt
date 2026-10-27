@@ -1,0 +1,20 @@
+# requirements-dev.txt -- Development and tooling dependencies
+# Exact pins, the same versions as the dev group in pyproject.toml / uv.lock;
+# bump them there first, then mirror here.
+# Dependency management rules: `security/DEPENDENCY-POLICY.md` in the data
+# repository under registry name `spec-docs` (absent from a public clone).
+
+# Include production dependencies
+-r requirements.txt
+
+# Testing
+pytest==9.1.1
+pytest-xdist==3.8.0         # parallel test gate (-n auto) — the pre-push regression speedup
+pytest-cov==7.1.0           # CI still passes --cov and would not start without it; the floor it once enforced was removed on 2026-09-21 and coverage is now reported only
+
+# Security tooling
+bandit==1.9.4
+ruff==0.16.9
+pre-commit==4.6.2
+detect-secrets==1.5.0
+pip-audit==2.10.1

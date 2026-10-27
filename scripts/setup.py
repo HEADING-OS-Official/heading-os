@@ -1,0 +1,726 @@
+#!/usr/bin/env python3
+"""
+setup.py: first-run bootstrap for a HEADING OS workspace.
+===========================================================
+Run once after cloning the engine to check prerequisites and GitHub auth,
+create `.env`, install the Python dependencies and the Sentinel schedule, and
+verify the result.
+
+Self-contained at import: the module top level uses only the Python 3.11+
+standard library (plus local ANSI color constants), so it loads cleanly on a
+fresh clone before sys.path is configured. The one workspace utility it needs
+(scripts/utils/schedule) is imported lazily inside the function that needs it,
+which calls `_ensure_workspace_importable()` first.
+Idempotent: safe to re-run -- completed steps are skipped.
+Cross-platform: Windows, macOS, Linux.
+
+Usage:
+    python scripts/setup.py
+"""
+
+import argparse
+import getpass
+import json
+import os
+import platform
+import shutil
+import stat
+import subprocess
+import sys
+import textwrap
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ============================================================
+# Configuration
+# ============================================================
+
+VERSION = "1.0.0"
+
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+
+# Colors
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+CYAN = "\033[96m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+PREREQUISITES = {
+    "git": {"check": [["git", "--version"]], "install": "https://git-scm.com/downloads"},
+    "python3": {"check": [["python3", "--version"], ["python", "--version"], ["py", "--version"]], "install": "https://www.python.org/downloads/"},
+    "node": {"check": [["node", "--version"]], "install": "https://nodejs.org/"},
+    "gh": {"check": [["gh", "--version"]], "install": "https://cli.github.com/"},
+    "claude": {"check": [["claude", "--version"]], "install": "https://docs.anthropic.com/en/docs/claude-code"},
+}
+
+# State file for idempotency, in the data repository's `runtime:setup/state`.
+STATE_NAME = "setup-state.json"
+_STATE_UNAVAILABLE_SAID = False
+
+
+def _state_file(*, create: bool) -> Path | None:
+    """Where progress is kept, or None while there is nowhere to keep it.
+
+    Onboarding begins before a data repository exists, and before step 6 has
+    installed the dependencies the front door imports, so both are ordinary
+    here rather than faults: the run then keeps its progress in memory and says
+    once that an interruption will start it over. Imported inside the function
+    for the stdlib-only import surface the module docstring promises.
+    """
+    global _STATE_UNAVAILABLE_SAID
+    try:
+        _ensure_workspace_importable()
+        from scripts.utils.data_path import data_path, data_write_dir
+
+        base = (data_write_dir("runtime:setup/state") if create
+                else data_path("runtime:setup/state"))
+        return base / STATE_NAME
+    # `RuntimeError` is `DataPathError`: no data repository yet.
+    except (ImportError, RuntimeError) as exc:
+        if not _STATE_UNAVAILABLE_SAID:
+            print(f"{YELLOW}Setup progress is not saved yet ({exc}); an "
+                  f"interrupted run starts over until a data repository "
+                  f"exists.{RESET}", file=sys.stderr)
+            _STATE_UNAVAILABLE_SAID = True
+        return None
+
+
+# ============================================================
+# Helpers / Output Utilities
+# ============================================================
+
+def print_banner():
+    """Print the setup banner."""
+    print(f"\n{BOLD}{CYAN}{'=' * 56}{RESET}")
+    print(f"{BOLD}{CYAN}  HEADING OS Workspace Setup  v{VERSION}{RESET}")
+    print(f"{BOLD}{CYAN}{'=' * 56}{RESET}\n")
+
+
+def ok(msg: str):
+    print(f"  {GREEN}[ok]{RESET}    {msg}")
+
+
+def skip(msg: str):
+    print(f"  {GREEN}[skip]{RESET}  {msg}")
+
+
+def warn(msg: str):
+    print(f"  {YELLOW}[warn]{RESET}  {msg}")
+
+
+def fail(msg: str):
+    print(f"  {RED}[FAIL]{RESET}  {msg}")
+
+
+def step_header(num: int, title: str):
+    print(f"\n{BOLD}Step {num}: {title}{RESET}")
+
+
+def _ensure_workspace_importable():
+    """Put the workspace ROOT on sys.path, for the lazy `scripts.*` imports.
+
+    Called from inside the functions that import a workspace module, never at
+    module import time: the docstring promises a stdlib-only import surface on
+    a fresh clone.
+
+    Without it the documented launch `python scripts/setup.py` puts only
+    `<repo>/scripts` on sys.path, so `import scripts` has no anchor and step 7
+    died with an unhandled ModuleNotFoundError. It passed review because this
+    repo's own .venv carries an editable .pth that makes the root importable --
+    and that venv is exactly what a fresh clone does not have, since step
+    6 is what creates it.
+    """
+    root = str(WORKSPACE_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def run_cmd(cmd: list, cwd: str = None, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+    """Run a subprocess command."""
+    return subprocess.run(
+        cmd, cwd=cwd, check=check,
+        capture_output=capture, text=True,
+    )
+
+
+# ============================================================
+# State Management (idempotency)
+# ============================================================
+
+def load_state() -> dict:
+    """Load setup state for idempotency, with both required keys guaranteed.
+
+    A file that PARSES is not a file that fits, and this one is operator-visible
+    at `runtime:setup/state`. Until 2026-08-25 whatever `json.loads` returned
+    was handed straight back, and the very next line of `main` is
+    `state["started_at"]`: `{}` raised KeyError, a JSON list raised TypeError,
+    and either killed the wizard on the run whose whole point is to resume an
+    interrupted one. The `is_done` / `mark_done` pair made it worse by being
+    inconsistent - `is_done` uses `.get`, so a file with no `completed_steps`
+    survived the early checks and died later, inside the first `mark_done`,
+    after the identity and prerequisite steps had already taken effect.
+    """
+    loaded = None
+    state_file = _state_file(create=False)
+    if state_file is not None and state_file.exists():
+        try:
+            loaded = json.loads(state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            # `UnicodeDecodeError` is a sibling of `json.JSONDecodeError`, raised
+            # by `read_text` on a state file cut mid-UTF-8-sequence (MEASURED
+            # 2026-09-01: it killed the wizard on its resume run).
+            loaded = None
+    state = {"completed_steps": [], "started_at": None}
+    if isinstance(loaded, dict):
+        for key, default in state.items():
+            loaded.setdefault(key, default)
+        if not isinstance(loaded["completed_steps"], list):
+            # A wrong TYPE subscripts and appends as badly as a missing key.
+            loaded["completed_steps"] = []
+        return loaded
+    return state
+
+
+def save_state(state: dict):
+    """Save setup state."""
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    state_file = _state_file(create=True)
+    if state_file is None:
+        return
+    # Atomic, written inline with stdlib only: a crash mid-write left truncated
+    # JSON, `load_state` swallowed the parse error, and the idempotency
+    # mechanism reset all progress -- at the one moment it exists to help, an
+    # interrupted setup. `scripts.utils.atomic` is deliberately NOT imported:
+    # this module's docstring promises a self-contained stdlib import surface.
+    tmp = state_file.with_suffix(state_file.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    os.replace(tmp, state_file)
+
+
+def mark_done(state: dict, step: str):
+    """Mark a step as completed."""
+    if step not in state["completed_steps"]:
+        state["completed_steps"].append(step)
+    save_state(state)
+
+
+def is_done(state: dict, step: str) -> bool:
+    """Check if a step is already completed."""
+    return step in state.get("completed_steps", [])
+
+
+# ============================================================
+# Wizard Steps: Identity & Prerequisites
+# ============================================================
+
+def step_banner():
+    """Print the setup banner."""
+    print_banner()
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Detect workspace identity
+# ---------------------------------------------------------------------------
+
+def step_detect_identity() -> dict:
+    """Read .workspace-identity.json and return identity dict."""
+    step_header(2, "Detecting workspace identity")
+
+    identity_file = WORKSPACE_ROOT / ".workspace-identity.json"
+    if not identity_file.exists():
+        # The fresh-clone default.
+        identity = {"role": "admin", "slug": "operator", "type": "ceo-master"}
+        skip(f"No .workspace-identity.json; using the fresh-clone default "
+             f"(slug: {identity['slug']})")
+        return identity
+
+    try:
+        identity = json.loads(identity_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        # `UnicodeDecodeError` for the same reason `load_state` carries it: it
+        # is a SIBLING of `json.JSONDecodeError` under `ValueError` and is
+        # raised by `read_text` before `json.loads` sees anything. Without it an
+        # undecodable identity file answered a traceback instead of the named
+        # `Cannot read` above, on step 1 of the wizard.
+        fail(f"Cannot read .workspace-identity.json: {e}")
+        sys.exit(1)
+
+    slug = identity.get("slug", "unknown")
+    ws_type = identity.get("type", "unknown")
+    ok(f"Workspace: {slug} (type: {ws_type})")
+    return identity
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Check prerequisites
+# ---------------------------------------------------------------------------
+
+def step_check_prerequisites(state: dict) -> bool:
+    """Verify all required tools are installed."""
+    if is_done(state, "check_prerequisites"):
+        step_header(3, "Checking prerequisites")
+        skip("Prerequisites already verified")
+        return True
+
+    step_header(3, "Checking prerequisites")
+    all_ok = True
+
+    for tool, info in PREREQUISITES.items():
+        found = False
+        for candidate in info["check"]:
+            resolved = shutil.which(candidate[0])
+            if resolved is None:
+                continue
+            try:
+                result = run_cmd([resolved] + candidate[1:], check=False)
+                if result.returncode == 0:
+                    version = (result.stdout or result.stderr).strip().split("\n")[0]
+                    ok(f"{tool}: {version}")
+                    found = True
+                    break
+            except (FileNotFoundError, OSError):
+                continue
+        if not found:
+            fail(f"{tool}: NOT FOUND")
+            print(f"         Install from: {CYAN}{info['install']}{RESET}")
+            all_ok = False
+
+    if not all_ok:
+        print(f"\n{RED}ERROR: Missing prerequisites. Install them and re-run setup.{RESET}")
+        sys.exit(1)
+
+    mark_done(state, "check_prerequisites")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Verify GitHub auth
+# ---------------------------------------------------------------------------
+
+def step_verify_github_auth(state: dict) -> bool:
+    """Verify gh CLI is authenticated."""
+    if is_done(state, "verify_github_auth"):
+        step_header(4, "Verifying GitHub authentication")
+        skip("GitHub auth already verified")
+        return True
+
+    step_header(4, "Verifying GitHub authentication")
+
+    try:
+        result = run_cmd(["gh", "auth", "status"], check=False)
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            ok("GitHub CLI authenticated")
+        else:
+            fail("GitHub CLI is not authenticated")
+            print(f"\n  {YELLOW}Run the following to authenticate:{RESET}")
+            print("    gh auth login")
+            print("\n  Choose: GitHub.com -> HTTPS -> Yes -> Login with browser")
+            sys.exit(1)
+    except (FileNotFoundError, OSError):
+        fail("Cannot run gh auth status")
+        sys.exit(1)
+
+    mark_done(state, "verify_github_auth")
+    return True
+
+
+# ============================================================
+# Wizard Steps: Environment & Repo Cloning
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# Step 5: Setup .env
+# ---------------------------------------------------------------------------
+
+def step_setup_env(state: dict) -> bool:
+    """Create .env with API key if it doesn't exist."""
+    step_header(5, "Setting up .env")
+
+    env_file = WORKSPACE_ROOT / ".env"
+    if env_file.exists():
+        skip(".env already exists")
+        return True
+
+    print(f"\n  {CYAN}Your workspace needs an Anthropic API key for Claude features.{RESET}")
+    print("  Get one at: https://console.anthropic.com/settings/keys\n")
+
+    api_key = ""
+    try:
+        # getpass, not input: a key typed at input() is echoed to the terminal,
+        # so it lands in the scrollback, in any recording of the session, and in
+        # the transcript when this runs under an agent. It is imported at the top
+        # of this file and was, until 2026-08-23, never used.
+        api_key = getpass.getpass("  Enter your ANTHROPIC_API_KEY (input hidden, "
+                                  "or press Enter to skip): ").strip()
+    except EOFError:
+        # KeyboardInterrupt is NOT caught here. Swallowing it wrote a keyless
+        # .env and ran ten more steps, so the user trying to bail out got a
+        # half-configured workspace -- and because .env then "already exists",
+        # the key prompt never appeared again. `main` has a handler that says
+        # "re-run to continue"; this let nothing reach it.
+        print()
+
+    # HEADING_OS_TZ is per host, and a .env without it silently means UTC for
+    # every timestamp and every scheduled job, so ask for it here.
+    tz_name = ""
+    try:
+        tz_name = input("  Enter your IANA timezone, e.g. Europe/Berlin "
+                        "(or press Enter for UTC): ").strip()
+    except EOFError:
+        print()
+    if tz_name:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            warn(f"'{tz_name}' is not a known IANA timezone; HEADING_OS_TZ "
+                 "left empty, which means UTC (fix it in .env)")
+            tz_name = ""
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    env_content = textwrap.dedent(f"""\
+        # HEADING OS Workspace Environment
+        # Generated {date_str}
+
+        # Anthropic API (required for Claude features)
+        ANTHROPIC_API_KEY={api_key}
+
+        # Local timezone (IANA name). Empty means UTC for every timestamp
+        # and every scheduled job on this host.
+        HEADING_OS_TZ={tz_name}
+
+        # Telegram (optional)
+        TELEGRAM_API_ID=
+        TELEGRAM_API_HASH=
+
+        # GitHub token (usually handled by gh CLI)
+        # GITHUB_TOKEN=
+    """)
+
+    # Created 0600 FROM BIRTH, not chmod'd afterwards. `write_text` applies the
+    # process umask (commonly 0644), so the API key sat world-readable for the
+    # window between the write and the chmod -- and the write was not atomic
+    # either, so a concurrent reader could see a partial key.
+    if platform.system() != "Windows":
+        fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(env_content)
+        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    else:
+        # Windows uses ACLs, not POSIX modes; the mode argument is ignored there.
+        env_file.write_text(env_content, encoding="utf-8")
+    if api_key:
+        ok(".env created with API key")
+    else:
+        warn(".env created without API key (add it later)")
+
+    return True
+
+
+# ============================================================
+# Wizard Steps: Dependencies & Scheduling
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# Step 6: Install Python dependencies
+# ---------------------------------------------------------------------------
+
+def step_install_python_deps(state: dict) -> bool:
+    """Install Python dependencies (uv sync, or pip over the root requirements.txt).
+
+    Required because scheduled scripts (Sentinel) and the daemons depend on
+    third-party packages (exchangelib, weasyprint, playwright, etc.).
+
+    Spec: superpowers/specs/2026-04-27-layered-requirements-distribution-design.md
+    in the data repository (registry name `spec-docs`).
+    """
+    if is_done(state, "install_python_deps"):
+        step_header(6, "Python dependencies")
+        skip("Python dependencies already installed")
+        return True
+
+    step_header(6, "Installing Python dependencies")
+
+    # Preferred path: uv sync (isolated venv from pyproject.toml + uv.lock).
+    # Avoids the PEP 668 system-Python rejection modern distros enforce, and
+    # installs the exact locked set. The rationale is security/DEPENDENCY-POLICY.md
+    # in the data repository (registry name `spec-docs`), absent from a public
+    # clone.
+    if shutil.which("uv"):
+        print("  Running: uv sync --all-extras --all-groups")
+        try:
+            run_cmd(["uv", "sync", "--all-extras", "--all-groups"], cwd=str(WORKSPACE_ROOT))
+            ok("Dependencies installed via uv (pyproject.toml + uv.lock, all extras)")
+            mark_done(state, "install_python_deps")
+            return True
+        except subprocess.CalledProcessError as e:
+            err = (str(e.stderr) if e.stderr else str(e)).strip()
+            fail(f"uv sync failed: {err[:300]}")
+            print(f"\n  {YELLOW}Try manually: uv sync --all-extras --all-groups{RESET}")
+            sys.exit(1)
+
+    warn("uv not found - install it (https://astral.sh/uv) for reproducible installs.")
+    warn("Falling back to layered pip install.")
+
+    files_installed = []
+
+    # The root requirements.txt.
+    root_req = WORKSPACE_ROOT / "requirements.txt"
+    if root_req.exists():
+        print(f"  {root_req.relative_to(WORKSPACE_ROOT)}")
+        print(f"    Running: {sys.executable} -m pip install -r {root_req}")
+        try:
+            run_cmd([sys.executable, "-m", "pip", "install", "-r", str(root_req), "--quiet"])
+            ok(f"Installed dependencies from {root_req.relative_to(WORKSPACE_ROOT)}")
+            files_installed.append(str(root_req.relative_to(WORKSPACE_ROOT)))
+        except subprocess.CalledProcessError as e:
+            err = (str(e.stderr) if e.stderr else str(e)).strip()
+            fail(f"pip install of {root_req.relative_to(WORKSPACE_ROOT)} failed: {err[:300]}")
+            print(f"\n  {YELLOW}Try manually: python -m pip install -r {root_req.relative_to(WORKSPACE_ROOT)}{RESET}")
+            sys.exit(1)
+    else:
+        print(f"  {root_req.relative_to(WORKSPACE_ROOT)} not present (skipping)")
+
+    if not files_installed:
+        warn(f"{root_req.relative_to(WORKSPACE_ROOT)} not found - skipping pip install.")
+        warn("Some scheduled scripts may fail until dependencies are installed.")
+    else:
+        ok(f"Installed: {', '.join(files_installed)}")
+
+    mark_done(state, "install_python_deps")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Step 7: Install the Sentinel schedule via shared helper
+# ---------------------------------------------------------------------------
+
+def step_install_sync(state: dict, identity: dict, reinstall: bool = False, install_sentinel: bool = True) -> bool:
+    """Install the 15-min Sentinel schedule.
+
+    Only the Sentinel comms-monitor schedule; code-down is `git pull` and
+    data-up is `push-all.py`. Uses scripts/utils/schedule.py for all
+    platform-specific install/verify/logging.
+    Honors `--reinstall-schedule` so operators can force a re-install, and
+    `--no-sentinel-schedule`, which declines the install FOR THAT RUN ONLY and
+    records nothing.
+    """
+    _ensure_workspace_importable()
+    try:
+        from scripts.utils.schedule import install_sentinel_schedule
+    except ImportError as exc:
+        # Say it and keep going. This step used to raise straight out of main(),
+        # which only catches KeyboardInterrupt, so the verify and summary steps
+        # never ran and the operator was left with a traceback after the
+        # earlier steps had already taken effect.
+        step_header(7, "Installing scheduled tasks")
+        fail(f"Could not load the schedule helper: {exc}")
+        warn("Install the Sentinel schedule later with: "
+             "python scripts/setup.py --reinstall-schedule")
+        return False
+
+    if is_done(state, "install_sync") and not reinstall:
+        step_header(7, "Scheduled tasks")
+        skip("Scheduled tasks already installed (use --reinstall-schedule to force)")
+        return True
+
+    step_header(7, "Installing scheduled tasks")
+
+    slug = identity.get("slug", "unknown")
+    if not install_sentinel:
+        # `--no-sentinel-schedule` is PER-RUN (operator decision, 2026-08-29):
+        # it declines the install on the run it is typed on and writes no
+        # persistent opt-out. So nothing is recorded. `mark_done` used to run
+        # here regardless, which turned one flagged run into a permanent
+        # opt-out: every later plain run read `install_sync`, printed
+        # "Scheduled tasks already installed", and installed nothing. The
+        # monitor that exists to notice a silent daemon was itself silently
+        # absent, behind a green line, and recovery needed an operator who
+        # already knew about `--reinstall-schedule`.
+        skip("Sentinel schedule declined for this run; nothing recorded, so a "
+             "plain re-run will install it")
+        return True
+
+    if not install_sentinel_schedule(slug, WORKSPACE_ROOT):
+        # Not recorded: a plain re-run tries again instead of skipping a step
+        # that never succeeded.
+        return False
+    mark_done(state, "install_sync")
+    return True
+
+
+# ============================================================
+# Wizard Steps: Verification & Summary
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# Step 8: Verify
+# ---------------------------------------------------------------------------
+
+def step_verify() -> bool:
+    """Verify that key files and directories exist."""
+    step_header(8, "Verifying setup")
+
+    checks_passed = 0
+    checks_total = 0
+
+    # Check skills
+    checks_total += 1
+    skills_dir = WORKSPACE_ROOT / ".claude" / "skills"
+    if skills_dir.exists() and any(skills_dir.iterdir()):
+        skill_count = sum(1 for _ in skills_dir.iterdir() if _.is_dir())
+        ok(f".claude/skills/ has {skill_count} skill(s)")
+        checks_passed += 1
+    else:
+        warn(".claude/skills/ is empty or missing")
+
+    # Check workspace identity
+    checks_total += 1
+    identity_file = WORKSPACE_ROOT / ".workspace-identity.json"
+    if identity_file.exists():
+        try:
+            ident = json.loads(identity_file.read_text(encoding="utf-8"))
+            if ident.get("slug") and ident.get("type"):
+                ok(f".workspace-identity.json valid (slug: {ident['slug']})")
+                checks_passed += 1
+            else:
+                warn(".workspace-identity.json missing slug or type")
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            # A file that will not decode IS malformed, which is what this arm
+            # already says. Without `UnicodeDecodeError` it raised instead, and
+            # `step_verify` is the diagnostic step - so the run died on the
+            # check that exists to report the problem.
+            warn(".workspace-identity.json is malformed")
+    else:
+        warn(".workspace-identity.json not found")
+
+    # Check .env
+    checks_total += 1
+    env_file = WORKSPACE_ROOT / ".env"
+    if env_file.exists():
+        ok(".env exists")
+        checks_passed += 1
+    else:
+        warn(".env not found")
+
+    print(f"\n  Checks passed: {checks_passed}/{checks_total}")
+    return checks_passed > 0
+
+
+# ---------------------------------------------------------------------------
+# Step 9: Summary
+# ---------------------------------------------------------------------------
+# Keep this number one above `step_verify`'s `step_header(...)`.
+
+def step_summary(identity: dict):
+    """Print success summary with next steps."""
+    slug = identity.get("slug", "unknown")
+
+    print(f"\n{BOLD}{GREEN}{'=' * 56}{RESET}")
+    print(f"{BOLD}{GREEN}  Setup complete!{RESET}")
+    print(f"{BOLD}{GREEN}{'=' * 56}{RESET}")
+
+    print(f"\n{BOLD}Workspace:{RESET}  {WORKSPACE_ROOT}")
+    print(f"{BOLD}Identity:{RESET}   {slug} ({identity.get('type', 'unknown')})")
+    # The last thing a new operator reads, so it has to be true.
+    print(f"{BOLD}Data:{RESET}       your own work lives in the data overlay; "
+          f"push it with scripts/push-all.py")
+    print(f"{BOLD}Sync:{RESET}       code-down: git pull  |  data-up: push-all.py  |  "
+          f"Sentinel on a 15-min schedule")
+
+    print(f"\n{BOLD}Next steps:{RESET}")
+    print(f"  1. Edit {CYAN}.env{RESET} to add/verify your API keys")
+    print("  2. Fill in your own context records in the data overlay")
+    print("  3. Launch Claude Code:")
+    print(f"     {CYAN}claude{RESET}")
+    print(f"  4. Run {CYAN}/prime{RESET} to load your context")
+    print()
+
+
+# ============================================================
+# Main / CLI
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    # Installs the Sentinel schedule (systemd timer, launchd agent or a Windows
+    # scheduled task, `scripts/utils/schedule.py`), so it is a daemon entry
+    # point. A fresh clone is a MAIN clone -- `.git` is a directory there -- so
+    # setting up a new checkout is unaffected; only a worktree is refused.
+    #
+    # Imported HERE, not at module level: this module's docstring promises a
+    # stdlib-only import surface so it loads on a fresh clone before sys.path is
+    # configured, and a top-level `from scripts.utils...` would break that. This
+    # repo's own .venv carries an editable .pth that makes the root importable,
+    # so the breakage would have been invisible in every local test and would
+    # have appeared only on a fresh clone, the same trap recorded at
+    # `_ensure_workspace_importable`.
+    _ensure_workspace_importable()
+    from scripts.utils.clone_guard import require_main_clone
+    require_main_clone(__file__)
+    parser = argparse.ArgumentParser(
+        description="HEADING OS Workspace Setup",
+    )
+    parser.add_argument(
+        "--reinstall-schedule",
+        action="store_true",
+        help="Force reinstall of the Sentinel scheduled task (overwrites existing).",
+    )
+    parser.add_argument(
+        "--no-sentinel-schedule",
+        action="store_true",
+        help="Skip installing the Sentinel scheduled task (not recommended).",
+    )
+    args = parser.parse_args()
+
+    # Step 1: Banner
+    step_banner()
+
+    # Load idempotency state
+    state = load_state()
+    if state["started_at"] is None:
+        state["started_at"] = datetime.now(timezone.utc).isoformat()
+        save_state(state)
+
+    # Step 2: Detect workspace identity
+    identity = step_detect_identity()
+
+    # Step 3: Check prerequisites
+    step_check_prerequisites(state)
+
+    # Step 4: Verify GitHub auth
+    step_verify_github_auth(state)
+
+    # Step 5: Setup .env
+    step_setup_env(state)
+
+    # Step 6: Install Python dependencies
+    step_install_python_deps(state)
+
+    # Step 7: Install the Sentinel schedule
+    step_install_sync(
+        state,
+        identity,
+        reinstall=args.reinstall_schedule,
+        install_sentinel=not args.no_sentinel_schedule,
+    )
+
+    # Step 8: Verify
+    step_verify()
+
+    # Step 9: Summary
+    step_summary(identity)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n{YELLOW}Setup interrupted. Re-run to continue (completed steps will be skipped).{RESET}")
+        sys.exit(130)

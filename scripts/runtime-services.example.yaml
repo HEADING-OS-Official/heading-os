@@ -1,0 +1,92 @@
+# Runtime services - EXAMPLE / TEMPLATE
+# ======================================
+# THIS FILE IS A TEMPLATE AND IT IS NEVER THE LIVE REGISTRY. The live list is
+# the `services:` block of `<data-root>/config/data-paths.yaml`, the one registry,
+# and `scripts/utils/runtime_dir.py` reads it from there and from
+# nowhere else. Nothing resolves an address through this file; it is read only
+# when a data root is SEEDED, and editing it changes nothing that is running.
+#
+# The engine keeps it beside the scripts that seed from it, per this repository's
+# `*.example.*` convention: `scripts/create-data-repo.py` copies these rows into
+# a fresh data root's registry, and `scripts/utils/synthetic_data_root.py` seeds
+# a throwaway one from the same bytes. A public clone with no data overlay has
+# no service list at all, by design: it also has no data root to write under, so
+# `require_writable_data_root()` refuses every call before the list is even
+# consulted.
+#
+# WHAT A SERVICE IS. `data_path("runtime:<service>/<kind>")` returns
+# `<data root>/<runtime_store>/<service>/<kind>` (the registry's `runtime_store:`,
+# `runtime-junk` unless a registry names another) and validates `service` against
+# this list, so a typo in a writer is a refusal at the call and not a new folder
+# nobody asked for. A service is the unit, daemon, hook or script that writes,
+# spelled as its installer spells it. One line each says what it is.
+#
+# Kinds are fixed in `scripts/utils/runtime_dir.py` (`KINDS`): logs, cache,
+# state, tmp.
+#
+# Adding a service to the LIVE registry is the whole registration. Removing one
+# refuses every writer still naming it, which is the point: a folder with no
+# service row is a folder with no owner. Adding one HERE registers nothing; it
+# only changes what a freshly created data root starts with.
+#
+# `version:` is here so that this file IS a complete minimal registry: seeding a
+# fresh data root is a copy to `<data-root>/config/data-paths.yaml` and not an
+# assembly step. A registry with services and no `names:` is legitimate -- the
+# residue block grows later, one settled address at a time.
+
+version: 1
+
+services:
+  sync-exchange: "the Exchange sync daemon and the CLI sync it spawns: calendar and inbox dumps, GAL exports, the CRM auto-log"
+  email-intel: "the /email-intel skill and email-sweep.py: dismiss and defer logs, per-run fetches, sweep queues"
+  inbox-pulse: "the inbox-pulse triage daemon: heartbeat, EWS cursor, cost ledger, classification log"
+  ops-radar: "ops-radar.py: the autoheal failure counters and their lock"
+  update-manager: "update-manager.py: the single-apply lock"
+  memory-index: "memory-index.py: the rebuildable SQLite embeddings and FTS store"
+  hindsight-sync: "hindsight-sync.py: the per-file ledger of what was retained into the Hindsight memory server (path, content hash, operation id)"
+  hindsight-mcp-bridge: "hindsight-mcp-bridge.py: the last known Hindsight MCP tool catalog per endpoint and bank, no credentials"
+  hindsight-snapshot: "hindsight-snapshot.py: the daily copy of what lives only in the Hindsight bank (observations, mental models, directives, knowledge-base export, documents with no file behind them)"
+  chronicle: "chronicle.py: the high-water mark and the skipped-session list"
+  handoff: "the PostCompact checkpoint hook: the newest-handoff pointers, their lock, the redaction quarantine"
+  browser: "browser.py, firecrawl.py, the playwright skill and chromium_cookies.py: launch log, CDP lock, scrape cache, cookies, captures"
+  clip: "clip.py: the last clipboard grab"
+  docparse: "docparse.py: extracted-document cache"
+  design: "design-studio.py: intermediate HTML before screenshot or PDF"
+  implement: "implement-trajectory-log.py: per-run trajectory event streams and their lock"
+  action-queue: "action-queue.py, the Action Queue store (queue.json, disposition-log.jsonl) and dead_letter.py's failed-send payloads"
+  mullvad: "mullvad-fastest.py: relay latency benchmarks"
+  yt-pulse: "the /yt-pulse skill: ranked-video JSON feeding the brief"
+  research-drafts: "capture-design-exemplars.py: scraped design-reference screenshots and their manifest"
+  compact-watch: "checkpoint-state poll logs of scripts/dev/compact-watch.py, which is removed; kept because the runtime mover still names it"
+  yard-watch: "the yard-watch Stop hook: when each yard's verdict was first seen and whether it has been notified"
+  release: "the release gate in .claude/hooks/_dispatch.py: the journal of every authorised commit and push"
+  council-models-notify: "the council-models freshness nudge: the deduplication key for which finding has already been notified"
+  inference-guard: "inference-guard.py: the outage streak and whether the operator was told"
+  scratch: "engine scripts' short-lived temp files and directories, each removed by the script that made it (tmp/), and the log of a supervised child run whose caller named no directory (logs/)"
+  # The one service in this store whose writer is NOT engine code: the Lific
+  # binary writes its own SQLite database here when its lific.toml points at
+  # this folder. Its files sit directly under the service folder rather than
+  # under a kind (`<runtime_store>/lific/lific.db`), because the path is
+  # configured in the external binary and not built by the front door. Any
+  # check of the <service>/<kind> shape treats this path as an explicit
+  # exception.
+  lific: "the Lific issue tracker (external binary): its SQLite database, the -wal and -shm sidecars, and its backups"
+  # What an engine checkout writes about itself lives here, never inside the
+  # checkout: the engine holds code only.
+  checkout-scratch: "one directory per engine checkout: a prepared commit message, a registry stanza for HELM, raw measurements (formerly <checkout>/.tmp/)"
+  hook-state: "one directory per engine checkout: the PreToolUse guards' rate, graph-first and fan-out stamps and the checkpoint hooks' state (formerly <checkout>/.claude/state/)"
+  overlay-guard: "scripts/utils/overlay_write_guard.py: the record of every write into the overlay, rotated at 32 MiB, never pruned"
+  push: "push-all.py and safe-push.py: the supervised push logs and the last push status per repository"
+  denials: "the gates' denial log: every refusal by a hook, a pre-commit gate or the push wall"
+  crm-health: "crm-health.py: the daily list of pipeline companies with no CRM contact"
+  sentinel: "sentinel.py: its state, log and pid, and the stdout and stderr systemd appends for its timer units"
+  setup: "setup.py: which onboarding steps are done"
+  claude-models: "scripts/utils/claude_models.py: the Models API answer, cached for a day"
+  nightly-refresh: "nightly-refresh.py: the record of its last run"
+  day-mode: "the day-mode pre-push gate: the facts index, the last known-green commit and the last full-run verdict"
+  test-cache: "test-cache.py: the per-file verdict store"
+  content-guard: "content-guard.py: the digests of files already scanned clean"
+  daemon-heartbeat: "every daemon's heartbeat file, one per daemon, read by the watchdog and the fleet health view"
+  daemon-watchdog: "daemon-watchdog.py: the watchdog's restart counters"
+  daemon-config: "the per-user daemon config layer and its history, read by alert.py and the watchdog"
+  data-path: "scripts/utils/data_path.py: the parsed registry, one JSON entry per registry text and parser build, rebuildable"

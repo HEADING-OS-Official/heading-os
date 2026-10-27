@@ -1,0 +1,13 @@
+[Unit]
+Description=Proxy usage dashboard rebuild every 5 minutes (skips when nothing changed)
+
+[Timer]
+# Every 5 minutes, matching the page's own meta refresh, so an open browser tab
+# shows a call within about ten minutes at worst. The run is a no-op when the
+# ledger did not move, which is the common case. Persistent=true runs a missed
+# fire on next boot.
+OnCalendar=*-*-* *:00/5:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,1227 @@
+#!/usr/bin/env python3
+"""Real-entity denylist for the engine CONTENT-leak gate.
+
+The six structural segregation layers (leak-guard, engine_guard, the push wall,
+the pre-commit/pre-push tests) all check WHERE a file routes -- never WHAT is
+inside it. So a real name, handle, slug, e-mail, or Telegram ID embedded in a
+file that legitimately routes ``engine`` sails through every one of them. The
+2026-06-28 public-readiness audit found exactly this class of leak (real team
+handles + Telegram IDs in a test, a real exec slug across three tests, real
+pricing in skill prose). This module is the missing CONTENT layer: it builds a
+denylist of real entities and lets the gate scan engine-routed files for them.
+
+Design constraints:
+
+* The denylist IS PII. It is built in memory from the private DATA overlay at
+  scan time and is NEVER persisted into the engine. On a public clone / CI where
+  the overlay is absent, ``build_denylist`` returns an empty (degraded) list --
+  the gate then no-ops rather than failing, because the only machine that both
+  authors engine files and pushes them (the operator's) has the overlay present.
+
+* High precision over high recall. A noisy gate that blocks legitimate pushes
+  gets bypassed; a quiet, trustworthy one gets kept. Tokens are length-bounded,
+  word-boundary matched, filtered against a stopword list, and exempted by the
+  public-identity + fictional-example allowlist. Genuine edge cases are annotated
+  inline with ``content-guard: ok <reason>`` (mirrors the ``leak-guard: ok``
+  convention) rather than forcing ``--no-verify``.
+
+Sources harvested from the DATA overlay:
+
+* ``<crm-contacts>/*.md``     -- person slugs (filenames) + split name-words,
+                                 AND, from the frontmatter, the organisation
+                                 field (``pipeline_company`` / ``company`` /
+                                 ...) and every e-mail address
+* ``config/*.json|*.yaml``    -- e-mails (regex) from every one of them;
+                                 Telegram-ID-shaped ints from the files whose
+                                 NAME carries ``TEAM_BOT_MARK`` or ``roster``, not
+                                 from all of them; and the cycle speakers named
+                                 in ``SCHEDULE_FILE`` (plain strings
+                                 under ``weeks[].mon`` / ``weeks[].wed``)
+* ``tribe-roster.json`` in the registry directory ``team-roster-state``
+                              -- team handles, full names and Telegram user ids.
+                                 The membership source of truth. Added 2026-08-25
+                                 after the block above was found reading the
+                                 wrong shape, leaving every team-only member
+                                 unguarded
+* ``config/content-denylist.yaml`` -- CURATED non-person tokens (companies,
+                                 events, codenames, competitors, and since
+                                 2026-09-13 ``personal``: the operator's own
+                                 bank, insurer, property and place names, which
+                                 no other harvest can see because they live in
+                                 memory records rather than in the CRM). Since
+                                 2026-09-25 its ``tokens`` key also carries the
+                                 identifiers and bare names that the removed
+                                 executive-roster harvest used to emit; see
+                                 ``CURATED_CATEGORIES``
+* ``<auto-memory>/*.md``, ``<odin-brain>/**/*.md``, every thread home ``**/*.md``
+                              -- the overlay's OWN FILENAMES, as bare stems.
+                                 A record's name is a sentence about the
+                                 operator ("<name>-on-<city>-time"), and a
+                                 real one quoted in engine code publishes that
+                                 the record exists and what it says. Derived
+                                 from the tree at scan time, never listed, so
+                                 the gate cannot drift from what it guards and
+                                 the list itself is never written down. Added
+                                 2026-09-13 after MEASURED that day: 60 real
+                                 record names sat in 44 engine-routed files
+                                 and the gate reported every one clean
+
+The record-name harvest and the ordinary-English floor
+------------------------------------------------------
+Only a HYPHENATED stem becomes a token. MEASURED 2026-09-13 over the live
+overlay: 423 record stems, 423 hyphenated, 0 single words, so the rule costs
+nothing today; it exists for the day a record is named ``readme.md`` or
+``index.md``, whose bare stem would match every engine file that mentions one.
+A single-word record name is therefore NOT guarded by this harvest, and that is
+said here rather than discovered. The category is an IDENTIFIER, so the floor
+never withholds one: no longer form covers a filename.
+
+The ordinary-English floor
+--------------------------
+Several harvests above can emit a BARE single word, and a bare word that is
+ordinary English matches prose rather than an entity. ``config/ordinary-english.txt``
+in the ENGINE repo (generated by ``scripts/dev/build-ordinary-english.py``, and
+not private) is the vocabulary that decides which words those are.
+``_apply_ordinary_english_floor`` runs after every harvest and withholds such a
+word only from an ORGANISATION head-word, and only when a multi-word token still
+covers it, so the match narrows to the full name rather than disappearing. Every
+other category is kept: a person's bare given name by the explicit 2026-08-24
+decision recorded in ``_PERSON_NAME_CATEGORIES``, an identifier because nothing
+can cover one. What was withheld is kept on ``Denylist.withheld``, so the change
+in coverage can be read rather than assumed.
+
+Why the organisation field, and why not slug decomposition
+----------------------------------------------------------
+Until 2026-08-08 the only company coverage was the CURATED list, so an
+organisation nobody had thought to curate was invisible: a contact slug pairs a
+person with their employer (``<given>-<org>``), the whole slug was a token, but
+the BARE organisation name matched nothing -- and the bare name is what prose
+actually contains. Harvesting the structured organisation field closes that,
+because it is the one place the name appears on its own.
+
+The rejected alternative was decomposing every slug into its component words.
+Measured on the live overlay it turns ordinary English into tokens (the pieces of
+real slugs include ``heading``, ``security``, ``policy``, ``world``, ``traffic``)
+and the gate would refuse nearly every push. A gate that cries wolf gets
+disabled, which is worse than the hole it closes. Thread titles were considered
+as a second source and rejected for the same reason: they are free prose, so
+harvesting them reintroduces the ordinary-word problem the structured field
+avoids.
+
+Tests: `tests/test_gate_content_guard.py` drives `build_denylist` over a
+throwaway overlay of invented entities and holds the harvest to a token floor.
+Everything below that it does not reach, the floor's category sets and the
+per-harvester detail, was covered until the 2026-09-21 test-suite split and is
+now held by review.
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from scripts.utils.markdown import FM_OK, split_frontmatter
+
+#: The name the team bot's data-config files carry, and its cycle-speaker
+#: schedule: the operator's own data shape, harvested where it exists.
+TEAM_BOT_MARK = "fireside"
+SCHEDULE_FILE = f"{TEAM_BOT_MARK}-schedule.json"
+
+# Public identity -- deliberately shareable, NEVER flagged.
+ALLOW_IDENTITY = {
+    "misha", "hanin", "misha hanin", "misha.hanin@headingos.com", "misha.hanin@31c.io",
+    "31 concept", "31c", "odun.one", "odun", "trustone", "31c.io", "odinix.com",
+    "heading os", "heading-os",
+    # Published company mailboxes: shared, printed on public collateral, no
+    # person behind them. A CRM record may carry one, so name them here.
+    "info@31c.io", "sales@31c.io", "support@31c.io",
+    # The operator's own GitHub handle: the repository owner in pyproject.toml's
+    # URLs, and the owner segment of every link to this repository. It
+    # is also a key in the private team roster, so without this entry the
+    # roster harvest below would read the repository's own URLs as a leak.
+    #
+    # No other real person is named here, and none may be added: the engine
+    # carries no names but the author's public identity above. Until 2026-09-25
+    # this set also exempted an outside contributor credited in CHANGELOG.md and
+    # docs/PLUGINS.md; both files left the engine that day (HOS-131), the credit
+    # went with them, and the operator had the exemption removed the same day.
+    "mishahanin",
+}
+
+# Fictional / illustrative names that legitimately appear in rule, skill, and test
+# scaffolding -- NEVER flagged. Keep in sync with the placeholders the docs use.
+ALLOW_FICTIONAL = {
+    "alice", "bob", "carol", "dave", "erin", "tamsin", "dana", "jane", "jane-doe",
+    "jane doe", "john", "doe", "pat", "nolan", "pat nolan", "exampletelco",
+    "examplecorp", "example", "acme", "globex", "rivex", "contoso", "okonkwo",
+    "tamsin okonkwo", "someoutsider", "outsider", "randomperson",
+    # 2026-08-08: the two placeholder personas carried first names that also
+    # belong to real CRM contacts, so a reader could wrongly connect a fixture to
+    # a person. Renamed suite-wide to Marlow / Tamsin, which match no contact.
+    "marlow", "carter", "marlow carter", "rivera", "marlow rivera",
+}
+
+# Common words that can surface as a CRM name-word (e.g. a surname) but are far
+# more likely to be ordinary English in code/docs. Length>=5 already filters most;
+# this catches the residue. Tuned empirically against the clean tree (--all).
+STOPWORDS = {
+    "about", "after", "agent", "alert", "always", "brief", "build", "check",
+    "child", "class", "clean", "draft", "email", "event", "every", "field",
+    "first", "great", "group", "guide", "hello", "media", "model", "north",
+    "other", "owner", "phone", "place", "point", "press", "price", "queue",
+    "radar", "reply", "round", "sales", "scope", "sheet", "south", "state",
+    "store", "table", "thing", "title", "token", "track", "tribe", "under",
+    "value", "voice", "world", "write",
+    # Added with the organisation harvest (2026-08-08). A widely-known public
+    # technology that is also the head word of an organisation, so the bare word
+    # appears in engine prose that has nothing to do with anybody. The
+    # organisation's multi-word form stays a token, so this narrows the match
+    # rather than removing it. Measured: this is the ONLY such collision in the
+    # tree -- the placeholder set and the one-surviving-word rule handle the rest,
+    # so nothing else needs listing here.
+    #
+    # That last sentence was true when it was written and stopped being true on
+    # 2026-09-04, when two CRM rows arrived whose employers were each an
+    # ordinary English word followed by a word already in `_ORG_GENERIC`, and
+    # the gate went red across the tree within the hour: 128 flagged lines, 42
+    # tracked files holding one of the two words and 27 the other. (The names
+    # themselves are in the DATA overlay and are not repeated here, which is the
+    # rule this gate exists to enforce.)
+    # Read it as a dated observation, never as a standing property, and do
+    # NOT answer the next collision by adding a word here: this set is
+    # hand-maintained, so every entry is a word somebody had to notice first,
+    # and the day it matters is the day nobody does. An ordinary English word is
+    # now caught by `_apply_ordinary_english_floor`, which is derived. `solana`
+    # stays, because it is a proper noun rather than English, so no vocabulary
+    # of ordinary words will ever hold it.
+    "solana",
+    # Added 2026-08-24, and the reason is the deep-audit mode's usability rather
+    # than the gate's. Both words are pieces of real contact slugs, so ``--strict``
+    # emitted them and then fired on ordinary prose: measured over the engine
+    # surface, ``security`` produced 967 findings and ``likely`` 56, out of 1,052
+    # in total. Ninety-two percent noise is why nobody ran the flag, and while
+    # nobody ran it two real given names sat in tracked engine files. Silencing
+    # the two words makes the remaining ~29 findings readable, which is what
+    # turns a deep-audit mode from a thing that exists into a thing that is used.
+    # Neither word can hide a person: the full slug and the space-separated name
+    # stay tokens in the DEFAULT gate.
+    "security", "likely",
+}
+
+# Frontmatter keys on a CRM contact that name an organisation.
+_ORG_FIELDS = ("pipeline_company", "company", "organization", "organisation", "employer")
+
+# Placeholder organisation values that name nobody. Rejected before tokenizing.
+_ORG_PLACEHOLDERS = {
+    "", "-", "n/a", "na", "none", "tbd", "unknown", "independent", "self",
+    "self-employed", "freelance", "private", "individual", "retired",
+}
+
+# Legal-form and generic industry words. Stripped when deriving the "core" form
+# of an organisation name, and never emitted as a bare head-word token.
+_ORG_GENERIC = {
+    "ab", "ag", "bv", "capital", "co", "communications", "company", "corp",
+    "corporation", "cyber", "digital", "dmcc", "fzc", "fzco", "fze", "global",
+    "gmbh", "group", "holding", "holdings", "inc", "international", "labs",
+    "limited", "llc", "llp", "lp", "ltd", "media", "networks", "nv", "oy",
+    "partners", "plc", "pty", "pvt", "sarl", "security", "services", "solutions",
+    "spa", "srl", "systems", "technologies", "technology", "telecom", "telecoms",
+    "ventures",
+}
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_ID_RE = re.compile(r"\b\d{7,}\b")
+_MIN_WORD = 5  # minimum length for a bare name-word token
+
+# The ordinary-English floor. Generated by scripts/dev/build-ordinary-english.py
+# as the intersection of a frequency-ranked web corpus (cut where its cumulative
+# counts reach 95% of running English text) and a public-domain English
+# dictionary. Neither source is a runtime dependency; the committed artifact is.
+#
+# Resolved from THIS MODULE's own location, never from `get_workspace_root()`.
+# The artifact ships with the engine code that reads it, and a `WORKSPACE_ROOT`
+# in a copied `.env` repoints that resolver at another checkout, which would
+# silently swap the vocabulary a security control narrows itself by.
+_ORDINARY_ENGLISH_PATH = Path(__file__).resolve().parents[2] / "config" / "ordinary-english.txt"
+_ordinary_english: set[str] | None = None
+
+
+def ordinary_english_words() -> set[str]:
+    """The floor's vocabulary, loaded once.
+
+    An ABSENT or unreadable artifact yields the empty set, and the empty set
+    makes `_apply_ordinary_english_floor` a no-op. That direction is chosen: a
+    missing floor leaves every bare token in place, so the gate gets LOUDER and
+    refuses pushes it need not refuse. It can never get quieter. Failing the
+    other way -- treating an unreadable file as "everything is ordinary" --
+    would silently disarm the harvest this floor narrows.
+
+    Read through `_read_source` rather than with a second strict `read_text`.
+    That helper exists so a file that will not decode is named in the error. A
+    test counted the strict reads in this module to keep `_read_source` the
+    only one; since the 2026-09-21 test-suite split nothing counts them, so a
+    second strict read would land unnoticed. The exception is caught here
+    instead of propagating, because this file is an engine artifact rather than
+    a harvest source: an unreadable harvest source must fail the push, an
+    unreadable floor must only make the gate louder.
+    """
+    global _ordinary_english
+    if _ordinary_english is None:
+        try:
+            text = _read_source(_ORDINARY_ENGLISH_PATH)
+        except (OSError, HarvestUnreadable) as exc:
+            print(f"content-denylist: ordinary-English floor unavailable "
+                  f"({type(exc).__name__}: {exc}); every bare token is kept and "
+                  f"the gate may flag ordinary prose.", file=sys.stderr)
+            _ordinary_english = set()
+        else:
+            _ordinary_english = {
+                line.strip() for line in text.splitlines()
+                if line.strip() and not line.startswith("#")
+            }
+    return _ordinary_english
+
+
+def is_ordinary_english(word: str) -> bool:
+    """Is this word ordinary English rather than something that names an entity?"""
+    return word.strip().lower() in ordinary_english_words()
+
+
+# Every harvest category falls in exactly one of the three sets below, and the
+# floor may withhold from the first only. Listing all three rather than
+# inferring two of them from "not the first" is deliberate: a category added to
+# a harvester tomorrow is then UNCLASSIFIED rather than silently swept into a
+# default, and `build_denylist` names every unclassified category it meets on
+# stderr (`_unclassified_categories`). Curated tokens carry `curated:<key>` and
+# are classified as `curated`.
+
+# WITHHOLDABLE. An organisation's head word is a FRAGMENT of a longer form the
+# same harvest also emits, so withholding it narrows the match to the full name
+# instead of removing the organisation from the gate.
+_FRAGMENT_CATEGORIES = frozenset({"crm-org"})
+
+# KEPT, by an explicit prior decision that outranks this floor. A person's bare
+# given or family name stays a token even when it is ordinary English, because
+# the bare form is the one that leaks: on 2026-08-24 two real executives' given
+# names were found in tracked engine files, one of them already pushed to the
+# public repo, and `content-guard --all` had reported the surface clean both
+# times precisely because only the full name was a token. A test failed if a
+# bare given name stopped being covered by default, and the 2026-09-21
+# test-suite split took it, so this set is the only remaining record of that
+# decision. A noisier gate is the price, and it was paid knowingly; this floor
+# does not get to re-decide it.
+_PERSON_NAME_CATEGORIES = frozenset({
+    "crm-name", "handle-name", "schedule-speaker",
+})
+
+# KEPT, by construction. A Telegram handle, a contact or exec slug, a github
+# user, a data-repo name, a curated token the operator chose, an e-mail, a
+# numeric id: none is a shortened form of anything, so no longer token can cover
+# one, and prose that leaks an identifier writes it alone. That is what an
+# identifier is for.
+#
+# MEASURED 2026-09-04, and this set exists because of it. Built without the
+# distinction, the floor withheld the handle `unbound` from a roster record
+# whose member name was `Unbound Person`, on the strength of a two-word name
+# token that merely opened with the same word. The handle and the name are
+# different identifiers of one person; the resemblance was a coincidence of that
+# record. The test that caught it was the one written when two real handles
+# reached a tracked engine file, and the 2026-09-21 split took it, so this set
+# is now the only place that distinction is recorded.
+_IDENTIFIER_CATEGORIES = frozenset({
+    "crm-slug", "crm-email", "handle", "email", "telegram-id", "entity",
+    # A record filename. Nothing covers one, and its bare form is the leak.
+    "record-name",
+    "curated",
+})
+
+
+def _unclassified_categories(tokens: dict[str, str]) -> set[str]:
+    """Categories present in ``tokens`` that none of the three sets classifies."""
+    known = _FRAGMENT_CATEGORIES | _PERSON_NAME_CATEGORIES | _IDENTIFIER_CATEGORIES
+    return {c.split(":", 1)[0] for c in tokens.values()} - known
+
+
+def _apply_ordinary_english_floor(tokens: dict[str, str]) -> dict[str, str]:
+    """Withhold bare ordinary-English words that a multi-word token still covers.
+
+    Removes the entry from ``tokens`` and returns what it removed, so the change
+    in coverage is reportable rather than silent.
+
+    Three conditions, and ALL are required:
+
+    * the token came from a category whose bare form is a FRAGMENT of a longer
+      one (``_FRAGMENT_CATEGORIES``), never an identifier in its own right;
+    * the word is ordinary English, per the derived artifact above;
+    * a multi-word token BEGINS with it, so the entity that donated the word
+      keeps a longer form the gate still matches on.
+
+    The last two are what make this a floor rather than a hole. ``"Krellide
+    Technologies"``, were ``krellide`` an ordinary word, would keep ``krellide
+    technologies`` and lose only the bare form, which NARROWS the match. A
+    ONE-WORD organisation that is an ordinary English word has no longer form,
+    so it is kept and the gate stays noisy over it. That is the honest
+    direction, and ``Denylist.withheld`` is how anyone can see which way each
+    token went.
+
+    "Begins with" and not "contains", and the difference was measured rather
+    than reasoned. On the live overlay one single-word organisation is covered
+    by nothing, while an unrelated record yields a two-word phrase ENDING in
+    that same word; a containment test read that as coverage and withheld the
+    token, deleting one entity's only form on the strength of a different
+    entity's name. A bare organisation form is emitted only where the word
+    OPENED the name (``core == words[:1]`` in ``_org_token_forms``), so the
+    longer form of the same organisation always begins with it.
+
+    NOT closed, and named here rather than left to be found: token provenance is
+    not tracked, so two entities whose names begin with the same ordinary word
+    are indistinguishable to this function, and a one-word organisation would be
+    withheld on the strength of an unrelated two-word one that opens with it.
+    Fixing that means carrying the source entity on every token, which is a
+    larger change than this floor.
+
+    MEASURED on the live overlay 2026-09-04, over 121 bare single-word tokens:
+    SEVEN are in the vocabulary, FIVE are withheld, and each of those five is an
+    organisation head-word whose full name remains a token. The other two are
+    kept, one because it is a one-word organisation with no longer form and one
+    because it is a curated token the operator chose. Neither matches anything
+    on the engine surface, so keeping them costs no false refusals today. The
+    words are not listed here: every one of the seven names a real entity, and
+    this file ships public. Re-derive the table rather than trusting this text,
+    which is a dated reading of an overlay that grows every day.
+    """
+    covered: set[str] = {t.split(" ", 1)[0] for t in tokens if " " in t}
+    withheld = {
+        t: c for t, c in tokens.items()
+        if c in _FRAGMENT_CATEGORIES and " " not in t and t.isalpha()
+        and t in covered and is_ordinary_english(t)
+    }
+    for t in withheld:
+        del tokens[t]
+    return withheld
+
+
+@dataclass
+class Denylist:
+    """Compiled real-entity denylist. ``token -> category`` for reporting."""
+
+    tokens: dict[str, str] = field(default_factory=dict)
+    # Bare ordinary-English words the floor withheld, `token -> category`. Kept
+    # rather than discarded so the coverage change is visible: a floor that
+    # removes real coverage in silence is a worse defect than the noise it fixes.
+    withheld: dict[str, str] = field(default_factory=dict)
+    _pattern: re.Pattern | None = None
+    _loose_pattern: re.Pattern | None = None
+    degraded: bool = False
+
+    def _compile(self) -> None:
+        if not self.tokens:
+            self._pattern = None
+            self._loose_pattern = None
+            self._needle_singles = ()
+            self._needle_multi = ()
+            return
+        # Longest-first so a full name wins over its component word in reporting.
+        ordered = sorted(self.tokens, key=len, reverse=True)
+        alts = "|".join(re.escape(t) for t in ordered)
+        # Boundaries on alnum/underscore only, so a token next to '-', '.', '@',
+        # quotes, or whitespace still matches (slugs/emails), but a token glued
+        # inside a longer identifier does not.
+        self._pattern = re.compile(
+            rf"(?<![A-Za-z0-9_])(?:{alts})(?![A-Za-z0-9_])", re.IGNORECASE
+        )
+
+        # The SECOND pattern, over multi-word tokens only, with each internal
+        # space widened to a whitespace run. Prose in this tree is hard-wrapped,
+        # so "Firstname Lastname" routinely arrives with a newline between the
+        # two words, and the line-scoped pass above cannot see it: it matches a
+        # literal space inside one line. A double space and a non-breaking space
+        # hid a name the same way. Measured 2026-08-28 over a synthetic overlay:
+        # the flat form was reported and all three spaced forms returned nothing,
+        # from the token class added because a live counterparty's name had
+        # reached a tracked engine file.
+        #
+        # Single-word tokens are deliberately NOT in here. Widening them would
+        # let any token join its neighbour across a break, which matches text
+        # that is not the entity.
+        multi = [t for t in ordered if " " in t]
+        if multi:
+            loose_alts = "|".join(
+                r"\s+".join(re.escape(w) for w in t.split(" ")) for t in multi
+            )
+            self._loose_pattern = re.compile(
+                rf"(?<![A-Za-z0-9_])(?:{loose_alts})(?![A-Za-z0-9_])", re.IGNORECASE
+            )
+        else:
+            self._loose_pattern = None
+
+        # Needles for the prefilter in `scan_text`. Derived from `self.tokens`
+        # in the same place the patterns are compiled, so the three can never
+        # describe different token sets.
+        self._needle_singles = tuple(
+            t.lower() for t in ordered if " " not in t)
+        self._needle_multi = tuple(
+            tuple(w.lower() for w in t.split(" ")) for t in ordered if " " in t)
+
+    def _could_hold_a_token(self, low: str) -> bool:
+        """Could ANY denylist token match this already-lowercased text?
+
+        Necessary condition only. `False` means no pattern can match and the
+        scan may return early; `True` means run the real scan. Built from the
+        token list itself rather than a hand-kept copy, so a new token class
+        cannot be added and forgotten here.
+        """
+        for word in self._needle_singles:
+            if word in low:
+                return True
+        return any(all(w in low for w in words) for words in self._needle_multi)
+
+    def scan_text(self, text: str) -> list[tuple[int, str, str]]:
+        """Return (lineno, matched_text, category) for every denylist hit.
+
+        Lines carrying an inline ``content-guard: ok`` suppression are skipped.
+        A hit spanning a wrapped line is suppressed when EITHER of its lines
+        carries the marker, because the marker is written per line and the
+        operator cannot know which line the scanner will report.
+        """
+        if self._pattern is None:
+            return []
+        # WHOLE-TEXT PREFILTER. The loops below run a 760-alternative regex once
+        # per LINE, which is the whole cost of this gate: measured 2026-08-31,
+        # `content-guard.py --all` spent 66 s of its 67 s here, over 2127 files,
+        # and three tests each pay that separately. Under a loaded machine it
+        # passed 300 s and timed three of them out.
+        #
+        # Skipping is SOUND, not a heuristic, and it rests on one property of the
+        # compiled patterns: they carry no `^`/`$` anchor and no `re.MULTILINE`,
+        # and their boundaries are lookarounds on `[A-Za-z0-9_]`. A line is a
+        # contiguous substring of `text` delimited by `\n`, and `\n` is not in
+        # that class, so every lookaround that holds at a line edge also holds at
+        # the same offset in the full text. A per-line match therefore IMPLIES a
+        # whole-text match, and no whole-text match implies no per-line match.
+        #
+        # The test is SUBSTRING containment, not a regex, and that choice is a
+        # measurement rather than a preference. Two earlier attempts were tried
+        # and thrown away on the same 400-file sample:
+        #
+        #   whole-text regex search   13.84s vs 10.91s per-line  -> 27% SLOWER
+        #     (one pass over the text costs the same character positions as all
+        #      its lines, and testing both patterns adds a second pass)
+        #   "any token word present"   0.12s, but said "maybe" for 400/400 files
+        #     -> 76x faster and 0% selective, so nothing was ever skipped
+        #   this one                   1.78s, skips 360/400 -> 12.79s to 3.06s
+        #
+        # Soundness. A match of `_pattern` needs the token verbatim, so for a
+        # single-word token that word must occur as a substring, and for a
+        # multi-word token every one of its words must. A match of
+        # `_loose_pattern` widens the internal spaces to `\s+`, so it still
+        # needs every word present. "All words" and not "any word" is the whole
+        # difference between 90% selectivity and 0%.
+        #
+        # This is a NECESSARY condition, never a sufficient one: a file that
+        # passes still goes through the full scan below. The only way it can be
+        # wrong is by claiming a hit is impossible when it is not. A
+        # differential against the unfiltered scan checked exactly that, and
+        # the 2026-09-21 test-suite split took it, so re-run one by hand before
+        # widening this condition.
+        low = text.lower()
+        if not self._could_hold_a_token(low):
+            return []
+        lines = text.splitlines()
+        suppressed = {n for n, line in enumerate(lines, 1)
+                      if "content-guard: ok" in line}
+        hits: list[tuple[int, str, str]] = []
+        seen: set[tuple[int, str]] = set()
+
+        for n, line in enumerate(lines, 1):
+            if n in suppressed:
+                continue
+            for m in self._pattern.finditer(line):
+                cat = self.tokens.get(m.group(0).lower(), "entity")
+                hits.append((n, m.group(0), cat))
+                seen.add((n, m.group(0).lower()))
+
+        if self._loose_pattern is not None:
+            hits.extend(self._scan_wrapped(lines, suppressed, seen))
+        return hits
+
+    def _scan_wrapped(self, lines, suppressed, seen):
+        """Multi-word hits the line-scoped pass could not reach.
+
+        Scanned paragraph by paragraph, never across a blank line: two
+        paragraphs whose last and first words happen to spell a name are not an
+        occurrence of it, and a guard that says otherwise gets suppressed
+        everywhere, which costs more than it catches.
+        """
+        found = []
+        start = 0
+        while start < len(lines):
+            if not lines[start].strip():
+                start += 1
+                continue
+            end = start
+            while end < len(lines) and lines[end].strip():
+                end += 1
+            block = "\n".join(lines[start:end])
+            for m in self._loose_pattern.finditer(block):
+                lineno = start + 1 + block.count("\n", 0, m.start())
+                span_lines = range(lineno, lineno + m.group(0).count("\n") + 1)
+                if any(ln in suppressed for ln in span_lines):
+                    continue
+                flat = " ".join(m.group(0).split()).lower()
+                if (lineno, flat) in seen:
+                    continue
+                cat = self.tokens.get(flat, "entity")
+                found.append((lineno, m.group(0), cat))
+            start = end
+        return found
+
+
+def _add(tokens: dict[str, str], value: str, category: str) -> None:
+    """Add a normalized token unless it is allowed or too short/common."""
+    if not value:
+        return
+    v = value.strip().lower()
+    if not v or v in ALLOW_IDENTITY or v in ALLOW_FICTIONAL or v in STOPWORDS:
+        return
+    # bare single word: length + stopword gate (multi-word/email/slug exempt)
+    if " " not in v and "@" not in v and "-" not in v and "." not in v:
+        # `not v.isalpha()` dropped every handle carrying an underscore or a
+        # digit -- 19 of 58 on the live roster -- so the content gate could not
+        # detect them in an engine-routed file, which is the leak class the
+        # roster harvest exists to close. The gate is meant to refuse numeric
+        # noise and bare years, not identifiers, so what it needs is "long
+        # enough, and contains a letter". An explicit `v.isdigit()` test stood
+        # beside this one and was proven redundant by mutation: a pure-digit
+        # string has no letter either.
+        if len(v) < _MIN_WORD or not any(c.isalpha() for c in v):
+            return
+    tokens[v] = category
+
+
+class HarvestUnreadable(ValueError):
+    """A source file the harvest needs could not be decoded as UTF-8.
+
+    Raised in place of the bare ``UnicodeDecodeError`` so the message names the
+    PATH. That exception carries a codec, a byte and an offset and no filename
+    at all, and `build_denylist` prints only ``type(exc).__name__: exc`` before
+    `push-all` refuses the push. MEASURED 2026-09-01 on three config files, the
+    middle one carrying a lone 0xe9: the harvest aborted, the operator was told
+    to check `config/content-denylist.yaml`, and the file that actually broke
+    was never named anywhere.
+    """
+
+
+def _read_source(path: Path) -> str:
+    """Read a harvest source strictly, and name the file when it will not decode.
+
+    Deliberately STRICT, not ``errors="replace"``. These files hold the real
+    names the wall matches on, so replacing a bad byte with U+FFFD would harvest
+    a garbled token that matches nothing and let the push proceed believing the
+    wall was armed. Failing closed with a named file is the safe direction; a
+    quietly weakened denylist is not.
+
+    `_harvest_contact_frontmatter` keeps its own ``errors="replace"`` read, and
+    that stays correct: it scans note BODIES for e-mail addresses, which are
+    ASCII, so a replaced byte elsewhere in the note cannot hide one.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise HarvestUnreadable(
+            f"{path} is not valid UTF-8 ({exc.reason} at byte {exc.start}); "
+            f"the real-entity denylist cannot be built from it") from exc
+
+
+def _contact_records(data_root: Path) -> list[Path]:
+    """Every CRM contact record, on BOTH sides of the HEADING OS 2 move.
+
+    The union of two answers, not one of them, and the union is the point.
+
+    `crm/contacts/` moves ONE HUNDRED PER CENT into `status/entity/`. Until  # leak-guard: ok (history: the pre-move spelling of the move it describes)
+    2026-09-16 this harvest was a plain `glob` of the legacy directory with
+    `if not contacts.is_dir(): return` in front of it, so the day the move
+    lands the denylist loses all 195 person slugs, `degraded` stays False, and
+    `scripts/push-all.py` scans the PUBLIC engine tree with no person token in
+    it and prints clean. The comment three functions down already says what
+    that costs: it is the 2026-08-23 hole, closed once for a present-but-
+    unreadable roster and left open for an absent one.
+
+    Why not the manifest's own record list. `read_records` answers from the
+    manifest, and the manifest is a SNAPSHOT: a contact written after it was
+    generated is in no row, and MEASURED 2026-09-15 on the rehearsal there were
+    51 such files under one kind. A leak wall that loses a token for the newest
+    counterparty is the wall failing at exactly the moment it matters. So the
+    DIRECTORIES are asked for, through the front door's `data_read`, and walked:
+    a directory holds every file written into it, whatever the snapshot says.
+
+    Why the walk is ONE glob, the top level. It was two until HOS-234 part 8:
+    the top level, symlinks included, and below it every regular file that is
+    not a link, as the move's seam listed them. The cards sit flat, and the C3
+    move puts the address book, the people indexes and the CRM's audit output
+    in subdirectories of this same directory: the recursive half would have
+    harvested every one of those stems as a person token. On a tree with no
+    manifest `data_read` answers the legacy directory, which is flat too.
+    """
+    from scripts.utils.data_path import DataPathError, data_read
+
+    found: dict[Path, None] = {}
+    # No local `except`, by the operator's decision of 2026-09-25 that this wall
+    # fails CLOSED when it cannot find its data. A `DataPathError` here (a
+    # registry that does not name the address, a tree that migrated and lost its
+    # manifest) reaches `build_denylist`, which sets `degraded`, and
+    # `egress_proof` refuses on it. Catching it and harvesting nothing left
+    # `degraded` False over an empty contact set.
+    #
+    # HOS-240, 2026-10-13: no name resolves through the family manifest any
+    # more, so "a tree that migrated and lost its manifest" can no longer be
+    # the refusal. Its successor is refused here: the registry names a contact
+    # directory and none of its answers exists on a tree that does exist, so
+    # the cards are somewhere this wall cannot see. Harvesting nothing there
+    # would be `degraded` False over an empty contact set again.
+    # An EMPTY tree is a healthy empty harvest, never this refusal: nothing is
+    # anywhere, so nothing is out of sight.
+    directories = tuple(data_read("crm-contacts", data_root=data_root))
+    holds_data = any(not p.name.startswith(".") for p in Path(data_root).iterdir())
+    if holds_data and not any(d.is_dir() for d in directories):
+        raise DataPathError(
+            f"crm-contacts resolves to {', '.join(map(str, directories)) or 'nothing'}, "
+            f"and no such directory exists under {data_root}; the contact cards "
+            f"are not where the registry says")
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for md in directory.glob("*.md"):
+            found[md] = None
+    return sorted(found)
+
+
+def _harvest_person_slugs(data_root: Path, tokens: dict[str, str], strict: bool) -> None:
+    for md in _contact_records(data_root):
+        slug = md.stem  # e.g. "jane-doe"
+        _add(tokens, slug, "crm-slug")
+        # The space-separated form is what prose contains. Emitting only the slug
+        # is the 2026-08-23 hole: a live counterparty's name sat in a tracked
+        # engine test and every layer read the tree as clean. A multi-word phrase
+        # carries the same no-collision guarantee as the organisation phrase form
+        # harvested below, so it is safe outside strict mode; a one-word slug is
+        # not, and stays behind it.
+        if "-" in slug:
+            _add(tokens, slug.replace("-", " "), "crm-name")
+        if strict:  # bare name-words are noisy (collide with English) -> opt-in only
+            # The FIRST component is the given name and is always kept, by
+            # the 2026-08-24 decision that a person's bare given name stays a
+            # token even when it is ordinary English. A LATER component that is
+            # ordinary English is skipped: a slug pairs a person with an
+            # employer, and the employer half decomposes into words like
+            # "solutions" that match every proposal template in the tree.
+            # MEASURED 2026-09-13 on the live overlay: 195 slugs; 62 of the 187
+            # distinct first words are ordinary English (given names) and
+            # produced no finding; 34 of the 212 later words are ordinary
+            # English and produced 25 of the 26 findings a strict sweep
+            # printed, 24 of them the one word "solutions" in prose, a CSV and
+            # two golden DOCX fixtures. That noise is why nobody ran
+            # `--strict`, and not running it is how a real given name sat in a
+            # fixture for weeks. The full slug and its spaced form still guard
+            # the person above whatever this loop drops.
+            for position, word in enumerate(slug.split("-")):
+                if position and is_ordinary_english(word):
+                    continue
+                _add(tokens, word, "crm-name")
+
+
+def _org_token_forms(value: str) -> list[str]:
+    """Return the denylist forms of one organisation name, most specific first.
+
+    ``"Krellide Technologies"`` -> ``["krellide technologies", "krellide"]``;
+    ``"Krellide (Somewhere)"`` -> ``["krellide"]``.
+
+    A BARE word is emitted only when stripping legal forms and generic industry
+    words leaves exactly one word AND that word opened the name. Everything else
+    contributes its multi-word phrase only.
+
+    That rule was written as the thing that keeps ordinary English out of the
+    gate, and on 2026-09-04 it was measured failing at exactly that. Two CRM
+    rows landing that afternoon carried employers of the shape ``<ordinary
+    English word> Technologies`` and ``<ordinary English word> Solutions``. Both
+    tails are in ``_ORG_GENERIC``, so each name reduced to its opening word and
+    donated it bare. Within the hour the gate was flagging 128 lines of ordinary
+    engine prose (42 tracked files holding one word, 27 the other) and every
+    push on the machine was blocked. A third token of the same shape had been
+    living behind five inline ``content-guard: ok`` annotations, which is what
+    the defect looks like when it is small enough to work around.
+
+    The rule below is necessary and it is not sufficient: what makes a head-word
+    safe to emit is not how many words the name had, it is whether the word
+    means something on its own. ``_apply_ordinary_english_floor`` decides that
+    from a DERIVED vocabulary rather than a curated one, because these two words
+    could not have been predicted and the next pair cannot be either. The
+    alternative was two more entries in ``STOPWORDS``, and a hand-maintained
+    security list falls behind in silence.
+
+    Measured over the engine tree, the looser "first word unless generic" rule
+    produced 762
+    findings, every one of them noise: real organisations whose names open with
+    an ordinary English word each donated that word as a token, and the gate then
+    fired on routing tests, policy prose and market-data fixtures that had
+    nothing to do with anybody. Under this rule such a name keeps only its phrase
+    form and the tree is clean, while a one-word organisation, or a compound with
+    a generic tail, still yields the bare name that prose actually contains --
+    which is the whole gap this harvest closes.
+    """
+    forms: list[str] = []
+    for alt in re.sub(r"\([^)]*\)", " ", value).replace('"', " ").split("/"):
+        words = [w.strip(".,&'’“”").lower() for w in alt.split()]
+        words = [w for w in words if w]
+        if not words:
+            continue
+        core = [w for w in words if w not in _ORG_GENERIC]
+        for phrase in (" ".join(words), " ".join(core)):
+            if phrase and len(phrase.split()) > 1:
+                forms.append(phrase)
+        if core == words[:1]:
+            forms.append(core[0])
+    return forms
+
+
+def _harvest_contact_frontmatter(data_root: Path, tokens: dict[str, str]) -> None:
+    """Harvest organisation names and e-mail addresses from CRM contact frontmatter.
+
+    High precision by construction: both are structured fields, not prose, and
+    every emitted form passes the same allowlist/stopword/length gates as every
+    other token. See the module docstring for why slug decomposition and thread
+    titles were rejected as sources.
+
+    Contact addresses are harvested here because the config-file e-mail regex saw
+    only ``config/*.json|yaml``, so a person's own address -- the highest-value
+    thing a contact record holds -- was never a token at all.
+    """
+    records = _contact_records(data_root)
+    if not records:
+        return
+    unreadable: list[str] = []
+    for md in records:
+        try:
+            text = md.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            continue  # globbed then removed; absence is not a failed harvest
+        # The fences come from the shared splitter. `\A---\n(.*?)\n---` sat
+        # here, so a contact record whose fence carries a trailing space or a
+        # tab was read as having NO frontmatter and `continue` dropped it.
+        #
+        # MEASURED 2026-08-29 on a synthetic contact carrying an e-mail and a
+        # `company:`: the canonical fence yielded 5 tokens and the same record
+        # with `--- ` yielded 2 (the slug forms, which come from the FILENAME in
+        # a different harvester). The person's own address and their employer,
+        # the two highest-value tokens a contact holds, were absent from the
+        # denylist, so the content-leak wall would scan public engine prose
+        # naming them and print clean. A security control failing open on a
+        # space, and silently: nothing counted the skip.
+        #
+        # The skip is now counted and raised. `build_denylist` catches it, marks
+        # the list `degraded`, and `egress_proof` refuses on degraded, which is
+        # the fail-CLOSED direction this file's own comments demand elsewhere.
+        block, _body, kind = split_frontmatter(text)
+        if block is None or kind != FM_OK:
+            unreadable.append(md.name)
+            continue
+        for email in _EMAIL_RE.findall(block):
+            _add(tokens, email, "crm-email")
+        for line in block.splitlines():
+            key, sep, raw = line.partition(":")
+            if not sep or key.strip() not in _ORG_FIELDS:
+                continue
+            value = raw.strip().strip("\"'")
+            # Placeholder check runs on the parenthetical-free form, so
+            # "Independent (Freelance)" is recognised as "no employer".
+            if re.sub(r"\([^)]*\)", " ", value).strip().lower() in _ORG_PLACEHOLDERS:
+                continue
+            for form in _org_token_forms(value):
+                _add(tokens, form, "crm-org")
+    if unreadable:
+        # Printed, NOT raised, and the difference was measured rather than
+        # guessed. `build_denylist` catches a harvester exception, sets
+        # `degraded`, and stops: the four harvesters after this one never run.
+        # `scripts/content-guard.py` then reads `degraded` and SKIPS the scan
+        # with exit 0. So raising here would trade one contact's two tokens for
+        # switching the whole content-leak layer off, which is the exact
+        # fail-open this file's `build_denylist` comment already records as a
+        # past defect.
+        #
+        # A record reaching this line after the splitter fix has an opening
+        # fence with no close, or no fence at all. Say which files, so the
+        # operator can fix the record instead of the gate.
+        print(f"content-denylist: {len(unreadable)} CRM record(s) have no "
+              f"readable frontmatter; their e-mail and employer are NOT "
+              f"denylist tokens: {', '.join(sorted(unreadable)[:5])}"
+              + (" ..." if len(unreadable) > 5 else ""), file=sys.stderr)
+
+
+# The executive-roster harvest was removed on 2026-09-25 (HOS-130); its tokens
+# moved into the curated denylist's `tokens` key, read by `_harvest_curated`.
+
+
+def _data_config_files(data_root: Path) -> dict[str, Path]:
+    """Every data-config file, keyed by NAME: the registry name `data-config`
+    unioned with the legacy `<data>/config/`.
+
+    Keyed by name because both callers want one specific file as well as the
+    sweep. The union stays (reviewed 2026-10-16): a tree laid out before the
+    move, the shape of every throwaway overlay the gate is tested on, keeps its
+    data-configs and its curated denylist in `config/`, and dropping that half
+    took them out of the token set. On the operator's overlay that directory
+    holds only the registry's own files, which carry no token: MEASURED
+    2026-10-16, the token set is identical with and without them.
+    """
+    legacy = data_root / "config"
+    found: dict[str, Path] = {}
+    from scripts.utils.data_path import DataPathError, data_path
+    try:
+        configs = data_path("data-config", data_root=data_root)
+        if configs.is_dir():
+            for path in configs.iterdir():
+                if path.is_file():
+                    found.setdefault(path.name, path)
+    except DataPathError as exc:
+        print(f"content-denylist: the registry name 'data-config' did not "
+              f"resolve ({type(exc).__name__}: {exc}); the legacy directory "
+              f"answered alone.", file=sys.stderr)
+    if legacy.is_dir():
+        for f in legacy.iterdir():
+            if f.is_file():
+                found[f.name] = f      # legacy wins: it is exact and present
+    return found
+
+
+def _harvest_config(data_root: Path, tokens: dict[str, str], strict: bool) -> None:
+    cfg_files = _data_config_files(data_root)
+    if not cfg_files:
+        return
+    # E-mails from the raw text of every data-config; Telegram-ID-shaped ints
+    # from the team-bot/roster ones ONLY, which is what the `if` below says
+    # and what this comment used to contradict. An id sitting in some other
+    # data-config is not a denylist token.
+    for f in [p for p in cfg_files.values()
+              if p.suffix in (".json", ".yaml", ".yml")]:
+        try:
+            raw = _read_source(f)
+        except FileNotFoundError:
+            continue  # globbed then removed; absence is not a failed harvest
+        for email in _EMAIL_RE.findall(raw):
+            _add(tokens, email, "email")
+        if TEAM_BOT_MARK in f.name or "roster" in f.name:
+            for num in _ID_RE.findall(raw):
+                tokens[num] = "telegram-id"  # ids bypass _add length/alpha gate
+    # Cycle speakers: `SCHEDULE_FILE` is {"weeks": [{"mon": [name, ...],
+    # "wed": [...]}]} -- the speakers are PLAIN STRINGS in two lists, not member
+    # dicts. `_iter_member_dicts` was pointed here and yielded nothing at all, so
+    # the `handle` / `handle-name` categories were empty on the live overlay and
+    # this whole block was a no-op that read as coverage. The member dicts it was
+    # written for live in the team bot's STATE roster, harvested separately below.
+    fs = cfg_files.get(SCHEDULE_FILE)
+    if fs is not None and fs.is_file():
+        # Present and unreadable is a failed harvest, not an absent one: see
+        # _harvest_team_roster. `data = None` here meant a corrupt schedule
+        # removed every speaker name from the wall's token set in silence.
+        data = json.loads(_read_source(fs))
+        for week in (data or {}).get("weeks", []) if isinstance(data, dict) else []:
+            if not isinstance(week, dict):
+                continue
+            for day in ("mon", "wed"):
+                for speaker in (week.get(day) or []):
+                    if not isinstance(speaker, str):
+                        continue
+                    _add(tokens, speaker, "schedule-speaker")
+                    if strict:
+                        for word in speaker.replace("-", " ").split():
+                            _add(tokens, word, "schedule-speaker")
+
+
+def _tribe_roster(data_root: Path) -> Path | None:
+    """`tribe-roster.json` in the registry directory `team-roster-state`.
+
+    It is the Telegram handles and member names of the whole team, so losing
+    it silently is the most expensive single absence in this module.
+    """
+    from scripts.utils.data_path import data_read
+
+    # No local `except`: fails closed, as `_contact_records` says why. Until
+    # 2026-09-25 this took the legacy file first and then the FIRST file of that
+    # name anywhere in the kind, which on a migrated tree was an archived copy
+    # of the roster rather than the current one.
+    for directory in data_read("team-roster-state", data_root=data_root):
+        roster = directory / "tribe-roster.json"
+        if roster.is_file():
+            return roster
+    return None
+
+
+def _harvest_team_roster(data_root: Path, tokens: dict[str, str],
+                             strict: bool) -> None:
+    """Team identities from the team bot's state roster: handle, name, Telegram id.
+
+    The membership source of truth, and until 2026-08-25 no layer read it. The
+    six structural layers check WHERE a file routes; the content gate checked
+    WHAT is inside it but harvested people only from `crm/contacts/` and  # leak-guard: ok (history: what the gate harvested until 2026-08-25)
+    `admin/executives.json`. A team member who is neither a CRM contact nor an
+    executive was therefore unguarded, and the block that was supposed to cover
+    them read the wrong file (see `_harvest_config`). Measured that day: the
+    `handle`, `handle-name` and `telegram-id` categories held ZERO tokens against
+    the live roster, and two real handles plus a real full name sat in a
+    tracked engine test while the gate reported the surface clean.
+
+    Bare name-words are in the DEFAULT gate since 2026-09-13. They sat behind
+    `strict` on the argument that the team roster is far larger than the exec
+    roster and its given names would collide with ordinary English. That was
+    an argument, and the measurement contradicts it. MEASURED 2026-09-13 on the
+    live overlay: only a small fraction of the roster's bare words were ordinary
+    English (all given names), and scanning the whole engine surface with only
+    those words as tokens hit ONE token in ONE file, a real member's given name
+    used as a test fixture default, which is the 2026-08-24 recurrence class
+    exactly. The noisy source is the CRM slug decomposition (several times the
+    roster's word count, `security` alone behind most strict findings), and that
+    one stays opt-in. Precision is a
+    property of the SOURCE, not of the flag: a roster of real colleagues is a
+    precise source, and a precise source belongs in the run that gates a push,
+    not behind a flag the standing instruction asks a human to remember.
+    """
+    p = _tribe_roster(data_root)
+    if p is None:
+        return          # a public clone has no overlay; absence is normal
+    # Present and unreadable is a failed harvest, not an absent one: see
+    # _contact_records. The Telegram handles and member names of the whole
+    # team come from this one file.
+    roster = json.loads(_read_source(p))
+    for handle, member in _iter_member_dicts(roster):
+        _add(tokens, handle, "handle")
+        name = member.get("name") if isinstance(member, dict) else None
+        if name:
+            _add(tokens, str(name), "handle-name")
+            # A bare word never relabels a token another harvest already holds:
+            # a member whose family name is also their handle keeps `handle`.
+            # A test read that label back; the 2026-09-21 test-suite split took
+            # it, so the ordering here is the only thing holding it.
+            for word in str(name).replace("-", " ").split():
+                if word.strip().lower() not in tokens:
+                    _add(tokens, word, "handle-name")
+        uid = member.get("telegram_user_id") if isinstance(member, dict) else None
+        # ids bypass the _add length/alpha gate, exactly as _harvest_config does.
+        #
+        # A STRING id counts too. This asked `isinstance(uid, int)` alone, and a
+        # roster carrying `"telegram_user_id": "123456789"` - the ordinary shape
+        # once ids are round-tripped through a JavaScript toolchain, exported,
+        # or hand-edited - was dropped with no error and `degraded` left False,
+        # so the gate reported the tree clean over an id it never held.
+        # MEASURED 2026-08-30 on a two-member roster, one string id and one
+        # numeric: the numeric id landed in `tokens` and `scan_text` caught it,
+        # the string id produced no token and `scan_text` returned []. The
+        # asymmetry was already visible in the file: `_harvest_config` finds ids
+        # with `_ID_RE` over raw text, so it catches both forms. Same 7-digit
+        # floor as `_ID_RE`, so a short numeric field cannot become a token that
+        # matches every year and street number in the corpus.
+        if isinstance(uid, bool):
+            uid = None
+        elif isinstance(uid, str):
+            stripped = uid.strip()
+            uid = int(stripped) if _ID_RE.fullmatch(stripped) else None
+        if isinstance(uid, int):
+            tokens[str(uid)] = "telegram-id"
+
+
+def _iter_member_dicts(data):
+    """Yield (key, value) for dict entries whose value looks like a roster member."""
+    stack = [data]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if isinstance(v, dict) and ("name" in v or "telegram_user_id" in v):
+                    yield k, v
+                else:
+                    stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+
+
+# The keys `_harvest_curated` reads from `config/content-denylist.yaml`. The
+# last was added 2026-09-13: `personal` holds the operator's private-life
+# entities (a bank, an insurer, a property, the places around them). They are
+# curated rather than harvested because the only files that carry them are
+# memory records, which are prose, and prose is the source every harvest here
+# refuses (see "why not slug decomposition" above). The gate had passed six such
+# names in an engine file on every commit that carried them, because no source
+# it read had ever held them.
+CURATED_CATEGORIES = ("companies", "events", "codenames", "competitors",
+                      "tokens", "personal")
+
+# Where the overlay's own filenames are harvested from: registry names, never
+# directories under the data root, each spelled at its call in
+# `_harvest_record_names` so the leak guard reads it. The thread homes are the
+# registry group `business-threads` (every account's threads included) plus
+# `threads-personal` where the registry names it. The `crm-contacts` records
+# are deliberately absent: `_harvest_person_slugs` already emits every contact
+# slug as `crm-slug`.
+
+# The index is not a record, and its name is public engine vocabulary.
+RECORD_NAME_EXCLUDED = frozenset({"MEMORY.md"})
+
+
+def _harvest_record_names(data_root: Path, tokens: dict[str, str]) -> None:
+    """The overlay's own filenames, as bare lowercase stems, derived at scan time.
+
+    A record name is a claim about the operator, and a real one in engine code
+    publishes that the record exists and what it is about. The list is never
+    written down anywhere: it is the directory listing, read through the data
+    root at the moment of the check, so the gate and the thing it guards are the
+    same set by construction. A stem already harvested under another category
+    (a contact slug) keeps that category.
+
+    Hyphenated stems only; see the module docstring for why and for the
+    measurement that makes the rule free today.
+
+    Every source is a registry name. Until 2026-10-16 the threads were read
+    from `<data root>/threads`, an address the C3 move emptied, so no thread
+    name reached the wall and nothing said so (engine audit F-5.3.1). A tree
+    that holds data and has no thread home on disk now raises, which
+    `build_denylist` turns into `degraded` and the push wall into a refusal.
+    """
+    from scripts.utils.data_homes import homes
+    from scripts.utils.data_path import DataPathError, data_path, known_names
+
+    thread_homes = list(homes("business-threads", data_root=data_root,
+                              existing=False))
+    if "threads-personal" in known_names(data_root=data_root):
+        thread_homes.append(data_path("threads-personal", data_root=data_root))
+    holds_data = any(not p.name.startswith(".") for p in data_root.iterdir())
+    if holds_data and not any(home.is_dir() for home in thread_homes):
+        raise DataPathError(
+            f"the thread homes (business-threads) resolve to "
+            f"{', '.join(map(str, thread_homes)) or 'nothing'}, and none exists "
+            f"under {data_root}; no thread name can reach the denylist")
+    sources = [
+        (data_path("auto-memory", data_root=data_root), "*.md"),
+        # The Odin brain's principles, positions, episodes and sources: a
+        # private principle's slug sat in an engine smoke run (F-5.5.20).
+        (data_path("odin-brain", data_root=data_root), "**/*.md"),
+    ]
+    sources += [(home, "**/*.md") for home in thread_homes]
+    for base, pattern in sources:
+        if not base.is_dir():
+            continue
+        for path in sorted(base.glob(pattern)):
+            if not path.is_file() or path.name in RECORD_NAME_EXCLUDED:
+                continue
+            stem = path.stem.strip().lower()
+            if "-" not in stem:
+                continue
+            if stem in ALLOW_IDENTITY or stem in ALLOW_FICTIONAL:
+                continue
+            if stem not in tokens:
+                tokens[stem] = "record-name"
+
+
+def _harvest_curated(data_root: Path, tokens: dict[str, str], curated_path: Path | None) -> None:
+    """Load the CEO-maintained curated denylist (non-person entities).
+
+    Resolved through `_data_config_files` since 2026-09-16: the file moves with
+    the rest of `config/` into the `data-config` directory, and the literal join that
+    stood here would have taken the operator's OWN curated list out of the wall
+    on the day of the move while it still printed clean. An explicit
+    `curated_path` from a caller still wins over both sides.
+    """
+    path = curated_path or _data_config_files(data_root).get("content-denylist.yaml")
+    if path is None or not path.is_file():
+        return          # a public clone has none; absence is normal
+    # No local `except` here on purpose. Swallowing a parse error and returning
+    # left `degraded` False, so the gate ran WITHOUT the operator's curated
+    # companies, events and codenames and still reported the tree clean. A
+    # partial wall that looks whole is worse than one that says it is blind, so
+    # the failure propagates to build_denylist, which sets degraded.
+    import yaml
+    data = yaml.safe_load(_read_source(path)) or {}
+    for category in CURATED_CATEGORIES:
+        for val in (data.get(category) or []):
+            if val:
+                # curated tokens bypass the length/stopword gate (CEO chose them),
+                # but still respect the allowlist.
+                v = str(val).strip().lower()
+                if v and v not in ALLOW_IDENTITY and v not in ALLOW_FICTIONAL:
+                    # BOTH Unicode forms. The regex compares code points, so a
+                    # composed "ó" (NFC) in the list does not match the
+                    # decomposed "o" + U+0301 (NFD) a macOS paste or a
+                    # Portuguese source produces. MEASURED 2026-09-13: an NFC
+                    # token found nothing in NFD text. A token without accents
+                    # normalises to itself and the set collapses to one entry.
+                    for form in {v, unicodedata.normalize("NFC", v),
+                                 unicodedata.normalize("NFD", v)}:
+                        tokens[form] = f"curated:{category}"
+
+
+def build_denylist(data_root: Path | None, curated_path: Path | None = None,
+                   strict: bool = False) -> Denylist:
+    """Build the real-entity denylist from the private DATA overlay.
+
+    Returns an EMPTY degraded Denylist when the overlay is absent, so the gate
+    no-ops on a public clone instead of failing. A harvest that FAILS part-way
+    is also degraded but keeps what it collected: `degraded` is the signal, not
+    the token count, and `egress_proof` refuses on it either way. The line
+    "degraded (empty) ... when the overlay is absent or unreadable" used to
+    cover both cases and described only the first.
+
+    strict=False (default, used by the hard push/commit gate): high-precision
+    tokens only -- full slugs, full names, organisation names from CRM
+    frontmatter, handles, e-mails, IDs, curated tokens.
+    strict=True (opt-in deep audit): additionally harvests bare name-words split
+    from person slugs/names. Those collide with ordinary English, so they are kept
+    out of the default gate to preserve its trustworthiness.
+    """
+    dl = Denylist()
+    if data_root is None or not Path(data_root).is_dir():
+        dl.degraded = True
+        dl._compile()
+        return dl
+    data_root = Path(data_root)
+    try:
+        _harvest_person_slugs(data_root, dl.tokens, strict)
+        _harvest_contact_frontmatter(data_root, dl.tokens)
+        _harvest_config(data_root, dl.tokens, strict)
+        _harvest_team_roster(data_root, dl.tokens, strict)
+        _harvest_record_names(data_root, dl.tokens)
+        _harvest_curated(data_root, dl.tokens, curated_path)
+    except Exception as exc:  # noqa: BLE001 - the gate degrades, never wedges a push
+        # Fail-open on a harvest error; the structural layers still hold. But SAY
+        # SO. This was a bare `except Exception` that bound nothing and logged
+        # nothing, and the caller reads `degraded` as one specific cause:
+        # `scripts/content-guard.py` prints "denylist unavailable (no DATA
+        # overlay); skipped." and exits 0. So a malformed
+        # `config/content-denylist.yaml` on the operator's own machine switched
+        # off the only content-leak layer while blaming an absent overlay.
+        print(f"content-denylist: harvest failed ({type(exc).__name__}: {exc}); "
+              f"the denylist is INCOMPLETE and the content gate will skip.",
+              file=sys.stderr)
+        # The tokens harvested BEFORE the failure are kept on purpose. Clearing
+        # them was tried and reverted: `egress_proof` already refuses on
+        # `degraded` whatever the token count, and a test pinned that state
+        # deliberately until the 2026-09-21 test-suite split. The refusal is
+        # still in `egress_proof`; read it there rather than trusting this.
+        # A partial list matches more real entities than an empty one, so
+        # emptying it would only make the gate weaker.
+        dl.degraded = True
+    # Loud, not degraded: an unclassified token is KEPT (the floor withholds
+    # from `_FRAGMENT_CATEGORIES` only), so the gate stays whole; the line asks
+    # for the category to be put in one of the three sets.
+    unclassified = _unclassified_categories(dl.tokens)
+    if unclassified:
+        print(f"content-denylist: unclassified token categor"
+              f"{'y' if len(unclassified) == 1 else 'ies'} "
+              f"{', '.join(sorted(unclassified))}; add each to one of the three "
+              f"category sets in scripts/utils/content_denylist.py.",
+              file=sys.stderr)
+    # After every harvest, and outside the try: the floor only ever narrows a
+    # token that a longer form still covers, so a part-way harvest gets it too.
+    dl.withheld = _apply_ordinary_english_floor(dl.tokens)
+    dl._compile()
+    return dl

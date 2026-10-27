@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Versioned pre-push gate. Installed into .git/hooks/pre-push by
+# `python scripts/install-git-hooks.py`. Runs the push-path content walls and
+# the regression test gate; a non-zero result blocks the push. Never bypass
+# with --no-verify.
+#
+# This hook OCCUPIES the slot git-lfs installs into, so it still hands off to
+# `git lfs pre-push` at the end. The engine tracks no LFS object today
+# (`git lfs ls-files` printed nothing, 2026-10-16); the handoff stays so that a
+# file added under a `filter=lfs` rule in .gitattributes later never pushes as a
+# pointer with no object behind it.
+#
+# STDIN IS READ ONCE, HERE, AND REPLAYED TO BOTH CONSUMERS. Git writes one line
+# per ref, `<local ref> <local sha> <remote ref> <remote sha>`; the test gate
+# reads them to run only the tests this push can reach (since 2026-09-04), and
+# git-lfs reads them to pick the objects to upload. A pipe is consumed by its
+# first reader, so `$(cat)` takes the lines once and `printf` feeds each
+# consumer its own copy.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+
+# `$(cat)` strips every trailing newline; `printf '%s\n'` puts exactly one back,
+# which is the shape git wrote. Empty stays empty rather than becoming a blank
+# line, so neither consumer is handed a ref line that is not there.
+REFS="$(cat)"
+replay_refs() {
+    if [ -n "$REFS" ]; then
+        printf '%s\n' "$REFS"
+    fi
+}
+if [ -x "$ROOT/.venv/bin/python" ]; then
+    PY="$ROOT/.venv/bin/python"
+else
+    # Loud, not silent: a bare `python3` can run the suite green without the
+    # pinned dependencies (2026-08-23; see .githooks/pre-push-data).
+    PY="python3"
+    echo "engine test gate: no venv at '$ROOT/.venv' - falling back to" \
+         "$(command -v python3 || echo python3), which is NOT the pinned" \
+         "toolchain. Re-arm with: uv sync --all-extras --group dev" >&2
+fi
+# The push-path content walls first (engine audit A-1.1, 2026-10-16): a plain
+# `git push` runs the secret, routing and real-entity scans push-all.py runs
+# before its commit, and push-all's own push is not scanned twice. Under
+# `set -e` a refusal ends the hook here, before the suite.
+replay_refs | "$PY" "$ROOT/scripts/push-all.py" --pre-push-scan engine --repo "$ROOT"
+replay_refs | "$PY" "$ROOT/scripts/run-tests.py" --pre-push
+
+# Hand off to git-lfs, which owned this hook slot before the gate did. Git calls a
+# pre-push hook with <remote> <url>; `git lfs pre-push` needs them, so a call with
+# no arguments is not a real push and there is nothing to hand over. git-lfs reads
+# the SAME ref lines the gate just read, from the replay above, and decides which
+# objects to upload from them. Drop the replay and a newly added .png, .pdf,
+# .pptx or .docx pushes as a POINTER with no object behind it.
+if [ "$#" -gt 0 ] && command -v git-lfs >/dev/null 2>&1; then
+    replay_refs | git lfs pre-push "$@"
+    exit $?
+fi
+exit 0

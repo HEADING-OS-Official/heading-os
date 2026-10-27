@@ -1,0 +1,357 @@
+"""Embed TrueType fonts into a DOCX file per ECMA-376 Part 1, 17.8.1.
+
+Word obfuscates embedded fonts: the first 32 bytes of the font file are XORed
+with a 16-byte key derived from a GUID. The GUID is stored in
+``word/fontTable.xml`` as the ``w:fontKey`` attribute.
+
+GUID-to-key byte order: the GUID string ``{AABBCCDD-EEFF-0011-2233-445566778899}``
+is parsed to 16 bytes in string order, then REVERSED. That reversed sequence is
+the XOR key applied across the first 32 bytes (key wraps after 16).
+
+This module patches the .docx zip *as strings* — not via XML parsing — to
+preserve every original namespace prefix exactly. Round-tripping through
+ElementTree mangles ``xmlns:mc`` to ``xmlns:ns1`` and breaks Word's strict
+schema check, surfaced as the "unreadable content" recovery dialog.
+
+Public API: :func:`embed_fonts` and :class:`FontWeights`.
+"""
+from __future__ import annotations
+
+import re
+import shutil
+import uuid
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+
+FONT_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font"
+)
+OBFUSCATED_FONT_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.obfuscatedFont"
+)
+
+
+@dataclass
+class FontWeights:
+    """File paths for a font family's weight variants. Each is a TTF path
+    or ``None``. Only ``regular`` is required."""
+    regular: Path
+    bold: Path | None = None
+    italic: Path | None = None
+    bold_italic: Path | None = None
+
+
+def _obfuscate(font_bytes: bytes, guid_str: str) -> bytes:
+    """ECMA-376 Part 1, 17.8.1 obfuscation. XOR is symmetric: same function
+    de-obfuscates."""
+    cleaned = guid_str.replace("{", "").replace("}", "").replace("-", "")
+    raw = bytes.fromhex(cleaned)
+    if len(raw) != 16:
+        raise ValueError(f"GUID must yield 16 bytes, got {len(raw)}")
+    key = raw[::-1]
+    out = bytearray(font_bytes)
+    for i in range(min(32, len(out))):
+        out[i] ^= key[i % 16]
+    return bytes(out)
+
+
+def _patch_font_table(xml: str, embed_plan: list) -> str:
+    """Append a ``<w:font name="...">`` block per family before ``</w:fonts>``,
+    after REMOVING any pre-existing block for that family.
+
+    The docstring here used to say the opposite - that duplicates are left for
+    Word to resolve, "last entry wins in practice". The code has deduplicated
+    since it was written, and nobody guarantees last-entry-wins, so a reader
+    who trusted the docstring could delete the removal as redundant. The code
+    is the contract; this sentence now matches it.
+    """
+    by_family: dict[str, list] = {}
+    for family, weight_attr, guid, _, rel_id, _ in embed_plan:
+        by_family.setdefault(family, []).append((weight_attr, rel_id, guid))
+
+    inserts = []
+    for family, entries in by_family.items():
+        # Remove any pre-existing <w:font name="<family>"> block so Word does
+        # not see duplicate declarations.
+        #
+        # `w:name` is matched wherever it sits in the opening tag, not as the
+        # first-and-only attribute. The old pattern was
+        # `<w:font\s+w:name="X"\s*>`, which requires the tag to close straight
+        # after the name. A producer that writes any second attribute -
+        # `<w:font w:name="Bond Sans" w:charset="00">`, or a panose before the
+        # name - slid past it: the removal silently no-opped and the fresh
+        # block was appended anyway, leaving the duplicate declaration this
+        # removal exists to prevent. Measured 2026-08-30: one entry in, two
+        # out. The `/>` alternative matters too - without it a self-closing
+        # entry would swallow `.*?</w:font>` from the NEXT family's block.
+        pat = re.compile(
+            r'<w:font\b[^>]*\bw:name="' + re.escape(family) + r'"'
+            r'[^>]*?(?:/>|>.*?</w:font>)',
+            re.DOTALL,
+        )
+        xml = pat.sub("", xml)
+
+        embeds = "".join(
+            f'<w:{attr} r:id="{rel_id}" w:fontKey="{guid}"/>'
+            for attr, rel_id, guid in entries
+        )
+        inserts.append(
+            f'<w:font w:name="{family}">'
+            '<w:altName w:val="Calibri"/>'
+            '<w:charset w:val="00"/>'
+            '<w:family w:val="swiss"/>'
+            '<w:pitch w:val="variable"/>'
+            f'{embeds}'
+            '</w:font>'
+        )
+
+    if "</w:fonts>" not in xml:
+        raise ValueError("fontTable.xml is malformed - missing closing </w:fonts>")
+    return xml.replace("</w:fonts>", "".join(inserts) + "</w:fonts>")
+
+
+def _build_font_rels(embed_plan: list, existing_xml: str | None) -> str:
+    """Build word/_rels/fontTable.xml.rels. If the part already exists,
+    preserve any non-font Relationships and append the new font rels."""
+    new_rels = "".join(
+        f'<Relationship Id="{rel_id}" Type="{FONT_REL_TYPE}" '
+        f'Target="fonts/{fname}"/>'
+        for _, _, _, _, rel_id, fname in embed_plan
+    )
+
+    if existing_xml is None:
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/'
+            'package/2006/relationships">'
+            f'{new_rels}'
+            '</Relationships>'
+        )
+
+    # Strip prior font Relationships so we do not double-register.
+    #
+    # `[^/>]*` cannot cross a slash, and every font Relationship this module
+    # writes carries `Target="fonts/<name>"` - a slash. So the strip matched
+    # nothing it had ever produced, and re-embedding fonts into an
+    # already-embedded .docx left the old Relationship in place beside the new
+    # one, growing the part by one duplicate per font on every run. `[^>]*`
+    # still cannot leave the element, because a well-formed attribute value
+    # carries `&gt;` rather than a bare `>`.
+    cleaned = re.sub(
+        r'<Relationship\b[^>]*Type="' + re.escape(FONT_REL_TYPE) + r'"[^>]*/>',
+        "",
+        existing_xml,
+    )
+    if "</Relationships>" not in cleaned:
+        raise ValueError(
+            "fontTable.xml.rels malformed - missing </Relationships>"
+        )
+    return cleaned.replace("</Relationships>", new_rels + "</Relationships>")
+
+
+# ECMA-376 `CT_Settings` is an xsd:sequence, so a child in the wrong position is
+# schema-invalid and the consumer is free to ignore it. These are the tags that
+# may legally PRECEDE `w:embedTrueTypeFonts`, in sequence order.
+#
+# The predecessor list, not the successor list, because it is ten tags rather
+# than ninety - and because a tag missing from it fails toward inserting a
+# little too early, while a tag missing from a successor list fails toward
+# appending past the end of the document, which is the defect being fixed.
+_SETTINGS_PREDECESSORS = (
+    "w:writeProtection", "w:view", "w:zoom", "w:removePersonalInformation",
+    "w:removeDateAndTime", "w:doNotDisplayPageBoundaries",
+    "w:displayBackgroundShape", "w:printPostScriptOverText",
+    "w:printFractionalCharacterWidth", "w:printFormsData",
+)
+_EMBED_SETTINGS = (
+    "w:embedTrueTypeFonts", "w:embedSystemFonts", "w:saveSubsetFonts",
+)
+
+
+def _element_end(xml: str, tag: str) -> int:
+    """Index just past `tag`'s element in `xml`, or -1 when the tag is absent.
+
+    Handles the self-closing form and the open/close pair alike. The lookahead
+    keeps `w:view` from matching a longer tag that merely starts with it.
+    """
+    match = re.search(r"<" + re.escape(tag) + r"(?=[\s/>])", xml)
+    if match is None:
+        return -1
+    close = xml.find(">", match.start())
+    if close == -1:
+        return -1
+    if xml[close - 1] == "/":
+        return close + 1
+    end_tag = f"</{tag}>"
+    idx = xml.find(end_tag, close)
+    return close + 1 if idx == -1 else idx + len(end_tag)
+
+
+def _patch_settings(xml: str) -> str:
+    """Insert embedTrueTypeFonts / embedSystemFonts / saveSubsetFonts, each at
+    its ECMA-376 position in the `w:settings` sequence, if absent.
+
+    These were appended before `</w:settings>` under a docstring claiming "the
+    schema permits these at the end of the settings block". It does not:
+    `CT_Settings` is an xsd:sequence and all three sit near its head, ahead of
+    `w:proofState`, `w:defaultTabStop`, `w:compat`, `w:decimalSymbol` and
+    `w:listSeparator` - every one of which a stock python-docx settings.xml
+    already carries. Measured 2026-08-30 on `Document().save()` output:
+    `<w:embedTrueTypeFonts/>` landed 95 characters AFTER `<w:listSeparator/>`,
+    the last element of the sequence. This module patches strings rather than
+    parsing precisely because Word's schema check is unforgiving, so emitting
+    out-of-order children contradicted the file's own stated premise.
+    """
+    if all(_element_end(xml, tag) != -1 for tag in _EMBED_SETTINGS):
+        return xml
+
+    open_tag = re.search(r"<w:settings\b[^>]*>", xml)
+    if open_tag is None or "</w:settings>" not in xml:
+        raise ValueError(
+            "settings.xml malformed - missing <w:settings> ... </w:settings>"
+        )
+
+    # Insert in sequence order, treating each element already placed as an
+    # anchor for the next: with only `w:embedSystemFonts` present, the fix must
+    # still put `w:embedTrueTypeFonts` BEFORE it, not after the last anchor.
+    anchors = list(_SETTINGS_PREDECESSORS)
+    for tag in _EMBED_SETTINGS:
+        if _element_end(xml, tag) != -1:
+            anchors.append(tag)
+            continue
+        at = open_tag.end()
+        for anchor in anchors:
+            at = max(at, _element_end(xml, anchor))
+        xml = f"{xml[:at]}<{tag}/>{xml[at:]}"
+        anchors.append(tag)
+    return xml
+
+
+def _patch_content_types(xml: str) -> str:
+    """Ensure ``ttf`` extension is registered with the obfuscatedFont content
+    type. Either replace an existing Default for ttf, or insert a new one
+    after the opening ``<Types>`` tag."""
+    new_default = (
+        f'<Default Extension="ttf" ContentType="{OBFUSCATED_FONT_CONTENT_TYPE}"/>'
+    )
+
+    # Existing default for ttf - replace it.
+    #
+    # `[^>]*`, not `[^/>]*`, and for the reason spelled out in `_build_font_rels`
+    # forty lines above: a character class excluding `/` cannot cross one, and
+    # EVERY real ContentType value carries a slash
+    # (`application/vnd.openxmlformats-officedocument.obfuscatedFont`). So this
+    # branch could never match anything Word or python-docx writes. It was dead,
+    # the insert branch below ran in its place, and a `[Content_Types].xml` that
+    # already declared `ttf` gained a SECOND `<Default Extension="ttf">` -
+    # duplicate Default extensions, which OPC forbids, plus the old wrong
+    # ContentType left in place beneath the new one. Reproduced 2026-08-27: one
+    # ttf Default in, two out. The fix landed in the sibling function and not in
+    # this one; a second copy of a defect is the copy that stops being fixed.
+    # `[^>]*` still cannot leave the element, because a well-formed attribute
+    # value writes `&gt;` rather than a bare `>`.
+    existing_re = re.compile(
+        r'<Default\s+Extension="ttf"[^>]*/>',
+        re.IGNORECASE,
+    )
+    if existing_re.search(xml):
+        return existing_re.sub(new_default, xml, count=1)
+
+    # No existing default - insert after the opening <Types ...> tag
+    open_re = re.compile(r'(<Types\b[^>]*>)')
+    if not open_re.search(xml):
+        raise ValueError("[Content_Types].xml malformed - missing <Types>")
+    return open_re.sub(r"\1" + new_default, xml, count=1)
+
+
+def embed_fonts(docx_path: Path | str, fonts: dict[str, FontWeights]) -> None:
+    """Embed font families into a DOCX in place.
+
+    Parameters
+    ----------
+    docx_path
+        Path to the .docx file. Modified in place.
+    fonts
+        Mapping of *font family name* (e.g. ``"GT Standard"``) to a
+        :class:`FontWeights` describing TTF binaries for the regular / bold /
+        italic / bold-italic variants.
+    """
+    docx_path = Path(docx_path)
+    if not docx_path.exists():
+        raise FileNotFoundError(docx_path)
+
+    embed_plan: list[tuple] = []
+    rel_counter = 100
+    font_counter = 1
+    for family, weights in fonts.items():
+        for weight_attr, src in (
+            ("embedRegular", weights.regular),
+            ("embedBold", weights.bold),
+            ("embedItalic", weights.italic),
+            ("embedBoldItalic", weights.bold_italic),
+        ):
+            if src is None:
+                continue
+            ttf = Path(src).read_bytes()
+            guid = "{" + str(uuid.uuid4()).upper() + "}"
+            obf = _obfuscate(ttf, guid)
+            rel_id = f"rIdFont{rel_counter}"
+            fname = f"font{font_counter}.ttf"
+            rel_counter += 1
+            font_counter += 1
+            embed_plan.append((family, weight_attr, guid, obf, rel_id, fname))
+
+    tmp = docx_path.with_suffix(".docx.embed-tmp")
+
+    with zipfile.ZipFile(docx_path, "r") as zin:
+        names = zin.namelist()
+        font_table_xml = zin.read("word/fontTable.xml").decode("utf-8")
+        try:
+            font_rels_xml = zin.read(
+                "word/_rels/fontTable.xml.rels"
+            ).decode("utf-8")
+        except KeyError:
+            font_rels_xml = None
+        settings_xml = zin.read("word/settings.xml").decode("utf-8")
+        ctypes_xml = zin.read("[Content_Types].xml").decode("utf-8")
+
+        new_font_table = _patch_font_table(font_table_xml, embed_plan)
+        new_font_rels = _build_font_rels(embed_plan, font_rels_xml)
+        new_settings = _patch_settings(settings_xml)
+        new_ctypes = _patch_content_types(ctypes_xml)
+
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for n in names:
+                if n == "word/fontTable.xml":
+                    zout.writestr(n, new_font_table)
+                elif n == "word/_rels/fontTable.xml.rels":
+                    zout.writestr(n, new_font_rels)
+                elif n == "word/settings.xml":
+                    zout.writestr(n, new_settings)
+                elif n == "[Content_Types].xml":
+                    zout.writestr(n, new_ctypes)
+                elif n.startswith("word/fonts/"):
+                    # Drop every font part a previous run embedded, rather than
+                    # copying it. `font_counter` restarts at 1 on every call, so
+                    # the copy put `word/fonts/font1.ttf` in and the plan loop
+                    # below then wrote a SECOND entry under the same name.
+                    # `zipfile` only warns ("Duplicate name"), and a reader that
+                    # resolves the first match got the STALE font bytes.
+                    # Measured 2026-08-30: two `word/fonts/font1.ttf` entries
+                    # after embedding twice. A re-embed carrying fewer fonts
+                    # also orphaned the surplus parts. Every font Relationship
+                    # is rebuilt by `_build_font_rels`, so nothing dropped here
+                    # is still referenced.
+                    continue
+                else:
+                    zout.writestr(n, zin.read(n))
+
+            if "word/_rels/fontTable.xml.rels" not in names:
+                zout.writestr("word/_rels/fontTable.xml.rels", new_font_rels)
+
+            for _, _, _, obf, _, fname in embed_plan:
+                zout.writestr(f"word/fonts/{fname}", obf)
+
+    shutil.move(str(tmp), str(docx_path))

@@ -1,0 +1,66 @@
+# OpenSSF Scorecard (F-9.6) - supply-chain posture, published as code-scanning
+# SARIF. Runs weekly and on pushes to main. Some checks (branch-protection,
+# code-review) score low on a single-maintainer flow by design; the trend is the
+# value. No badge until the score is respectable (operator decision).
+name: scorecard
+
+on:
+  schedule:
+    # Weekly, Monday 07:00 UTC.
+    - cron: '0 7 * * 1'
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: read-all
+
+jobs:
+  # The analysis runs only while the repository is public: a private one refuses
+  # this token's checkout ("Repository not found", no `contents` scope) and has no
+  # code scanning to receive the SARIF (HTTP 403). MEASURED 2026-09-26, 58aa1db3;
+  # publication is the operator's decision, HOS-59. Gated rather than deleted, so
+  # the analysis resumes the day the engine goes public. Asked of the API rather
+  # than of `github.event.repository`, which a `schedule` event does not reliably
+  # carry.
+  visibility:
+    name: repository visibility
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      public: ${{ steps.ask.outputs.public }}
+    steps:
+      - id: ask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fail closed and stay green: an API refusal reads as "not public",
+          # so the job skips the analysis instead of mailing a failure.
+          private="$(gh api "repos/${{ github.repository }}" --jq .private)" || private="unknown"
+          echo "private=$private"
+          if [ "$private" = "false" ]; then echo "public=true" >> "$GITHUB_OUTPUT"; else echo "public=false" >> "$GITHUB_OUTPUT"; fi
+
+  analysis:
+    name: Scorecard analysis
+    needs: visibility
+    if: needs.visibility.outputs.public == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF result to the code-scanning dashboard.
+      security-events: write
+      # Read the OIDC token Scorecard uses for some checks.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: false
+      - name: Upload SARIF to code-scanning
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: results.sarif

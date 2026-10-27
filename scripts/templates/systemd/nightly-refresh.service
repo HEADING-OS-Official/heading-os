@@ -1,0 +1,74 @@
+[Unit]
+Description=HEADING OS nightly refresh (full suite -> day-mode green marker, verdict store, warm caches)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/nightly-refresh.py
+# A bound this unit CHOOSES, not one systemd would otherwise impose. Quoting
+# `man systemd.service` rather than summarising it, because a summary of this
+# exact paragraph is what got it backwards in the first draft:
+#
+#     Defaults to DefaultTimeoutStartSec= set in the manager, except when
+#     Type=oneshot is used, in which case the timeout is disabled by
+#     default (see systemd-system.conf(5)).
+#
+# So a Type=oneshot unit with NO TimeoutStartSec= runs to completion however long
+# it takes. There is no 90-second default to be rescued from, and the first
+# version of this comment claimed there was, which would have taught the next
+# person writing a unit here something false.
+#
+# The cap is here because an unbounded nightly that WEDGES is its own failure
+# mode: it holds a machine's worth of pytest workers until somebody notices, and
+# the night that was supposed to move the green marker moves nothing and says
+# nothing.
+#
+# MEASURED 2026-09-05 in HELM on ca9457d: a clean full run took 979s at
+# one-minute load 26 with two YARDs competing, and 875s inside the push gate
+# under similar load. 5400s is about five and a half times that observed worst
+# case, which leaves room for a cold cache and a growing suite while still
+# bounding a hang to ninety minutes.
+#
+# When it IS exceeded, systemd terminates the run and the unit reports `failed`.
+# On a job whose whole purpose is to move the known-green marker, that is the
+# correct outcome: the marker does not move, and `day-mode select` shows its age
+# going stale at the point of use.
+TimeoutStartSec=5400
+# TZ pins the run record's timestamps and the green marker's day to the
+# configured timezone regardless of the host. The installer substitutes {{TZ}}
+# from HEADING_OS_TZ (default UTC). Never pin HEADING_OS_TZ itself into this
+# unit as an Environment= directive: `load_env` uses setdefault, so a value
+# pinned here at install time could never be corrected by .env afterwards, and
+# the unit would become a second, staler source of truth (this directory's
+# README carries the reasoning).
+Environment=TZ={{TZ}}
+# A systemd user service inherits the MANAGER's PATH, not the PATH of the shell
+# that installed it. MEASURED 2026-09-05 on this machine, the manager's is
+#
+#     /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+#
+# with no ~/.local/bin, no ~/bin and no nvm node bin, so gh, git-lfs, node, npx,
+# marp, uv, pre-commit, claude and herdr are all absent. Every test gated on one
+# of them SKIPS, and a skipped test exits 0. On the first fire of this timer the
+# night ran 24599 of 24839 collected checks, skipped 240, and marked the tree
+# green; the same tree in an ordinary shell had 2 skips and one FAILURE.
+#
+# {{TOOLPATH}} is the installing shell's own PATH, which is by construction the
+# one the suite is known to pass under. It is the only value on the machine that
+# knows where these tools live, and no .env key carries it.
+#
+# This line is the CONVENIENCE, not the control. It can go stale on its own (an
+# nvm version bump moves the node bin and nothing here says so), and what makes
+# that loud rather than silent is the skip ceiling in
+# config/nightly-skip-baseline.json, which scripts/nightly-refresh.py refuses to
+# mark green above. Re-run the installer after changing a toolchain; it merges
+# and keeps every other local value.
+Environment=PATH={{TOOLPATH}}
+Environment=PYTHONUNBUFFERED=1
+# The runner exits non-zero on a failing suite and on a post-run step that did
+# not complete, so a non-zero exit correctly surfaces as `failed`. No
+# SuccessExitStatus override: a night that failed must look failed to systemd as
+# well as reaching the operator's Telegram sink.
+StandardOutput=journal
+StandardError=journal

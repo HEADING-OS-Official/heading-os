@@ -1,0 +1,6 @@
+{
+  "_comment": "TEMPLATE topology for a separate service-host VM that a HEADING OS instance MANAGES from its workspace. The engine ships this empty template; the real values live as private DATA at <data-root>/config/service-host.json (resolved via get_data_config_dir()). The VM is its own entity (its deployment lives outside the engine); the workspace only runs laptop-side management/client scripts against it. Put the VM host ADDRESS in .env as SERVICE_VM_HOST (never here). Daemon state lives under TWO VM roots, the engine clone (vm_engine_root) and the data overlay (vm_data_root), each an absolute path ON THE VM, and each state_dirs entry is [mirror_name, root, rel] with root one of engine|data, so it names which root it sits under. Fill in your own VM's layout. READ THIS BEFORE 'FIXING' A state_dirs PATH: the third element of an entry is a path ON THE VM, joined onto the named VM root by _vm_path() in scripts/pull-service-state.py, and it is never an address in this machine's data overlay. A scanner that resolves it against the local overlay is answering a question nobody asked. The local mirror is not configured here: since 2026-09-25 pull-service-state.py writes it to the registry name `service-mirror`, and a `mirror_dir` key is ignored with a warning.",
+  "vm_engine_root": "",
+  "vm_data_root": "",
+  "state_dirs": []
+}

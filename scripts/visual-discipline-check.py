@@ -1,0 +1,819 @@
+#!/usr/bin/env python3
+"""
+visual-discipline-check.py - Mechanical audit for AI-default visual tells.
+
+Visual-design counterpart to scripts/humanization-check.py. Where the
+humanisation check scans prose for AI-text fingerprints, this scans visual
+artifacts for the AI-default design tells named in
+.claude/rules/visual-design-discipline.md.
+
+TWO ENGINES, and the difference between them decides what each can be trusted
+to say:
+
+  regex (default, always runs)
+      Matches patterns against file contents: forbidden fonts, the purple->pink
+      hero gradient, oversized Tailwind radii, Lucide/Heroicons icon defaults,
+      the ChatGPT-emerald and captured-pastel hero colors, plus heuristic layout
+      and copy tells (advisory). Reads HTML, SVG and PPTX. It sees what is
+      WRITTEN DOWN.
+
+  deep (--deep, optional)
+      The impeccable CLI (github.com/pbakaus/impeccable, Apache 2.0, pinned in
+      scripts/.impeccable-version). Parses the HTML, resolves the CSS cascade,
+      and computes real values: text contrast against the surface actually
+      behind it, heading hierarchy, accent stripes on rounded corners, type
+      floors. Reads HTML and SVG only. It sees what RENDERS.
+
+Coverage, stated once. Nothing compares this block with SCAN_EXTENSIONS
+below, so edit both together:
+
+      .html .htm   both engines
+      .svg         both engines
+      .pptx        regex only (OOXML parts unzipped; fonts and colors)
+      .pdf         neither
+      .docx        neither
+      .png         neither
+
+PDF and DOCX are read by no engine here. The gap lands hardest on the five locked corporate doctypes, whose only renders are PDF
+and DOCX: nothing in this repo audits them.
+
+Deep findings carry an `impeccable:` type prefix so a reader can always tell
+which engine made a claim. Calibration (print vs screen vs locked doctype),
+plausibility bounds, and the per-(file, rule) baseline live in
+scripts/utils/impeccable_engine.py and config/visual-check-profiles.json.
+
+Neither engine judges the rule's first three fundamentals - specificity density,
+committed stance, hierarchy by intent. Those stay human, against the exemplar
+shelf.
+
+Usage:
+  python scripts/visual-discipline-check.py <file>            # one HTML/SVG/PPTX file
+  python scripts/visual-discipline-check.py <dir>             # recurse for .html/.svg/.pptx
+  python scripts/visual-discipline-check.py --deep <path>     # add the cascade-resolving engine
+  python scripts/visual-discipline-check.py --strict <path>   # fail on warnings too
+  python scripts/visual-discipline-check.py --json <path>     # JSON output
+  python scripts/visual-discipline-check.py --profile print <path>   # force a calibration profile
+  python scripts/visual-discipline-check.py --no-baseline <path>     # report frozen findings too
+  python scripts/visual-discipline-check.py --include-internal <dir>  # do not skip out-of-scope dirs
+
+  python scripts/visual-discipline-check.py baseline record --deep <path>  # freeze what exists
+  python scripts/visual-discipline-check.py baseline check --deep <path>   # fail on regressions only
+  python scripts/visual-discipline-check.py baseline stats                 # how big the freeze is
+
+The baseline freeze is empty until a surface in the engine is recorded
+(the docs site and its CI ratchet left the engine with HOS-131, 2026-09-25).
+
+The baseline is a ratchet, same shape as .lint-baseline.json: `record` freezes
+the findings present on existing artifacts, `check` fails only on findings ABOVE
+those counts, and `check` never rewrites the file. Existing artifacts are not
+remediated by this tool; new ones are held to the standard.
+
+Severity:
+  error   - high-confidence AI-default tell (forbidden font, purple->pink
+            gradient, rounded-2xl/3xl, Lucide/Heroicons, banned hero color, or
+            any non-advisory deep finding)
+  warning - advisory / heuristic tell (neutral-stack pairing, indigo-violet
+            primary, three-up cards, centered hero, Title Case heading, copy
+            register, or an advisory deep finding). May false-positive; human
+            review decides.
+
+Exit codes:
+  0 - clean (or strict-mode pass)
+  1 - findings present (errors, or in strict mode warnings)
+  2 - script error
+
+An unavailable deep engine NEVER changes the exit code: it prints one
+degradation line to stderr and the run completes on the regex verdict alone.
+"""
+
+import sys
+import re
+import json
+import argparse
+import zipfile
+from pathlib import Path
+from collections import Counter
+
+# ============================================================
+# Workspace utility imports
+# ============================================================
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from scripts.utils.colors import GREEN, YELLOW, RED, CYAN, GRAY, BOLD, RESET
+except ImportError:
+    GREEN = YELLOW = RED = CYAN = GRAY = BOLD = RESET = ""
+
+from scripts.utils import impeccable_engine
+
+# ============================================================
+# Configuration - tell definitions
+# ============================================================
+
+# Fonts forbidden as primary (rule section 5 + vocabulary table).
+# GT Standard, Geist, IBM Plex, and custom commissions are permitted.
+FORBIDDEN_FONTS = [
+    "Inter", "Roboto", "Open Sans", "Lato", "Poppins", "Montserrat", "Space Grotesk",
+]
+# Context-dependent: flagged advisory (fine on devtool products, a tell elsewhere).
+ADVISORY_FONTS = ["JetBrains Mono"]
+
+# Font declaration contexts - we only match font names inside these, to avoid
+# matching the word elsewhere in body copy ("the analyst interface").
+_FONT_CONTEXTS = [
+    re.compile(r"font-family\s*:\s*([^;{}]+)", re.IGNORECASE),
+    re.compile(r"\bfamily=([^&\"';]+)", re.IGNORECASE),          # Google Fonts URL
+    re.compile(r'typeface\s*=\s*"([^"]+)"', re.IGNORECASE),      # PPTX/OOXML
+    re.compile(r"--[\w-]*font[\w-]*\s*:\s*([^;{}]+)", re.IGNORECASE),  # CSS var
+]
+
+# Banned hero/accent colors (rule section 4 + vocabulary table). Matches both
+# CSS `#RRGGBB` and OOXML `val="RRGGBB"`.
+BANNED_COLORS = {
+    "10A37F": "legacy ChatGPT emerald as primary",
+    "E8DDF4": "Material-3 captured pastel (violet) at hero density",
+    "D0E4F5": "Gamma captured pastel (blue) at hero density",
+    "F5EEF8": "Tabler captured pastel (lavender) at hero density",
+}
+
+# Tailwind purple->pink gradient: the single most-cited tell.
+_GRAD_FROM = re.compile(r"\b(?:bg-gradient-to-\w+\s+)?from-(purple|violet|fuchsia)-\d{2,3}\b", re.IGNORECASE)
+_GRAD_TO = re.compile(r"\bto-(pink|fuchsia|rose|purple)-\d{2,3}\b", re.IGNORECASE)
+# The pair has to SPAN the two families, which "one hue from each list" does not
+# check. `from-purple-600 to-purple-800` is a monochrome purple ramp containing
+# no pink at all, and it raised an ERROR reading "Tailwind purple->pink
+# gradient" -- a false label on the severity that gates the exit code. Same for
+# `from-fuchsia-500 to-fuchsia-700`. The CSS branch below already gets this
+# right by keeping fuchsia on the pink side only; this mirrors it, and keeps
+# fuchsia legal on both ends because it genuinely sits between the two.
+_GRAD_PINKISH_HUES = {"pink", "rose", "fuchsia"}
+# CSS linear-gradient containing both a purple-ish and a pink-ish stop.
+_CSS_GRADIENT = re.compile(r"linear-gradient\([^)]*\)", re.IGNORECASE)
+_PURPLEISH = re.compile(r"(purple|violet|#a855f7|#9333ea|#8b5cf6|#7c3aed|#6d28d9)", re.IGNORECASE)
+_PINKISH = re.compile(r"(\bpink\b|fuchsia|#ec4899|#db2777|#f472b6|#e879f9)", re.IGNORECASE)
+
+# Oversized Tailwind radius (rounded-2xl is the named tell; 3xl is its sibling).
+_ROUNDED = re.compile(r"\brounded-(?:2xl|3xl|\[?\d{2,}px\]?)\b", re.IGNORECASE)
+
+# Default icon libraries.
+_ICON_LIB = re.compile(r"\b(lucide-react|data-lucide|lucide|heroicons)\b", re.IGNORECASE)
+
+# Indigo/violet Tailwind primary accents (advisory - common, FP-prone).
+_INDIGO_VIOLET = re.compile(r"\b(?:bg|text|from|to|border|ring)-(indigo|violet)-(?:500|600|700)\b", re.IGNORECASE)
+
+# Neutral-stack pairing (advisory): slate-50 + zinc-900 unmodified.
+_SLATE_50 = re.compile(r"\bslate-50\b", re.IGNORECASE)
+_ZINC_900 = re.compile(r"\bzinc-900\b", re.IGNORECASE)
+
+# Three-up cards (advisory): grid-cols-3 alongside rounded cards.
+_GRID_COLS_3 = re.compile(r"\bgrid-cols-3\b", re.IGNORECASE)
+_ROUNDED_CARD = re.compile(r"\brounded-(xl|2xl|3xl)\b", re.IGNORECASE)
+
+# Centered hero (advisory): a "hero" class with text-center.
+_HERO_CLASS = re.compile(r"class\s*=\s*\"[^\"]*\bhero\b[^\"]*\"", re.IGNORECASE)
+_TEXT_CENTER = re.compile(r"\btext-center\b", re.IGNORECASE)
+
+# Copy-register tells (advisory).
+COPY_TELLS = [
+    "build the future", "ai-powered", "reimagine", "supercharge your",
+    "unlock the power", "next-generation platform",
+]
+
+# HTML heading capture for Title Case check.
+_HTML_HEADING = re.compile(r"<h([1-3])\b[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
+_TAG_STRIP = re.compile(r"<[^>]+>")
+_TITLE_STOP = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+               "of", "on", "or", "the", "to", "via", "with"}
+
+# Directories skipped in recursion mode (rule carve-out: internal/utility surfaces).
+# `/vendor/` joined the list with the deep engine: impeccable is handed a directory
+# and walks it itself, reaching third-party bundles nobody here designed.
+# `/runtime-junk/` is the default runtime store's name (clipboard grabs, browser
+# captures); nothing in it is a design surface.
+OUT_OF_SCOPE = ("/runtime-junk/",
+                "/_archive/", "/archive/", "/node_modules/", "/.git/", "/vendor/")
+
+# Minified bundles are not a design surface. The regex walk never visits them
+# (they are not in SCAN_EXTENSIONS), but the deep engine does, so the suffix list
+# is enforced there too - see impeccable_engine.is_out_of_scope.
+OUT_OF_SCOPE_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
+
+SCAN_EXTENSIONS = (".html", ".htm", ".svg", ".pptx")
+
+# Documentation that describes this rule has to name what the rule forbids.
+# Same marker and same purpose as the one scripts/humanization-check.py honours.
+_AUDIT_SKIP = re.compile(
+    r"<!--\s*audit-skip-start\s*-->[\s\S]*?<!--\s*audit-skip-end\s*-->",
+    re.IGNORECASE,
+)
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def _line_of(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def _snippet(text, start, end, before=12, after=30):
+    s = max(0, start - before)
+    e = min(len(text), end + after)
+    out = ("..." if s > 0 else "") + text[s:e] + ("..." if e < len(text) else "")
+    return out.replace("\n", " ").strip()
+
+
+def _add(findings, ftype, severity, tell, text, pos, has_lines=True):
+    findings.append({
+        "type": ftype,
+        "severity": severity,
+        "tell": tell,
+        "line": _line_of(text, pos) if has_lines else None,
+        "context": _snippet(text, pos, pos + len(str(tell))),
+    })
+
+
+# ============================================================
+# Individual checks
+# ============================================================
+
+def _check_fonts(text, findings, has_lines):
+    for ctx in _FONT_CONTEXTS:
+        for m in ctx.finditer(text):
+            value = m.group(1)
+            for font in FORBIDDEN_FONTS:
+                if re.search(r"\b" + re.escape(font) + r"\b", value, re.IGNORECASE):
+                    _add(findings, "forbidden_font", "error", font, text, m.start(1), has_lines)
+            for font in ADVISORY_FONTS:
+                if re.search(r"\b" + re.escape(font) + r"\b", value, re.IGNORECASE):
+                    _add(findings, "forbidden_font", "warning", font, text, m.start(1), has_lines)
+
+
+def _check_colors(text, findings, has_lines):
+    for hexcode, why in BANNED_COLORS.items():
+        pat = re.compile(r"(?:#|val=\")" + hexcode + r"\b", re.IGNORECASE)
+        for m in pat.finditer(text):
+            _add(findings, "banned_color", "error", f"#{hexcode} ({why})", text, m.start(), has_lines)
+
+
+def _check_gradient(text, findings, has_lines):
+    # Tailwind from-purple/violet/fuchsia + to-pink/fuchsia/rose on the same line.
+    for line_match in re.finditer(r"[^\n]+", text):
+        seg = line_match.group()
+        m_from = _GRAD_FROM.search(seg)
+        m_to = _GRAD_TO.search(seg)
+        if not (m_from and m_to):
+            continue
+        from_hue = m_from.group(1).lower()
+        to_hue = m_to.group(1).lower()
+        # A same-hue ramp is not a two-family gradient, and a `to-` hue outside
+        # the pink family is not the pink end of one.
+        if from_hue == to_hue or to_hue not in _GRAD_PINKISH_HUES:
+            continue
+        _add(findings, "gradient_purple_pink", "error",
+             "Tailwind purple->pink gradient", text, line_match.start(), has_lines)
+    # CSS linear-gradient spanning a purple stop and a pink stop.
+    for m in _CSS_GRADIENT.finditer(text):
+        span = m.group()
+        if _PURPLEISH.search(span) and _PINKISH.search(span):
+            _add(findings, "gradient_purple_pink", "error",
+                 "CSS purple->pink linear-gradient", text, m.start(), has_lines)
+
+
+def _check_radius(text, findings, has_lines):
+    for m in _ROUNDED.finditer(text):
+        _add(findings, "rounded_oversized", "error", m.group(), text, m.start(), has_lines)
+
+
+def _check_icons(text, findings, has_lines):
+    seen = set()
+    for m in _ICON_LIB.finditer(text):
+        key = m.group().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        _add(findings, "icon_library", "error", m.group(), text, m.start(), has_lines)
+
+
+def _check_advisory_palette(text, findings, has_lines):
+    for m in _INDIGO_VIOLET.finditer(text):
+        _add(findings, "indigo_violet_primary", "warning", m.group(), text, m.start(), has_lines)
+    if _SLATE_50.search(text) and _ZINC_900.search(text):
+        m = _SLATE_50.search(text)
+        _add(findings, "neutral_stack", "warning",
+             "slate-50 + zinc-900 unmodified Tailwind neutral stack", text, m.start(), has_lines)
+
+
+def _check_layout(text, findings, has_lines):
+    if _GRID_COLS_3.search(text) and _ROUNDED_CARD.search(text):
+        m = _GRID_COLS_3.search(text)
+        _add(findings, "three_up_cards", "warning",
+             "grid-cols-3 + rounded cards (possible three-up feature row)", text, m.start(), has_lines)
+    if _HERO_CLASS.search(text) and _TEXT_CENTER.search(text):
+        m = _HERO_CLASS.search(text)
+        _add(findings, "centered_hero", "warning",
+             "centered hero stack (hero class + text-center)", text, m.start(), has_lines)
+
+
+def _check_copy(text, findings, has_lines):
+    for phrase in COPY_TELLS:
+        for m in re.finditer(re.escape(phrase), text, re.IGNORECASE):
+            _add(findings, "copy_register", "warning", phrase, text, m.start(), has_lines)
+
+
+def _check_title_case_headings(text, findings, has_lines):
+    for m in _HTML_HEADING.finditer(text):
+        heading = _TAG_STRIP.sub("", m.group(2)).strip()
+        words = re.findall(r"\b[A-Za-z][a-zA-Z]*\b", heading)
+        non_stop = [w for w in words if w.lower() not in _TITLE_STOP]
+        if len(non_stop) < 3:
+            continue
+        cap_non_stop = sum(1 for w in non_stop if w[0].isupper())
+        if cap_non_stop / len(non_stop) >= 0.8:
+            _add(findings, "title_case_heading", "warning", heading, text, m.start(2), has_lines)
+
+
+# Text-based checks that apply to HTML/SVG (and harmlessly to PPTX XML).
+_TEXT_CHECKS = [
+    _check_fonts, _check_colors, _check_gradient, _check_radius, _check_icons,
+    _check_advisory_palette, _check_layout, _check_copy, _check_title_case_headings,
+]
+
+
+def scan_text(text, has_lines=True):
+    """Run all text-based checks against an HTML/SVG/CSS string.
+
+    Returns a list of finding dicts: {type, severity, tell, line, context}.
+
+    Content between `<!-- audit-skip-start -->` and `<!-- audit-skip-end -->` is
+    blanked first, mirroring what scripts/humanization-check.py does for prose.
+    Documentation about this rule legitimately NAMES the things the rule forbids
+    (an icon library mentioned only to say it is a tell). Blanking rather than deleting
+    keeps every line number downstream correct.
+    """
+    text = _AUDIT_SKIP.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    findings = []
+    for check in _TEXT_CHECKS:
+        check(text, findings, has_lines)
+    return findings
+
+
+# ============================================================
+# PPTX
+# ============================================================
+
+def scan_pptx(path):
+    """Scan a .pptx (a zip of OOXML parts) for font/color tells.
+
+    Concatenates theme + slide + master XML and runs the text checks. Line
+    numbers are meaningless across concatenated parts, so they are suppressed.
+    """
+    findings = []
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist()
+                     if n.startswith(("ppt/theme/", "ppt/slides/", "ppt/slideMasters/",
+                                      "ppt/slideLayouts/")) and n.endswith(".xml")]
+            blob = "\n".join(z.read(n).decode("utf-8", errors="replace") for n in names)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise RuntimeError(f"cannot read pptx {path}: {exc}") from exc
+    # Only font + color tells are meaningful in OOXML; class-based checks won't match.
+    _check_fonts(blob, findings, has_lines=False)
+    _check_colors(blob, findings, has_lines=False)
+    return findings
+
+
+# ============================================================
+# Aggregation
+# ============================================================
+
+def audit_file(path, strict=False, deep_findings=None):
+    """Audit a single artifact file; return {source, findings, summary, passed}.
+
+    `deep_findings` is an ALREADY-COMPUTED list for this file, merged into the
+    regex findings before the error/warning partition so `passed`, `--strict`
+    and the exit codes keep their existing meaning with no special-casing.
+
+    The deep engine is invoked ONCE per run, in main(), not once per file: it is
+    handed a directory and walks it itself, and spawning `npx` per file would
+    turn a 38-file scan into 38 cold starts. Passing the findings in also keeps
+    this function pure and the default path untouched.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".pptx":
+        findings = scan_pptx(path)
+    else:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        findings = scan_text(text)
+
+    if deep_findings:
+        findings = findings + list(deep_findings)
+
+    return _rebuild_result({"source": str(path)}, findings, strict)
+
+
+def _runtime_store():
+    """The data root's runtime store as its registry names it, or None where there is none.
+
+    `OUT_OF_SCOPE` keeps the default store's name; a registry that moved the
+    store (HOS-5 F1) is honoured here, by path rather than by a name matched
+    anywhere in the path, so a relocated store's name skips nothing else.
+    """
+    from scripts.utils.paths import DataRootError, get_data_root
+    from scripts.utils.runtime_dir import RuntimeDirError, store_dirname
+
+    try:
+        base = get_data_root()
+        return (base / store_dirname(base)).resolve()
+    except (DataRootError, RuntimeDirError) as exc:
+        print(f"  (runtime store not excluded by its registry name: {exc})", file=sys.stderr)
+        return None
+
+
+def _iter_files(root, include_internal):
+    root = Path(root)
+    if root.is_file():
+        yield root
+        return
+    store = None if include_internal else _runtime_store()
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in SCAN_EXTENSIONS:
+            continue
+        rel = "/" + str(p).replace("\\", "/").strip("/") + "/"
+        if not include_internal and any(skip in rel for skip in OUT_OF_SCOPE):
+            continue
+        if store is not None and p.resolve().is_relative_to(store):
+            continue
+        if p.name.lower().endswith(OUT_OF_SCOPE_SUFFIXES):
+            continue
+        yield p
+
+
+# ============================================================
+# Reporting
+# ============================================================
+
+def print_report(result):
+    s = result["summary"]
+    src = result["source"]
+    if not result["findings"]:
+        print(f"  {GREEN}{src}: clean - no visual AI-default tells found.{RESET}")
+        return
+    errs = [f for f in result["findings"] if f["severity"] == "error"]
+    warns = [f for f in result["findings"] if f["severity"] == "warning"]
+    print(f"\n  {BOLD}{src}: {s['errors']} error(s), {s['warnings']} warning(s).{RESET}")
+    for e in errs[:25]:
+        loc = f"L{e['line']}" if e["line"] else "part"
+        print(f"    {RED}{e['type']}{RESET} ({loc}): {e['tell']}  {GRAY}{e['context']}{RESET}")
+    if len(errs) > 25:
+        print(f"    ...and {len(errs) - 25} more errors")
+    for w in warns[:15]:
+        loc = f"L{w['line']}" if w["line"] else "part"
+        print(f"    {YELLOW}{w['type']}{RESET} ({loc}): {w['tell']}")
+    if len(warns) > 15:
+        print(f"    ...and {len(warns) - 15} more warnings")
+    print(f"  {GRAY}Type summary: {s['by_type']}{RESET}")
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def _rebuild_result(result, findings, strict):
+    """Recompute a result's summary and verdict after findings were filtered."""
+    errors = [f for f in findings if f["severity"] == "error"]
+    warnings = [f for f in findings if f["severity"] == "warning"]
+    return {
+        "source": result["source"],
+        "findings": findings,
+        "summary": {
+            "total_findings": len(findings),
+            "errors": len(errors),
+            "warnings": len(warnings),
+            "by_type": dict(Counter(f["type"] for f in findings)),
+        },
+        "passed": len(errors) == 0 and (not strict or len(warnings) == 0),
+    }
+
+
+def _collect_deep(root, profile):
+    """Run the deep engine ONCE and return {relative_path: [findings]}.
+
+    Returns ({}, note) on any degradation. The caller reports the note and
+    proceeds on the regex verdict - a missing Node must not invent a failure,
+    and must not turn a real regex failure into a pass.
+    """
+    findings, note = impeccable_engine.deep_findings(root, profile_override=profile)
+    if note:
+        print(f"  {YELLOW}deep engine{RESET}: {note}", file=sys.stderr)
+
+    grouped = {}
+    for finding in findings:
+        grouped.setdefault(finding.get("file", ""), []).append(finding)
+    return grouped, note
+
+
+def _run_audit(root, *, strict, deep, profile, use_baseline, include_internal,
+               read_errors=None):
+    """Shared scan path for the default run and for `baseline check`.
+
+    The baseline covers BOTH engines. Freezing only the deep findings would
+    leave the gate permanently red on pre-existing regex debt, and a gate that is always red is a gate
+    nobody reads. `--deep` decides which engines RUN; the baseline decides which
+    findings are already accounted for.
+
+    `read_errors`, when a list is passed, collects the files this walk could not
+    read at all. It is an out-parameter rather than a fourth return value on
+    purpose: the 3-tuple is unpacked positionally by callers outside this file.
+    """
+    files = list(_iter_files(root, include_internal))
+    deep_map = {}
+    deep_note = ""
+    if deep:
+        # The note is returned, not discarded. Callers decide the verdict, and a
+        # verdict that names the deep engine while only the regex engine ran is
+        # the defect `.claude/rules/scope-claims.md` is about.
+        deep_map, deep_note = _collect_deep(root, profile)
+
+    # Collect every finding from both engines first, stamped with its file, then
+    # apply the baseline ONCE to the whole set, then group for reporting.
+    #
+    # Not per file inside the walk: impeccable also reads .css and .jsx, which
+    # SCAN_EXTENSIONS never walks, and those findings would skip the baseline.
+    collected = []
+    # Every file the walk actually audited, whatever it found. `_empty` markers
+    # alone under-counted: a file whose findings were ALL absorbed by the
+    # baseline contributed neither a surviving finding nor an `_empty`, so it
+    # vanished from the report and from the "N file(s) scanned" line -- a
+    # fully-baselined file looked exactly like one that was never visited.
+    visited = []
+    any_fail = False
+    for f in files:
+        key = impeccable_engine.relative_path(f)
+        try:
+            res = audit_file(f, strict=strict, deep_findings=deep_map.pop(key, None))
+        # OSError and UnicodeError as well as RuntimeError. Only scan_pptx wraps
+        # its failures; the HTML/SVG path calls read_text directly, so one
+        # unreadable file -- a permission bit, a dangling symlink -- killed a
+        # whole scan with a traceback and an uncontrolled exit code instead of
+        # reporting that file and carrying on.
+        except (RuntimeError, OSError, UnicodeError) as exc:
+            print(f"  {RED}error{RESET}: {exc}", file=sys.stderr)
+            # Recorded separately from `any_fail` since 2026-08-30. A file this
+            # walk could not open produced no finding, and the exit-code table
+            # reserves 1 for "findings present" and 2 for "script error" -- so a
+            # permission bit exited 1 under a summary line reading "0 error(s),
+            # 0 warning(s)", and a CI caller keying on the documented contract
+            # read that as visual debt. `any_fail` stays set so a caller that
+            # passes no list still cannot mistake a partial scan for a pass.
+            if read_errors is not None:
+                read_errors.append(str(exc))
+            any_fail = True
+            continue
+        visited.append(key)
+        for finding in res["findings"]:
+            collected.append(dict(finding, file=finding.get("file") or key))
+
+    # Deep findings on files the regex walk never visits. Reporting them is the
+    # honest option: dropping them would silently narrow the gate to the
+    # intersection of the two engines' file types.
+    for key, extra in deep_map.items():
+        for finding in extra:
+            collected.append(dict(finding, file=finding.get("file") or key))
+
+    real = list(collected)
+    if use_baseline:
+        real = impeccable_engine.apply_baseline(real, impeccable_engine.load_baseline())
+
+    grouped = {}
+    for finding in real:
+        grouped.setdefault(finding["file"], []).append(finding)
+    for key in visited:
+        grouped.setdefault(key, [])
+
+    results = []
+    for key in sorted(grouped):
+        res = _rebuild_result({"source": key}, grouped[key], strict)
+        results.append(res)
+        if not res["passed"]:
+            any_fail = True
+
+    return results, any_fail, deep_note
+
+
+def baseline_totals(baseline=None):
+    """Return (entry_count, finding_count) for the frozen baseline.
+
+    Exists so no prose anywhere has to carry the size of the freeze as a typed
+    number, which rots; name `baseline stats` instead.
+    """
+    files = impeccable_engine.load_baseline() if baseline is None else baseline
+    entries = len(files)
+    findings = sum(
+        sum(rules.values()) for rules in files.values() if isinstance(rules, dict)
+    )
+    return entries, findings
+
+
+def _cmd_baseline_stats():
+    """Print the size of the frozen baseline, derived from the file itself."""
+    entries, findings = baseline_totals()
+    print(f"  {impeccable_engine.BASELINE_FILE}: {findings} frozen finding(s) "
+          f"across {entries} entr{'y' if entries == 1 else 'ies'}.")
+    print(f"  {GRAY}Frozen, not fixed. The gate fires only above these counts.{RESET}")
+    return 0
+
+
+def _cmd_baseline(args):
+    """`baseline record` freezes what exists; `baseline check` gates regressions."""
+    root = Path(args.path)
+    if not root.exists():
+        print(f"Error: {root} does not exist", file=sys.stderr)
+        return 2
+
+    if args.action == "record":
+        # `check` below always runs deep, so `record` must too, whatever the
+        # caller passed. It used to pass `deep=args.deep`: a baseline recorded
+        # without --deep froze only the regex engine, and every deep finding
+        # that existed at record time then failed every later check, forever.
+        # That is precisely the asymmetry the comment below warns about, in the
+        # line the comment sits above. Requiring the CLI here is the point: a
+        # baseline that cannot see what the gate sees is not a baseline.
+        if impeccable_engine.resolve_cli() is None:
+            print(f"  {RED}refusing to record a baseline from a degraded run{RESET} "
+                  f"(the deep CLI is unresolvable, and `baseline check` always "
+                  f"runs deep -- a regex-only baseline would fail every check)",
+                  file=sys.stderr)
+            return 2
+
+        # Freeze what BOTH engines see, so the recorded line matches what a
+        # later `check` will compare against. A record that captured only one
+        # engine would leave the other's pre-existing debt failing forever.
+        read_errors = []
+        results, _, deep_note = _run_audit(
+            root, strict=args.strict, deep=True, profile=args.profile,
+            use_baseline=False, include_internal=args.include_internal,
+            read_errors=read_errors,
+        )
+        # `resolve_cli() is None` only catches an UNRESOLVABLE CLI. A CLI that
+        # resolves and then fails at runtime -- a bad npx pin, a non-zero exit,
+        # a timeout -- comes back through `deep_note`, and this discarded it
+        # with `_, _`. So a degraded run printed the green "Baseline recorded"
+        # and exited 0 over a freeze holding regex findings only, and every
+        # later `check` (which always runs deep, and refuses its OWN degraded
+        # runs) then failed on pre-existing deep debt forever. The comment above
+        # already names that asymmetry as the thing this branch exists to
+        # prevent; the guard just stopped one degradation short of it. A file
+        # the walk could not read makes the freeze partial the same way.
+        if deep_note or read_errors:
+            why = deep_note or f"{len(read_errors)} file(s) unreadable: {read_errors[0]}"
+            print(f"  {RED}refusing to record a baseline from a degraded run{RESET} "
+                  f"({why}). A partial freeze fails every later check on debt it "
+                  f"never recorded.", file=sys.stderr)
+            return 2
+        findings = []
+        for res in results:
+            for finding in res["findings"]:
+                findings.append(dict(finding, file=finding.get("file", res["source"])))
+
+        frozen = impeccable_engine.record_baseline(findings)
+        total = sum(sum(rules.values()) for rules in frozen.values())
+        print(f"  {GREEN}Baseline recorded{RESET}: {total} finding(s) across {len(frozen)} file(s).")
+        print(f"  {GRAY}These are frozen, not fixed. The gate now fires only above them.{RESET}")
+        return 0
+
+    read_errors = []
+    results, any_fail, deep_note = _run_audit(
+        root, strict=args.strict, deep=True, profile=args.profile,
+        use_baseline=True, include_internal=args.include_internal,
+        read_errors=read_errors,
+    )
+    # `record` above refuses when the deep CLI is unresolvable. `check` had no
+    # such guard, so a degraded deep engine printed the green verdict "No
+    # findings above the baseline." and exited 0 over a gate where only the
+    # regex engine ran. The advisory stderr note is not a verdict; the exit code
+    # is, and it asserted coverage that did not happen.
+    if deep_note:
+        print(f"  {RED}refusing a baseline check from a degraded run{RESET} "
+              f"(the deep engine did not run: {deep_note}). Only the regex "
+              f"engine ran, so a pass here would assert coverage nothing "
+              f"measured.", file=sys.stderr)
+        return 2
+    # Same reason, one degradation the deep-engine guard cannot see: a file the
+    # walk could not open was never compared against the baseline at all, and
+    # the verdict below would speak for it.
+    if read_errors:
+        print(f"  {RED}refusing a baseline check from a partial scan{RESET} "
+              f"({len(read_errors)} file(s) unreadable: {read_errors[0]}).",
+              file=sys.stderr)
+        return 2
+    above = sum(r["summary"]["total_findings"] for r in results)
+    if any_fail:
+        for res in results:
+            print_report(res)
+        print(f"\n  {RED}{above} finding(s) above the baseline.{RESET}")
+        return 1
+    if above:
+        # `above` was computed and then consulted only on the failure path, so a
+        # non-strict run with warning-severity findings above the baseline
+        # printed "No findings above the baseline" over a non-zero count and
+        # printed none of them. The exit code stays 0, because non-strict means
+        # warnings do not gate; the SENTENCE has to stop contradicting the
+        # number sitting beside it.
+        for res in results:
+            print_report(res)
+        print(f"  {YELLOW}{above} finding(s) above the baseline, all below the "
+              f"failure threshold.{RESET} "
+              f"{GRAY}Pass --strict to gate on them.{RESET}")
+        return 0
+    print(f"  {GREEN}No findings above the baseline.{RESET}")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Mechanical audit for AI-default visual tells in HTML/SVG/PPTX."
+    )
+    parser.add_argument("path", help="File or directory to audit")
+    parser.add_argument("--strict", action="store_true", help="Fail on warnings as well as errors")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable")
+    parser.add_argument("--include-internal", action="store_true",
+                        help="Do not skip out-of-scope (internal/utility) directories")
+    parser.add_argument("--deep", action="store_true",
+                        help="Also run the impeccable engine (resolves the CSS cascade)")
+    parser.add_argument("--profile", choices=("screen", "print", "doctype"),
+                        help="Force a calibration profile instead of deriving it from the path")
+    parser.add_argument("--no-baseline", action="store_true",
+                        help="Report frozen findings too (do not apply .visual-baseline.json)")
+
+    # The `baseline record|check <path>` form is peeled off before argparse.
+    # Declaring it as extra optional positionals does not work: once argparse
+    # has consumed an option it treats the remaining positionals as one closed
+    # group, so `baseline record --deep <dir>` loses the path. Peeling keeps the
+    # `visual-discipline-check.py <path>` form unchanged for its callers, a human
+    # at a terminal since the CI step left with the docs site (2026-09-25).
+    argv = sys.argv[1:]
+    baseline_action = None
+    if argv and argv[0] == "baseline":
+        if len(argv) < 2 or argv[1] not in ("record", "check", "stats"):
+            print("Error: baseline takes 'record', 'check' or 'stats'", file=sys.stderr)
+            sys.exit(2)
+        # `stats` reads the frozen file and takes no path, so it never reaches
+        # the required `path` positional below.
+        if argv[1] == "stats":
+            sys.exit(_cmd_baseline_stats())
+        baseline_action = argv[1]
+        argv = argv[2:]
+
+    args = parser.parse_args(argv)
+    args.action = baseline_action
+
+    if baseline_action:
+        sys.exit(_cmd_baseline(args))
+
+    root = Path(args.path)
+    if not root.exists():
+        print(f"Error: {root} does not exist", file=sys.stderr)
+        sys.exit(2)
+
+    files = list(_iter_files(root, args.include_internal))
+    if not files and not args.deep:
+        print(f"  {GRAY}No HTML/SVG/PPTX artifacts found under {root}.{RESET}")
+        sys.exit(0)
+
+    read_errors = []
+    results, any_fail, deep_note = _run_audit(
+        root, strict=args.strict, deep=args.deep, profile=args.profile,
+        use_baseline=not args.no_baseline, include_internal=args.include_internal,
+        read_errors=read_errors,
+    )
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        total_e = sum(r["summary"]["errors"] for r in results)
+        total_w = sum(r["summary"]["warnings"] for r in results)
+        for res in results:
+            print_report(res)
+        # Name the engines that PRODUCED the numbers on this line, not the ones
+        # the flags asked for. With `--deep` and a degraded engine this used to
+        # read "regex + deep" over a regex-only scan.
+        if args.deep and deep_note:
+            engines = "regex only -- the deep engine did not run"
+        elif args.deep:
+            engines = "regex + deep"
+        else:
+            engines = "regex"
+        print(f"\n  {BOLD}{len(results)} file(s) scanned ({engines}): "
+              f"{total_e} error(s), {total_w} warning(s).{RESET}")
+
+    # 2 before 1: the exit-code table calls 1 "findings present" and 2 "script
+    # error", and a file the scan could not open is the second. Reporting it as
+    # the first told a CI caller there was visual debt over a run whose own
+    # summary line said "0 error(s), 0 warning(s)".
+    if read_errors:
+        sys.exit(2)
+    sys.exit(1 if any_fail else 0)
+
+
+if __name__ == "__main__":
+    main()

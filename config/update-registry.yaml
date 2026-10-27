@@ -1,0 +1,501 @@
+# Update-manager component registry. Loaded by scripts/update-manager.py.
+# Tiers: auto (timer applies), notify (checked, applied by one command),
+# observed (read-only version surface; component owns its own updater).
+# Invariant: an `observed` entry may not carry an `apply` (enforced by
+# scripts/utils/update_registry.py).
+#
+# Scope, the operator's words of 2026-09-26: translated: "Let the update manager
+# watch everything except what is on Windows. Strike Ollama from tracking." and
+# "Leave the programs on the Windows side alone. I do that myself." So every
+# tool this workspace runs on the Linux side is listed, nothing on the Windows
+# side is, and Ollama is not tracked at all (it runs as a Windows app; the Linux
+# probe answered "not answered" every day because no Linux binary exists).
+#
+# Tier rules for the entries added under HOS-143 (HELM's brief, 2026-09-26):
+# nothing new is `auto` unless it is a user-space tool with no service
+# depending on it AND its updater verifies a checksum, and none added here
+# meets both, so none is `auto`. A binary a live service runs (lific, herdr)
+# carries no `apply` at all: replacing it changes a running process, which is
+# HELM's by hand. apt and snap need sudo, so they are watched only.
+#
+# Paths are spelled out under $HOME because the timer runs under systemd with a
+# minimal PATH, and npm/node probes load nvm themselves for the same reason; a
+# fresh login shell resolves the same default the probe does.
+components:
+
+  cliproxyapi:
+    # `auto` since 2026-09-20, on the operator's instruction: he asked for the
+    # upgrade to stop needing him. `notify` is what made it need him, because
+    # `notify` means "tell him and wait", so 7.3.9 sat unapplied.
+    #
+    # Safe at this tier because the apply script rolls back on its own, and that
+    # was READ rather than assumed: it verifies a sha256 against the published
+    # checksums and refuses an unverified swap, backs up the running binary,
+    # swaps atomically, restarts the unit, waits up to 30s for the health probe,
+    # and restores the backup when the probe does not answer HTTP 200. Its exit
+    # codes keep "could not fetch" and "checksum mismatch" apart from a real
+    # rollback, because neither of those swapped anything.
+    #
+    # That matters here more than for the other components: the operator's rule
+    # is that this proxy is always running, so an unattended update is only
+    # allowed while a bad one puts the working binary back without him.
+    tier: auto
+    display: CLIProxyAPI
+    current:
+      via: shell
+      cmd: "$HOME/cliproxyapi/cli-proxy-api -version 2>&1 | head -5"
+      regex: 'Version:\s*([0-9.]+)'
+    latest:
+      via: github_release
+      repo: router-for-me/CLIProxyAPI
+    apply:
+      script: scripts/updaters/cliproxyapi_update.py
+    health:
+      cmd: "$HOME/.local/bin/cliproxy health"
+      expect_substr: "HTTP 200"
+
+  yt-dlp:
+    # Every command spelled under $HOME, per the header. Until 2026-10-01 these
+    # four were bare names, and MEASURED that day under the timer's PATH
+    # (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...) both
+    # `yt-dlp` and `uv` were "command not found": the probe gave nothing, so
+    # the component read `unknown` every morning and was never auto-updated.
+    tier: auto
+    display: yt-dlp
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/yt-dlp --version"
+    latest:
+      via: pypi
+      package: yt-dlp
+    apply:
+      cmd: "$HOME/.local/bin/uv tool upgrade yt-dlp"
+      # {prev} is substituted with the version captured before the upgrade, so a
+      # health failure restores it (auto-never-broken invariant).
+      rollback_cmd: "$HOME/.local/bin/uv tool install 'yt-dlp=={prev}'"
+    health:
+      cmd: "$HOME/.local/bin/yt-dlp --version"
+
+  claude-cli:
+    # Under $HOME for the yt-dlp reason above: a bare `claude` is not on the
+    # timer's PATH (MEASURED 2026-10-01).
+    tier: observed
+    display: Claude Code CLI
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/claude --version 2>/dev/null"
+      regex: '([0-9]+\.[0-9]+\.[0-9]+)'
+    latest:
+      via: npm
+      package: "@anthropic-ai/claude-code"
+
+  lific:
+    # The issue tracker's binary; lific.service runs it. Watched only: an
+    # update replaces a running daemon's binary, which is HELM's by hand.
+    tier: observed
+    display: Lific
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/lific --version"
+      regex: 'lific (\d+\.\d+\.\d+)'
+    latest:
+      via: github_release
+      repo: VoidNullable/lific
+
+  herdr:
+    # Owns its updater (`herdr update`, no dry run); replacing the binary
+    # also fires the herdr-skill-sync path unit. Latest is the manifest the
+    # binary itself reads for its stable channel.
+    tier: observed
+    display: Herdr
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/herdr --version"
+      regex: 'herdr (\S+)'
+    latest:
+      via: https
+      url: "https://herdr.dev/latest.json"
+      field: version
+
+  gh:
+    # A release binary in ~/bin with no updater of its own here.
+    tier: observed
+    display: GitHub CLI
+    current:
+      via: shell
+      cmd: "$HOME/bin/gh --version"
+      regex: 'gh version (\S+)'
+    latest:
+      via: github_release
+      repo: cli/cli
+
+  git-lfs:
+    tier: observed
+    display: Git LFS
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/git-lfs version"
+      regex: '^git-lfs/(\S+)'
+    latest:
+      via: github_release
+      repo: git-lfs/git-lfs
+
+  ffmpeg:
+    # The johnvansickle.com static build. It publishes no release API, only a
+    # release note carrying a fixed `version:` line, which is what is read.
+    tier: observed
+    display: FFmpeg (static)
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/ffmpeg -version"
+      regex: '^ffmpeg version (\d[\w.]*?)(?:-static)?\s'
+    latest:
+      via: https
+      url: "https://johnvansickle.com/ffmpeg/release-readme.txt"
+      regex: '^\s*version:\s*(\S+)'
+
+  uv:
+    # `uv self update <version>` installs a named release, which is the
+    # rollback. Not `auto`: whether the self-updater verifies a checksum was
+    # not established, and the rule for a new `auto` entry needs it.
+    tier: notify
+    display: uv
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/uv --version"
+      regex: '^uv (\S+)'
+    latest:
+      via: github_release
+      repo: astral-sh/uv
+    apply:
+      cmd: "$HOME/.local/bin/uv self update"
+      rollback_cmd: "$HOME/.local/bin/uv self update {prev}"
+    health:
+      cmd: "$HOME/.local/bin/uv --version"
+
+  # uv tools. Latest from PyPI, like yt-dlp: `uv tool list --outdated` names
+  # only what lags, so a tool that is current would read as "not answered".
+  notebooklm-mcp-cli:
+    tier: notify
+    display: notebooklm-mcp-cli
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/uv tool list"
+      regex: '^notebooklm-mcp-cli v(\S+)$'
+    latest:
+      via: pypi
+      package: notebooklm-mcp-cli
+    apply:
+      cmd: "$HOME/.local/bin/uv tool upgrade notebooklm-mcp-cli"
+      rollback_cmd: "$HOME/.local/bin/uv tool install 'notebooklm-mcp-cli=={prev}'"
+    health:
+      cmd: "$HOME/.local/bin/nlm --version"
+
+  git-filter-repo:
+    tier: notify
+    display: git-filter-repo
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/uv tool list"
+      regex: '^git-filter-repo v(\S+)$'
+    latest:
+      via: pypi
+      package: git-filter-repo
+    apply:
+      cmd: "$HOME/.local/bin/uv tool upgrade git-filter-repo"
+      rollback_cmd: "$HOME/.local/bin/uv tool install 'git-filter-repo=={prev}'"
+    health:
+      cmd: "$HOME/.local/bin/git-filter-repo --version"
+
+  pre-commit:
+    tier: notify
+    display: pre-commit
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/uv tool list"
+      regex: '^pre-commit v(\S+)$'
+    latest:
+      via: pypi
+      package: pre-commit
+    apply:
+      cmd: "$HOME/.local/bin/uv tool upgrade pre-commit"
+      rollback_cmd: "$HOME/.local/bin/uv tool install 'pre-commit=={prev}'"
+    health:
+      cmd: "$HOME/.local/bin/pre-commit --version"
+
+  weasyprint:
+    tier: notify
+    display: WeasyPrint
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/uv tool list"
+      regex: '^weasyprint v(\S+)$'
+    latest:
+      via: pypi
+      package: weasyprint
+    apply:
+      cmd: "$HOME/.local/bin/uv tool upgrade weasyprint"
+      rollback_cmd: "$HOME/.local/bin/uv tool install 'weasyprint=={prev}'"
+    health:
+      cmd: "$HOME/.local/bin/weasyprint --version"
+
+  playwright:
+    # Watched only. Upgrading the package does not fetch the browser build the
+    # new release expects, so `--version` passes while the next launch fails;
+    # an update is `uv tool upgrade playwright` then `playwright install`, by
+    # hand.
+    tier: observed
+    display: Playwright (uv tool)
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/uv tool list"
+      regex: '^playwright v(\S+)$'
+    latest:
+      via: pypi
+      package: playwright
+
+  # npm globals under nvm's default Node. Current from `npm ls -g` filtered to
+  # the one package, so the only "version" in its JSON is that package's.
+  codegraph:
+    tier: notify
+    display: CodeGraph (npm)
+    current:
+      via: shell
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @colbymchenry/codegraph'
+      regex: '"version":\s*"([^"]+)"'
+    latest:
+      via: npm
+      package: "@colbymchenry/codegraph"
+    apply:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g @colbymchenry/codegraph@latest'
+      rollback_cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g @colbymchenry/codegraph@{prev}'
+    health:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 @colbymchenry/codegraph'
+
+  playwright-mcp:
+    # Watched only, for the playwright reason above: it pins its own browser
+    # build, which an npm upgrade does not fetch.
+    tier: observed
+    display: Playwright MCP (npm)
+    current:
+      via: shell
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @playwright/mcp'
+      regex: '"version":\s*"([^"]+)"'
+    latest:
+      via: npm
+      package: "@playwright/mcp"
+
+  marp-cli:
+    tier: notify
+    display: Marp CLI (npm)
+    current:
+      via: shell
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @marp-team/marp-cli'
+      regex: '"version":\s*"([^"]+)"'
+    latest:
+      via: npm
+      package: "@marp-team/marp-cli"
+    apply:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g @marp-team/marp-cli@latest'
+      rollback_cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g @marp-team/marp-cli@{prev}'
+    health:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 @marp-team/marp-cli'
+
+  pen-cli:
+    tier: notify
+    display: Pencil CLI (npm)
+    current:
+      via: shell
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @pen.dev/cli'
+      regex: '"version":\s*"([^"]+)"'
+    latest:
+      via: npm
+      package: "@pen.dev/cli"
+    apply:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g @pen.dev/cli@latest'
+      rollback_cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g @pen.dev/cli@{prev}'
+    health:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 @pen.dev/cli'
+
+  npm:
+    tier: notify
+    display: npm
+    current:
+      via: shell
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm --version'
+      regex: '^(\d+\.\d+\.\d+)'
+    latest:
+      via: npm
+      package: npm
+    apply:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g npm@latest'
+      rollback_cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm install -g npm@{prev}'
+    health:
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm --version'
+
+  node:
+    # Newest LTS of the installed major, from the index nvm itself reads. A
+    # new Node moves every global package to a new prefix, so it is watched
+    # only and installed by hand with nvm.
+    tier: observed
+    display: Node.js (nvm)
+    current:
+      via: shell
+      cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && node --version'
+      regex: '^v(\S+)'
+    latest:
+      via: node_lts
+
+  claude-plugins:
+    # One row for every installed plugin: how many lag their marketplace
+    # entry, read from Claude Code's own local files. Claude Code updates
+    # them itself (`claude plugin update`), so watched only.
+    tier: observed
+    display: Claude Code plugins
+    current:
+      via: claude_plugins
+    latest:
+      via: zero_outdated
+
+  brave-browser:
+    # apt, from Brave's own repository. Latest is apt's cached candidate, so
+    # it is only as fresh as the last `apt update`, which needs sudo.
+    tier: observed
+    display: Brave (apt)
+    current:
+      via: shell
+      # `db:Status-Status` too: a package removed but not purged keeps its
+      # version in dpkg's record, and only "installed" means it is there.
+      cmd: "dpkg-query -W -f='${db:Status-Status} ${Version}' brave-browser"
+      regex: '^installed (\d\S*)'
+    latest:
+      via: shell
+      cmd: "apt-cache policy brave-browser"
+      regex: 'Candidate:\s*(\d\S*)'
+
+  chromium:
+    # snap, tracking latest/stable; `snap info` asks the store, read-only.
+    tier: observed
+    display: Chromium (snap)
+    current:
+      via: shell
+      cmd: "snap list chromium"
+      regex: '^chromium\s+(\S+)'
+    latest:
+      via: shell
+      cmd: "snap info chromium"
+      regex: '^\s+latest/stable:\s+(\S+)'
+
+  engine-venv:
+    # The engine's own .venv as one component: how many of its packages have
+    # a newer release. `notify` so it is surfaced, and no `apply`: an update
+    # of the engine's dependencies is engine work, done through a yard via
+    # `uv`, never by this manager.
+    tier: notify
+    display: engine venv (uv)
+    current:
+      via: outdated_count
+      cmd: "$HOME/.local/bin/uv pip list --outdated --format json --python .venv/bin/python"
+    latest:
+      via: zero_outdated
+
+  hindsight-server:
+    # The Hindsight memory server, reached over the existing SSH tunnel. The
+    # version is asked of the server through its own CLI (`hindsight version`),
+    # which is the recorded route, rather than of a guessed HTTP path. Watched
+    # only: the server is upgraded on its host by hand.
+    tier: observed
+    display: Hindsight server
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/hindsight version -o json"
+      regex: '"api_version":\s*"([^"]+)"'
+    latest:
+      via: github_release
+      repo: vectorize-io/hindsight
+
+  hindsight-cli:
+    # The release binary in ~/.local/bin, downloaded from the same repository's
+    # releases (the install log in the data repository records the asset URL).
+    tier: observed
+    display: Hindsight CLI
+    current:
+      via: shell
+      cmd: "$HOME/.local/bin/hindsight --version"
+      regex: 'hindsight (\S+)'
+    latest:
+      via: github_release
+      repo: vectorize-io/hindsight
+
+  hindsight-coding-agents:
+    # The Claude Code plugin behind the memory banner. Current is its own
+    # package.json, which also names the npm package and the repository.
+    tier: observed
+    display: Hindsight coding-agents plugin
+    current:
+      via: shell
+      cmd: "cat $HOME/.hindsight/coding-agents/package.json"
+      regex: '"version":\s*"([^"]+)"'
+    latest:
+      via: npm
+      package: "@vectorize-io/hindsight-coding-agents"
+
+# Documentation watch: `update-manager.py docs`, run by the daily `check` at most
+# once every 14 days. Each page is snapshotted as text in the data repository and
+# diffed against the previous run; nothing is ever adapted automatically. Operator
+# decision 2026-09-30: checking is automatic, adaptation happens on his word.
+#
+# `provenance` says where each address was READ, with the date. An address that
+# could not be established from a record is left out, never guessed.
+# Kinds: markdown (as is), html (visible text), links (the distinct matches of
+# `pattern`), github_latest_release (tag + notes), npm_latest (the `fields`).
+doc_sources:
+  - id: claude-code-mcp
+    url: "https://code.claude.com/docs/en/mcp.md"
+    kind: markdown
+    provenance: >-
+      The Markdown form linked from the page itself; HELM fetched the page
+      https://code.claude.com/docs/en/mcp on 2026-09-30, and the link was read
+      from its HTML the same day.
+  - id: mcp-spec-changelog
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/changelog.md"
+    kind: markdown
+    provenance: >-
+      Linked from the changelog page of the current revision, reached
+      2026-09-30 from https://modelcontextprotocol.io/introduction, which the
+      Claude Code MCP page links. Fixed to revision 2026-07-28; a newer revision
+      shows up in mcp-spec-revisions below.
+  - id: mcp-spec-revisions
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/changelog"
+    kind: links
+    pattern: '/specification/((?:\d{4}-\d{2}-\d{2})|draft)/changelog'
+    provenance: >-
+      The same changelog page as HTML; on 2026-09-30 its navigation linked the
+      changelogs of 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28 and draft.
+      A new revision is expected to appear in that list (inferred, not yet
+      observed).
+  - id: hindsight-mcp-server-docs
+    url: "https://hindsight.vectorize.io/developer/mcp-server"
+    kind: html
+    provenance: >-
+      Named in the Hindsight production-deployment research in the data
+      repository (2026-09-29); fetched 2026-09-30.
+  - id: hindsight-changelog
+    url: "https://hindsight.vectorize.io/changelog"
+    kind: html
+    provenance: >-
+      Linked as /changelog from the MCP server docs page, read 2026-09-30.
+  - id: hindsight-release
+    url: "https://api.github.com/repos/vectorize-io/hindsight/releases/latest"
+    kind: github_latest_release
+    provenance: >-
+      Repository named in ~/.hindsight/coding-agents/package.json (repository.url)
+      and in the install log in the data repository, read 2026-09-30; the API
+      form is the one the github_release probe above uses.
+  - id: hindsight-coding-agents-npm
+    url: "https://registry.npmjs.org/@vectorize-io/hindsight-coding-agents/latest"
+    kind: npm_latest
+    fields: [version, description, bin, dependencies, peerDependencies]
+    provenance: >-
+      Package name read from ~/.hindsight/coding-agents/package.json on
+      2026-09-30; the registry form is the one the npm probe uses.

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Uninstall a HEADING OS daemon's systemd user unit (Linux/WSL2).
+#
+# Usage:
+#   scripts/uninstall-daemon-service.sh <name>
+#
+# Counterpart to scripts/install-daemon-service.sh. Idempotent: silent
+# no-op if the unit is not installed.
+#
+# `bridge` was a target here until HOS-161: HOS-7 removed the bridge daemon
+# on 2026-09-21, so the name now falls to "Unknown daemon" like any other.
+
+set -euo pipefail
+
+# HELM only. The systemd unit templates substitute the workspace path into
+# WorkingDirectory= and ExecStart=, so running this from a YARD worktree
+# points a LIVE daemon at a checkout that is deleted two days later.
+source "$(dirname "$0")/lib/require-main-clone.sh"
+require_main_clone
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <name>" >&2
+    echo "  sentinel | sync-exchange" >&2
+    exit 1
+fi
+
+case "$1" in
+    sentinel)                          UNIT="sentinel" ;;
+    sync-exchange|sync-exchange-daemon) UNIT="sync-exchange-daemon" ;;
+    *)
+        echo "Unknown daemon: $1" >&2
+        exit 2
+        ;;
+esac
+
+UNIT_FILE="$HOME/.config/systemd/user/$UNIT.service"
+
+if [[ ! -f "$UNIT_FILE" ]]; then
+    echo "  [info] $UNIT.service not installed - nothing to do."
+    exit 0
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now "$UNIT.service" 2>/dev/null || true
+fi
+
+rm -f "$UNIT_FILE"
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload 2>/dev/null || true
+fi
+
+echo "  [ok] systemd user unit removed: $UNIT.service"

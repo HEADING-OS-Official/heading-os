@@ -1,0 +1,11 @@
+[Unit]
+Description=Hindsight server pulse every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

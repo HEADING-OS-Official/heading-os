@@ -1,0 +1,13 @@
+[Unit]
+Description=Hindsight server pulse to Healthchecks.io (dead-man signal)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# No installer in this repository: this unit and its .timer are copied by hand to
+# the Hindsight server, so check-unit-drift.py on the workstation never sees them.
+# System unit on the Hindsight server, run as root: the status script reads
+# systemd, PostgreSQL (through sudo -u postgres), pgBackRest and the 0600 ping URL.
+Type=oneshot
+ExecStart=/usr/local/sbin/hindsight-status --pulse
+TimeoutStartSec=120

@@ -1,0 +1,192 @@
+# Setup wizard question bank (authoritative)
+# Schema: see the 2026-04-24 setup-wizard design spec, §4 (registry name `spec-docs`)
+# IDs are immutable once shipped. Adding questions is safe; removing is not.
+# The one removal so far: the three executive-only questions and every
+# executive output target, 2026-09-25, with the executive workspace model.
+
+# ──────────────────────────────────────────────────────────────
+# Public audience (pristine HEADING OS clones)
+# ──────────────────────────────────────────────────────────────
+
+- id: company_full_name
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "What's your company's full legal name?"
+  example: ""
+  target:
+    placeholder: "{COMPANY_FULL}"
+    files: ["business-info"]
+
+- id: company_short_name
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your company's short name (one or two words you use in conversation)."
+  example: ""
+  target:
+    placeholder: "{COMPANY}"
+    files: ["business-info"]
+
+- id: company_domain
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your company's email/web domain."
+  example: ""
+  target:
+    placeholder: "{COMPANY_DOMAIN}"
+    files: ["business-info"]
+
+- id: company_timezone
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your primary operating timezone (IANA format)."
+  example: ""
+  help: "Find yours at https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+  target:
+    placeholder: "{TIMEZONE}"
+    files: ["calendar-policy"]
+
+- id: company_hq_cities
+  audience: [public]
+  type: list
+  required: false
+  prompt: "Cities where your company has significant presence (1-3, comma-separated)."
+  example: ""
+  target:
+    placeholders: ["{HQ_CITY_1}", "{HQ_CITY_2}", "{HQ_CITY_3}"]
+    files: ["business-info"]
+
+- id: ceo_full_name
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your full name (the person using this workspace)."
+  example: ""
+  target:
+    placeholder: "{CEO_NAME}"
+    files: ["personal-info"]
+
+- id: ceo_title
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your title."
+  example: ""
+  target:
+    placeholder: "{CEO_TITLE}"
+    files: ["personal-info"]
+
+- id: ceo_email
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your primary work email."
+  example: ""
+  target:
+    placeholder: "{CEO_EMAIL}"
+    files: ["personal-info"]
+
+- id: product_name
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "Your flagship product or platform name."
+  example: ""
+  target:
+    placeholder: "{PRODUCT}"
+    files: ["business-info"]
+
+- id: product_tagline
+  audience: [public]
+  type: placeholder
+  required: false
+  prompt: "Your product tagline (short, memorable)."
+  example: ""
+  target:
+    placeholder: "{PRODUCT_TAGLINE}"
+    files: ["business-info"]
+
+- id: product_modules
+  audience: [public]
+  type: list
+  required: false
+  prompt: "Your product's main modules or product lines (up to 4, comma-separated)."
+  example: ""
+  target:
+    placeholders: ["{MODULE_1}", "{MODULE_2}", "{MODULE_3}", "{MODULE_4}"]
+    files: ["business-info"]
+
+- id: team_name
+  audience: [public]
+  type: placeholder
+  required: true
+  prompt: "What do you call your team? (Team, Crew, Squad...)"
+  example: ""
+  target:
+    placeholder: "{TEAM_NAME}"
+    files: ["business-info"]
+
+- id: core_values
+  audience: [public]
+  type: list
+  required: false
+  prompt: "Your company's core values (3-5, comma-separated)."
+  example: ""
+  target:
+    placeholders: ["{VALUE_1}", "{VALUE_2}", "{VALUE_3}", "{VALUE_4}", "{VALUE_5}"]
+    files: ["business-info"]
+
+- id: ceo_voice
+  audience: [public]
+  type: rich
+  required: true
+  prompt: "In 2-3 sentences: how do you write? Formal or casual? Short or long? Any words or phrases you hate? Any you lean on?"
+  example: ""
+  help: "I'll expand your answer into a full voice brief. You'll review and approve before anything is saved."
+  target:
+    template: "config/wizard-templates/ceo-voice.md.tmpl"
+    output: "voice-guide"
+
+- id: personal_info
+  audience: [public]
+  type: rich
+  required: true
+  prompt: "Tell me about yourself in 2-3 sentences. Background, what you care about, what you're building."
+  example: ""
+  target:
+    template: "config/wizard-templates/personal-info.md.tmpl"
+    output: "personal-info"
+
+- id: business_info
+  audience: [public]
+  type: rich
+  required: true
+  prompt: "In 2-3 sentences: what does your company actually do? Who are your customers? What's the one-line pitch?"
+  example: ""
+  target:
+    template: "config/wizard-templates/business-info.md.tmpl"
+    output: "business-info"
+
+- id: calendar_policy
+  audience: [public]
+  type: rich
+  required: false
+  prompt: "Any scheduling rules? (Default meeting length, preferred hours, timezones, default video-call link, etc.)"
+  example: ""
+  target:
+    template: "config/wizard-templates/calendar-policy.md.tmpl"
+    output: "calendar-policy"
+
+- id: anthropic_api_key
+  audience: [public]
+  type: secret
+  required: true
+  prompt: "Paste your Anthropic API key. You can get one by signing in at <https://console.anthropic.com/> and visiting Settings -> API Keys."
+  example: ""
+  help: "Stored in .env on your machine only. Never committed to git, never logged."
+  target:
+    env_var: "ANTHROPIC_API_KEY"
+

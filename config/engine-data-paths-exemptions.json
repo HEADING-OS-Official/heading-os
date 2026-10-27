@@ -1,0 +1,16 @@
+{
+  "_about": "Ratchet for scripts/audit-skill-data-paths.py --engine (HOS-234). ceiling: physical data-repository paths in engine code under scripts/, .claude/hooks/, .claude/agents/ and config/ that no entry covers; it may only fall, and the goal is 0. entries: reviewed exemptions in the format of scripts/utils/statement_exemptions.py, one finding each, keyed by the full text of the line.",
+  "ceiling": 0,
+  "entries": [
+    {
+      "path": "config/rule-split-inventory/documentation.md.txt",
+      "statement": "Move it to `archive/{YYYY}/` under `plans`: `P=$(python scripts/data-path.py path plans); git mv \"$P/{filename}\" \"$P/archive/{year}/\"`",
+      "reason": "a verbatim copy of a line of the documentation rule, which the rule-split inventory must reproduce byte for byte; archive/{YYYY} there is a subdirectory of the plans address the same line already resolves by registry name, not a path from the data root"
+    },
+    {
+      "path": "scripts/utils/paths.py",
+      "statement": "    in_tree = (root / \"crm\" / \"contacts\").is_dir() or (root / \"knowledge\").is_dir()",
+      "reason": "get_data_root rule 2 asks whether the WORKSPACE root itself carries the legacy in-tree data markers; data_path imports this module, so the registry cannot be asked here, and the two segments are the marker being detected, not an address opened for its records"
+    }
+  ]
+}

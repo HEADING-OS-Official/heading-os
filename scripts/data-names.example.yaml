@@ -1,0 +1,850 @@
+# Data-address names - THE ENGINE'S DEFAULT SET
+# ============================================
+# THIS FILE IS A DEFAULT AND IT IS NEVER THE LIVE REGISTRY. The live list is the
+# `names:` block of `<data-root>/config/data-paths.yaml`, and a tree that has
+# that block always wins: `scripts/utils/data_path.py` reads this file ONLY when
+# the tree's registry carries no `names:` block at all. It is the exact twin of
+# `scripts/runtime-services.example.yaml`, which stands in the same relation to
+# the `services:` block, and `load_registry()` states the three cases the way
+# `runtime_dir.load_services()` states its own.
+#
+# WHY THE ENGINE SHIPS ONE. Without it, every bare registry name refuses on any
+# tree that has no registry of its own, and such trees are ordinary rather than
+# hypothetical: a public clone with no data repository, and a data repository
+# the moment `scripts/init-data.py` creates it: that script seeds the registry
+# from the services template, which carries no `names:` block, so a data
+# repository is born without one. Another is any fixture assembled by hand.
+#
+# WHAT IT MAY HOLD, and this line is the boundary rather than a preference. It
+# carries STRUCTURE: the subject roots listed in `subject_roots:` below, and the
+# generic sub-addresses inside them, which are the same in every workspace. It carries no
+# real person, no real entity, no private path, no dated one-off directory and
+# nothing else belonging to one operator. The engine repository is public. Two
+# names the engine's own code asks for are deliberately absent for that reason
+# and are named in `template_names()`.
+#
+# WHAT AN ENTRY IS. `what:` says in one line what the address holds. Exactly one
+# of `path:` or `runtime:` is the base. `path:` is an address of its own,
+# relative to the data root, and every one in this file sits inside the subject
+# tree; `runtime: <service>/<kind>` defers to the service vocabulary, with
+# `under:` naming the sub-address inside it. `{person}` and the like are
+# parameters, supplied at the call.
+#
+# The `record: <family>/<leaf>` base is retired (HOS-240, 2026-10-13).
+#
+# Adding a name HERE registers nothing on a tree that has its own `names:`
+# block; it changes what a tree without one is answered.
+
+version: 1
+
+# The runtime store's directory under the data root, where every
+# `runtime:<service>/<kind>` address lands. A tree's own registry that declares
+# this key wins; one that does not is answered from this line. Written plain and
+# once, because the overlay write guard reads it with a regular expression
+# (`scripts/utils/registry_bootstrap.py`) and the resolver refuses a registry the
+# two would read differently. Moving the store is an edit of this one key in the
+# tree's registry, and its `.gitignore` rules must move with it: the resolver
+# refuses a relocated store whose ignore rules did not follow
+# (`runtime_dir.store_ignore_problems`). The live registry moved it to
+# `system/runtime` with the C3 structure (2026-10-13); the default here stays
+# `runtime-junk` because the synthetic trees and the yard-containment guards
+# are built against it, and moving it is one change across all of them.
+runtime_store: runtime-junk
+
+# The top-level directories of the data repository's subject tree. Every guard
+# asking "is this a data root" reads this list through `families.subject_roots()`
+# (HOS-234): a tree's own registry that lists the key wins, and one that does not,
+# or a machine with no data root at all, is answered from this line, which is the
+# fail-closed answer for a wall. One line, flow style, in column 0, once: the
+# guards read it with a regular expression and the resolver refuses a registry
+# the two would read differently. A root may not name a top-level engine entry.
+subject_roots: [accounts, company, content, people, knowledge, personal, inbox, system, archive]
+
+names:
+  audit-campaigns:
+    what: "the engine-audit campaign reports"
+    path: system/reports/audits
+  auto-memory:
+    what: "the automatic memory records, one file per durable fact"
+    path: auto-memory
+  bootcamp-events:
+    what: "the bootcamp event working directories, one per event, prelim and roster"
+    path: company/events
+  brand-manifest:
+    what: "the brand asset manifest, which logo and font file is which"
+    path: system/config/brand-assets.json
+  census-bench:
+    what: "the census benchmark runs, raw and per-submodel"
+    path: system/scratch/census-bench
+  chronicle:
+    what: "the session chronicle, one record per captured session"
+    path: system/chronicle
+  chronicle-keywords:
+    what: "the keyword list that marks a chronicle session personal"
+    path: system/config/chronicle-personal-keywords.txt
+  chronicle-transcripts:
+    what: "the archived session transcripts the chronicle indexes"
+    path: system/chronicle/transcripts
+  checkout-scratch:
+    what: "one engine checkout's scratch: a prepared commit message, a registry stanza for HELM, raw measurements; what <checkout>/.tmp/ used to be"
+    runtime: checkout-scratch/tmp
+    under: "{checkout}"
+  checkout-state:
+    what: "one engine checkout's hook and guard state: rate limiter, graph-first and fan-out stamps, checkpoint state; what <checkout>/.claude/state/ used to be"
+    runtime: hook-state/tmp
+    under: "{checkout}"
+  council-reports:
+    what: "the council transcripts whose topic classified them as a report"
+    path: system/reports/council
+  council-transcripts:
+    what: "the council transcripts and the verdict ledger beside them"
+    path: system/scratch/council
+  council-verdicts:
+    what: "the append-only council verdict ledger"
+    path: system/scratch/council/_verdicts.jsonl
+  proxy-usage-ledger:
+    what: "the append-only ledger of model calls through the local proxy, one row per request with token counts and no text"
+    path: system/scratch/proxy-usage/usage.jsonl
+  proxy-usage-reports:
+    what: "the static proxy-usage dashboards scripts/proxy-usage.py --html writes"
+    path: system/reports/proxy-usage
+  proxy-usage-prices:
+    what: "the local copy of the public pydantic/genai-prices table scripts/proxy-usage.py prices the ledger by, refreshed at most once a day"
+    path: system/scratch/proxy-usage/genai-prices.json
+  proxy-usage-prices-attempt:
+    what: "when scripts/proxy-usage.py last tried to fetch the price table and whether it worked"
+    path: system/scratch/proxy-usage/genai-prices.attempt.json
+  proxy-usage-price-aliases:
+    what: "which genai-prices row each proxy model name is priced as (scripts/proxy-usage.py); a model absent or null here is unpriced"
+    path: system/config/proxy-usage-price-aliases.yaml
+  context-entity:
+    what: "the entity family's share of the context pages, as a directory"
+    path: accounts/_index
+  context-matter:
+    what: "the matter family's share of the context pages, as a directory"
+    path: company/sales
+  crm-address-book:
+    what: "the CRM address book, one file per organisation"
+    path: people/address-book
+  crm-aliases:
+    what: "the alias table that maps a written name to a CRM contact slug"
+    path: people/_index/crm-aliases.md
+  crm-config:
+    what: "the CRM's own configuration: cadences, health thresholds, tier rules"
+    path: people/_index/crm-config.md
+  crm-contact:
+    what: "one contact card, addressed by the contact's slug"
+    path: people/{person}.md
+  crm-contacts:
+    what: "the directory holding every CRM contact card"
+    path: people
+  crm-dashboard:
+    what: "the rendered CRM command-centre pages, one dated directory per run"
+    path: people/_audits/_work
+  crm-operations:
+    what: "the CRM operational working directory: next-action lists, migration maps"
+    path: people/_audits/_work
+  current-data:
+    what: "the current metrics: revenue, headcount, the numbers that date fastest"
+    path: company/metrics/current-data.md
+  dashboard-figures:
+    what: "the morning dashboard's last known figure readings; current-data wins where it answers"
+    path: company/metrics/dashboard-figures.json
+  dashboard:
+    what: "the rendered morning dashboards"
+    path: system/scratch/dashboard
+  data-config:
+    what: "the data repository's own configuration directory"
+    path: system/config
+  datastore-index:
+    what: "the index of the DataStore, the operator's authoritative document tree"
+    path: system/reference/datastore-INDEX.md
+  datastore-map:
+    what: "the map of the DataStore, what each of its directories holds"
+    path: system/reference/datastore-map.md
+  deliverables:
+    what: "finished documents: a deliverable handed over, one timestamped directory per task"
+    path: company/documents
+  deliverable-documents:
+    what: "the long-form capability documents rendered to DOCX"
+    path: company/documents
+  design-output:
+    what: "the design studio's rendered output"
+    path: company/design
+  docparse-reports:
+    what: "the /docparse visual-citation reports"
+    path: knowledge/intelligence/docparse
+  document-output:
+    what: "the DOCX the letter, charter, use-case and client generators write"
+    path: company/documents
+  drafts:
+    what: "drafts: a document, report or working file not yet final, one timestamped directory per task"
+    path: inbox/work
+  dream-reports:
+    what: "the dream-shadow pass reports, one dated file per run"
+    path: system/reports/dream
+  email-signature-assets:
+    what: "the images the email signature embeds by CID, the logo and the divider"
+    path: company/brand/assets/email-signature
+  friends:
+    what: "the operator's friends, as a single readable page"
+    path: people/_index/friends.md
+  generated-images:
+    what: "the images the design engine generates"
+    path: content/images
+  handoff-archive:
+    what: "the compaction and checkpoint handoffs, one file per handoff"
+    path: system/handoffs
+  harness-manifest:
+    what: "the recorded state of the Claude Code harness this workspace expects"
+    path: system/config/harness-manifest.json
+  hindsight-model-bench:
+    what: "the blind model comparisons for the memory server, one dated run per directory, and the default sample set"
+    path: system/reports/hindsight-model-bench
+  hiring-pipeline:
+    what: "the open roles and where each candidate stands"
+    path: company/tribe/hiring-pipeline.md
+  inbox-pulse-reports:
+    what: "the inbox-pulse triage reports"
+    path: system/reports/inbox-pulse
+  linkedin-archive:
+    what: "published LinkedIn content, filed after it went live"
+    path: content/linkedin/archive
+  linkedin-drafts:
+    what: "LinkedIn posts drafted and not yet published"
+    path: content/linkedin
+  llm-fit-reports:
+    what: "the model-fit comparison reports"
+    path: system/reports/llm-fit
+  machine-config-manifest:
+    what: "what the off-machine copy carries as machine-config: each file, where it goes back, how to restore it"
+    path: system/config/machine-config-manifest.yaml
+  memory-calibration:
+    what: "the memory-retrieval calibration runs and their thresholds"
+    path: system/runbooks/memory-calibration
+  memory-archive:
+    what: "byte-for-byte archives of memory records before a move, one directory per move"
+    path: memory-archive
+  memory-eval-sets:
+    what: "the recall gold question set and negative controls recall-calibration measures against"
+    path: system/scratch/memory-eval
+  memory-hygiene-reports:
+    what: "the dated objective-defect reports scripts/memory-hygiene.py writes, one per run"
+    path: system/reports/memory-hygiene
+  modem-imei-ledger:
+    what: "the modem IMEI ledger /modem-tune reads and appends to"
+    path: system/scratch/reference/modem-imei-ledger.json
+  negotiations:
+    what: "the negotiation preparation records, one directory per counterpart"
+    path: company/negotiations
+  newsletters:
+    what: "the rendered intelligence-briefing newsletters"
+    path: knowledge/intelligence/newsletters
+  odin-brain:
+    what: "the Odin brain: principles, positions, episodes, sources, conflicts"
+    path: knowledge/odin-brain
+  odin-cadence-reports:
+    what: "the Odin cadence reports, one per run"
+    path: system/reports/odin-cadence
+  odin-reflect-proposals:
+    what: "the Odin cadence's reflection proposals awaiting the operator"
+    path: system/scratch/odin-reflect-proposals
+  odin-skill-proposals:
+    what: "the Odin skill-proposal artifacts, one markdown file per proposal"
+    path: system/scratch/odin/skill-proposals
+  osint-advanced-sync-reports:
+    what: "the osint-advanced sync reports, markdown and HTML"
+    path: knowledge/intelligence/osint-advanced/sync-reports
+  partner-enablement:
+    what: "the generated partner enablement material"
+    path: content/partner-enablement
+  partners:
+    what: "the partner organisations and where each relationship stands"
+    path: accounts/_index/partners.md
+  people:
+    what: "the key people around the operator, as a single readable page"
+    path: people/_index/people.md
+  pipeline:
+    what: "the commercial pipeline, one row per live opportunity"
+    path: company/sales/pipeline.md
+  plans:
+    what: "the implementation plans, with the completed ones under archive/"
+    path: system/plans
+  presentations:
+    what: "the rendered decks, PPTX and the MARP output beside them"
+    path: company/presentations
+  proposals:
+    what: "the rendered commercial proposals"
+    path: company/proposals
+  reference-docs:
+    what: "the reference directory: the voice guide, the maps"
+    path: system/reference
+  company-reference:
+    what: "the company reference pages: the email signature, the state-check guide, the newsletter guide, the calendar policy"
+    path: company/reference
+  reminders:
+    what: "the dated reminder store"
+    path: system/scratch/reminders/reminders.json
+  release-journal:
+    what: "every commit and push the release gate authorised, with the words that authorised it"
+    runtime: release/cache
+    under: authorised.jsonl
+  research-surveys:
+    what: "the /deep-research-advance survey reports and their sources"
+    path: knowledge/research
+  router-accuracy-trend:
+    what: "the append-only skill-router accuracy trend, one row per nightly run"
+    path: system/runbooks/router-accuracy/trend.jsonl
+  scrutiny-sheets:
+    what: "the sheets /scrutinize writes per run, and the run ledger beside them"
+    path: system/scratch/scrutiny
+  scrutiny-reports:
+    what: "the /scrutinize reports, beside the sheets in scrutiny-sheets"
+    path: system/reports/scrutiny
+  search-domains:
+    what: "the allow and block domain lists web research is filtered through"
+    path: system/reference/search-domains.md
+  service-mirror:
+    what: "the read-only laptop mirror of the service-host VM's daemon state"
+    path: system/runbooks/service-mirror
+  skill-audit:
+    what: "the skill-population capture, one dated directory per run beneath this"
+    path: system/reports/skill-audit
+  spec-docs:
+    what: "the design records, specifications and architecture notes"
+    path: system/specs
+  strategy:
+    what: "the current strategy and its priorities, as a position rather than a plan"
+    path: company/strategy/strategy.md
+  team-roster-state:
+    what: "the team roster's state directory; its tribe-roster.json is the team the content guard harvests"
+    path: company/runbooks/team-roster-state
+  telegram-downloads:
+    what: "the media the Telegram client downloads"
+    path: inbox/media/telegram
+  templates:
+    what: "the operator's workspace document templates (CLAUDE.md.template, GETTING-STARTED, EMERGENCY-PROCEDURES)"
+    path: system/templates
+  threads:
+    what: "the operational thread registry, business and personal"
+    path: company/threads
+  threads-business:
+    what: "the business threads, the half of the registry that is not personal"
+    path: company/threads
+  tribe-operations:
+    what: "the team's operational directory"
+    path: company/runbooks/tribe
+  update-state:
+    what: "update-manager's state: component versions seen, what auto-applied, what waits"
+    path: system/scratch/updates/state.json
+  doc-watch-state:
+    what: "update-manager's documentation watch: last run, last report, what changed or was not checked"
+    path: system/scratch/doc-watch/state.json
+  doc-watch-snapshots:
+    what: "the documentation watch's text snapshot per source, the baseline each run diffs against"
+    path: system/scratch/doc-watch/snapshots
+  doc-watch-reports:
+    what: "the documentation watch's reports, one Markdown file per run"
+    path: system/reports/doc-watch
+  assistant-inbox-state:
+    what: "the assistant inbox's processing state"
+    path: system/scratch/assistant-inbox/state.json
+  assistant-inbox-tasks:
+    what: "the task list the assistant inbox writes and the dashboard reads"
+    path: system/scratch/assistant-inbox/tasks.md
+  weekly-reviews:
+    what: "the weekly reviews, one dated markdown file per review"
+    path: company/reviews
+  # Added 2026-09-22, and it passes the boundary above for the same reason
+  # `datastore-map` and `search-domains` do: it is one generic file under
+  # the reference home, present by the same name in every workspace, holding a
+  # catalogue of that workspace's own scripts and systems. The catalogue's
+  # CONTENTS are the operator's; the address is structure. Without this entry
+  # `scripts/workspace-health.py` cannot come off the seam at all, because the
+  # name exists only in the operator's private registry and a public clone was
+  # answered `UnknownDataPath`.
+  workspace-overview:
+    what: "the runtime catalogue of every script, reference file and system"
+    path: system/reference/workspace-overview.md
+  x-pulse-briefs:
+    what: "the X.com account-pulse briefs, one directory per run"
+    path: knowledge/intelligence/x-pulse
+  yt-pulse-briefs:
+    what: "the YouTube pulse briefs, one directory per scan"
+    path: knowledge/intelligence/pulse
+  # Added 2026-09-25, HOS-5 section 7. Each of these was named in operators'
+  # registries while its writer and readers spelled the address themselves,
+  # `runtime:<service>/<kind>` plus a file name, so editing the entry moved the
+  # CLI's answer and no file. The consumers now ask the name, and a tree with
+  # no `names:` block has to be able to answer it, or they would refuse there.
+  # Structure only: the service, the kind and a file name the engine's own code
+  # writes, the same in every workspace. `memory-index` is the same case for
+  # the index file inside `auto-memory`. Three are named by their DIRECTORY and
+  # not by their file, because the file is a `.log`, a `.png` and a `.lock`,
+  # which `test_the_shipped_default_registry_names_no_operator_address` refuses
+  # in this public file; the code joins the file name, and an edit to the
+  # directory's entry still moves the file.
+  browser-cdp-lock:
+    what: "the CDP endpoint lock of the running headless browser session"
+    runtime: browser/cache
+    under: browser-cdp.json
+  browser-cookies:
+    what: "the imported browser cookies the headless browser reuses"
+    runtime: browser/cache
+    under: cookies.json
+  browser-logs:
+    what: "the headless browser's log directory; browser-launch.log, truncated on every launch"
+    runtime: browser/logs
+  clipboard-grabs:
+    what: "the clipboard grab directory; clip.png, overwritten on every run"
+    runtime: clip/tmp
+  design-exemplars:
+    what: "the scraped design-reference screenshots and their manifest"
+    runtime: research-drafts/tmp
+    under: exemplars
+  exchange-calendar-cache:
+    what: "the Exchange calendar dump, rebuilt by the next sync"
+    runtime: sync-exchange/cache
+    under: calendar
+  exchange-email-cache:
+    what: "the Exchange inbox dump, rebuilt by the next sync"
+    runtime: sync-exchange/cache
+    under: emails
+  firecrawl-cache:
+    what: "the Firecrawl scrape cache, keyed by URL with a per-kind TTL"
+    runtime: browser/cache
+    under: firecrawl-cache
+  memory-index:
+    what: "the resident memory index, the one file loaded into every session"
+    path: auto-memory/MEMORY.md
+  private-policy:
+    what: "the operator's rules of conduct, imported by the operational layer"
+    path: CLAUDE.private.md
+  update-manager-locks:
+    what: "update-manager's lock directory; .apply.lock, its single-apply lock"
+    runtime: update-manager/state
+  # Added 2026-10-12, yard partc-skill-paths-2. The skills stopped spelling
+  # these addresses and now ask the name, so a tree with no `names:` block
+  # has to answer them or every such skill step refuses on a public clone.
+  # Structure only: the same subject roots and sub-addresses in every
+  # workspace. `xpager-reference`, which /xpager also names, is left out:
+  # it addresses one dated deliverable, which is never structure.
+  brand-kit:
+    what: "the brand kit: fonts, logos, assets and the deck design system"
+    path: company/brand
+  calendar-policy:
+    what: "the operator's calendar policy: protected blocks, day themes, duration rules"
+    path: company/reference/ceo-calendar-policy.md
+  calibrate-reviews:
+    what: "the /calibrate review queue: one {date}_engine-review.md per run, holding every settings, skill and rule patch proposal (applied later by an approved yard change, settings by HELM); memory patches are written to auto-memory directly"
+    path: system/scratch/calibrate
+  context-measurement:
+    what: "the context home for measurements, one of the five context homes"
+    path: company/metrics
+  context-position:
+    what: "the context home for positions, one of the five context homes"
+    path: company/strategy
+  context-reference:
+    what: "the context home for reference context, one of the five context homes"
+    path: company/reference
+  crm-aggregated:
+    what: "the derived view of executives' CRM records; historical, its writer left with the executive model"
+    path: system/derived/crm/aggregated
+  crm-migration-backup:
+    what: "the CRM migration's backup copies, never a source of episodes"
+    path: archive/crm-migration-backup
+  datastore-brand:
+    what: "the DataStore home for the brand assets, one of the seven DataStore homes"
+    path: company/brand
+  datastore-capture:
+    what: "the DataStore home under inbound/capture, one of the seven DataStore homes"
+    path: company/events
+  datastore-deliverable:
+    what: "the DataStore home under work/deliverable, one of the seven DataStore homes"
+    path: content/linkedin/archive
+  datastore-documents:
+    what: "the DataStore home under inbound/document (books, personal documents), one of the seven"
+    path: personal/documents
+  datastore-dossier:
+    what: "the DataStore home under research/dossier (intelligence, competitors), one of the seven"
+    path: knowledge/intelligence
+  datastore-reference:
+    what: "the DataStore home for product reference material, one of the DataStore homes"
+    path: company/products
+  datastore-runbook:
+    what: "the DataStore home under build/runbook, one of the seven DataStore homes"
+    path: company/runbooks
+  doctype-build-area:
+    what: "the build area beside a locked-template document: data.json and any one-off render script"
+    path: company/work/_work-{slug}
+  email-intel-reports:
+    what: "the /email-intel daily digests and its tasks.md"
+    path: system/scratch/email-intelligence
+  intel-outputs:
+    what: "the intelligence briefs and dossiers; /marp from renders them dark"
+    path: knowledge/intelligence
+  intelligence:
+    what: "the umbrella of every intelligence report and dossier"
+    path: knowledge/intelligence
+  competitor-dossiers:
+    what: "the competitor dossiers, one directory per competitor"
+    path: knowledge/intelligence/competitors
+  books:
+    what: "the long-form writing projects, one directory per book"
+    path: content/books
+  book-library:
+    what: "the books read and kept, with their -extract.md companions"
+    path: knowledge/books
+  knowledge-base:
+    what: "the root of the knowledge base shared with Zettlr; odin-brain sits inside it"
+    path: knowledge
+  letter-sequence:
+    what: "the last issued letter reference number; a second counter re-issues numbers already on letters"
+    path: company/documents/_letter-sequence.txt
+  meeting-prep-briefs:
+    what: "the /meeting-prep briefs, one directory per meeting"
+    path: company/meeting-prep
+  modem-imei-procedure:
+    what: "the device and procedure reference for the mobile router IMEI reconfiguration"
+    path: system/scratch/reference/gl-inet-mobile-router-imei-reconfig.md
+  operations-handoff:
+    what: "operations records of the handoff leaf; /marp from renders them dark"
+    path: system/handoffs
+  operations-reports:
+    what: "operations reports; /marp from renders them dark"
+    path: system/reports
+  operations-scratch:
+    what: "operations working material; /marp from renders them dark"
+    path: system/scratch
+  ops-radar-state:
+    what: "the ops radar's hand-set acknowledgements and crunch flag (ack.json, crunch.json)"
+    path: system/state/ops-radar
+  osint-advanced-reports:
+    what: "the /osint-advanced reports, one directory per target"
+    path: knowledge/intelligence/osint-advanced
+  proposal-sequence:
+    what: "the last issued proposal reference number; a second counter re-issues numbers already on proposals"
+    path: company/documents/_proposal-sequence.txt
+  official-sequence:
+    what: "the last issued official-document reference number per class-code-year-quarter; a second counter re-issues numbers already on official documents"
+    path: company/documents/_official-sequence.txt
+  partnership-sequence:
+    what: "the last issued partnership-document reference number; a second counter re-issues numbers already on MOUs, LOIs and term sheets"
+    path: company/documents/_partnership-sequence.txt
+  thinking-notes:
+    what: "the /deep-think decision analyses"
+    path: system/scratch/thinking
+  threads-archive:
+    what: "closed threads, archived as episodes by year and layer"
+    path: archive/threads
+  # Added 2026-10-13, HOS-234 part 4. The engine's code and config stopped
+  # spelling these addresses and ask the name: the five below for the hooks and
+  # config the part-3 yards converted, and the two context files for the setup
+  # wizard's `output:`, with the voice guide the wizard and the voice rule
+  # both ask for. Structure only, the same in every workspace.
+  business-info:
+    what: "what the company is, for a session that has to answer about it"
+    path: company/reference/business-info.md
+  personal-info:
+    what: "who the operator is"
+    path: personal/reference/personal-info.md
+  voice-guide:
+    what: "the operator's voice guide, which every drafting skill writes against"
+    path: company/reference/voice-guide.md
+  context-personal:
+    what: "the personal subtree of the reference context home"
+    path: personal/reference
+  chronicle-business:
+    what: "the business half of the session chronicle"
+    path: system/chronicle/business
+  chronicle-personal:
+    what: "the personal half of the session chronicle"
+    path: personal/chronicle
+  system-research:
+    what: "the research reports whose subject is the workspace itself"
+    path: system/research
+  deliverable-content:
+    what: "the content deliverables not yet claimed by a narrower output name"
+    path: content
+  deliverable-deliverables:
+    what: "the deliverables subtree not yet claimed by a narrower output name"
+    path: company
+  customers:
+    what: "the customer organisations and where each relationship stands"
+    path: accounts/_index/customers.md
+  # Account-scoped data (HOS-234 part 10): one directory per account under
+  # `accounts-root`, the slug being the `{account}` parameter.
+  # `scripts/utils/accounts.py` lists the slugs; a directory starting with `_`
+  # or `.` is not an account.
+  accounts-root:
+    what: "every account, one directory per account slug"
+    path: accounts
+  account-proposals:
+    what: "one account's proposals"
+    path: accounts/{account}/proposals
+  account-threads:
+    what: "one account's business threads (never a personal thread)"
+    path: accounts/{account}/threads
+  account-correspondence:
+    what: "one account's emails, riders and their attachments"
+    path: accounts/{account}/correspondence
+  account-letters:
+    what: "one account's formal letters, with their build areas"
+    path: accounts/{account}/letters
+  account-reports:
+    what: "one account's reports, the meeting-prep briefs among them"
+    path: accounts/{account}/reports
+  account-research:
+    what: "one account's research"
+    path: accounts/{account}/research
+  account-documents:
+    what: "one account's other finished documents"
+    path: accounts/{account}/documents
+  account-presentations:
+    what: "one account's decks"
+    path: accounts/{account}/presentations
+  account-design:
+    what: "one account's design output and its sources"
+    path: accounts/{account}/design
+  account-xpagers:
+    what: "one account's OnePagers"
+    path: accounts/{account}/xpagers
+  account-work:
+    what: "one account's working files that are not yet a report"
+    path: accounts/{account}/work
+  system-runbooks:
+    what: "the workspace's own runbooks and measurements; the system half of the DataStore runbooks (HOS-240)"
+    path: system/runbooks
+  company-investment:
+    what: "the investment material; the company half of the DataStore dossiers (HOS-240)"
+    path: company/investment
+  plans-archive:
+    what: "the finished plans, which the path-reference check does not count as documenting engine code (HOS-240)"
+    path: system/plans/archive
+  superpowers-specs:
+    what: "the superpowers design notes and plans, archived prose for the path-reference check (HOS-240)"
+    path: system/specs/superpowers
+  admin-config:
+    what: "the admin configuration the data-config audit scans (HOS-240)"
+    path: system/config/admin
+  # Names the engine's code asks for by literal that this default did not
+  # define, so a fresh data repository answered UnknownDataPath for each
+  # (MEASURED 2026-10-25 by an AST scan of the engine: 41 such names). Generic
+  # structure only; a tree's own registry still wins outright. The personal
+  # threads name is deliberately absent: no engine file may spell its address.
+  audit-rotation-ledger:
+    what: "the audit-rotation ledger scripts/audit-rotation.py reads and rewrites"
+    path: system/reports/audits/audit-rotation-ledger.json
+  branch-reviews:
+    what: "the pre-merge review of a yard branch, one JSON per branch (scripts/review-branch.py)"
+    path: system/reports/branch-reviews
+  brief-archive:
+    what: "the yard briefs HELM delivered, one file per brief (scripts/herdr-brief.py)"
+    path: system/brief-archive
+  ceo-intel-briefs:
+    what: "the world and geopolitical intelligence briefs, one per run"
+    path: knowledge/intelligence/briefs
+  # The company references the intel and investor skills read when present
+  # (2026-10-27, when those skills joined the official distribution).
+  geopolitical-landscape:
+    what: "the standing geopolitical reference behind a regional read"
+    path: company/reference/geopolitical-landscape.md
+  growth-playbook:
+    what: "the growth playbook an investor brief argues from"
+    path: company/reference/growth-playbook.md
+  intel-cases:
+    what: "the intel case files the competitor and deal skills keep, one per subject"
+    path: knowledge/intelligence/cases
+  market-intelligence:
+    what: "the standing market reference the intel skills open first"
+    path: company/reference/market-intelligence.md
+  polymarket-coverage:
+    what: "which prediction markets are covered, and how they are read"
+    path: company/reference/polymarket-coverage.md
+  corporate-style-guide:
+    what: "the corporate style guide branded documents are drafted against"
+    path: company/brand/reference/corporate-style-guide.md
+  deck-outputs:
+    what: "generated presentation decks and carousels"
+    path: company/presentations
+  dossier-outbox:
+    what: "the [dossier] records the issue tracker did not accept yet, one JSON line per event"
+    runtime: lific/state
+    under: dossier-outbox.jsonl
+  email-intel-state:
+    what: "the /email-intel triage state; its .lock and .quarantine/ sit beside it"
+    runtime: email-intel/state
+    under: state.json
+  hosts-pins:
+    what: "hostnames whose /etc/hosts pin ops-radar compares with public DNS"
+    path: system/config/hosts-pins.yaml
+  memory-domain-labels:
+    what: "one JSON line per data file, path and domain, read by hindsight-sync to tag sends"
+    path: auto-memory/memory-domain-labels.jsonl
+  notebooklm-output:
+    what: "the NotebookLM artifacts: audio overviews, reports, downloads"
+    path: content/notebooklm
+  odin-principles:
+    what: "the Odin brain's principles, one file each"
+    path: knowledge/odin-brain/principles
+  osint-dossiers:
+    what: "the OSINT dossiers, one dated directory per target"
+    path: knowledge/intelligence/osint
+  prompt-archive:
+    what: "the saved prompts, one file per task shape (scripts/prompt-archive.py)"
+    path: system/prompt-archive
+  review-eval-cases:
+    what: "the defect set and known-clean ranges a reviewer configuration is scored on"
+    path: system/datasets/review-eval
+  review-eval-runs:
+    what: "one JSONL per reviewer-configuration run, and the comparison reports"
+    path: system/measurements/review-eval
+  security-findings:
+    what: "the open security findings, read before touching a file they name"
+    path: system/specs/security/findings-registry.md
+  security-incidents:
+    what: "the security incident write-ups, one dated file per incident"
+    path: system/security/incidents
+  skill-brand-assets:
+    what: "one skill's brand half (themes, fonts, sample decks), addressed by the skill's name"
+    path: company/brand/skill-assets/{skill}
+  skill-data:
+    what: "one skill's private data page, addressed by the skill's name"
+    path: system/skill-data/{skill}.md
+  skill-design-references:
+    what: "one skill's design history pages, addressed by the skill's name"
+    path: system/skill-data/{skill}/references
+  skill-eval-benchmarks:
+    what: "one skill's eval run records, addressed by the skill's name"
+    path: system/measurements/skills/{skill}/evals
+  skill-eval-cases:
+    what: "one skill's eval cases that carry sample content, addressed by the skill's name"
+    path: system/datasets/skills/{skill}/evals/cases
+  skill-eval-drafts:
+    what: "one skill's flagged-output drafts awaiting the operator, addressed by the skill's name"
+    path: system/datasets/skills/{skill}/evals/outcomes/_staged
+  skill-eval-outcomes:
+    what: "one skill's outcome eval cases, addressed by the skill's name"
+    path: system/datasets/skills/{skill}/evals/outcomes
+  skill-examples:
+    what: "one skill's private reference pages (worked examples), addressed by the skill's name"
+    path: system/skill-data/{skill}/references
+  skill-survey-references:
+    what: "one skill's survey material, addressed by the skill's name"
+    path: system/skill-data/{skill}/references
+  slice-notes:
+    what: "the Canopus slice notes, one file per slice"
+    path: system/design-records/slices
+  version-registry:
+    what: "the append-only event log of document version families"
+    path: auto-memory/version-registry.jsonl
+  workspace-deep-audit:
+    what: "the deep workspace audit reports"
+    path: system/reports/workspace
+
+# Named sets of the names above, for readers that walk several directories
+# together (HOS-234). Generic structure only, as the names are; a tree whose
+# registry carries its own `groups:` block always wins over this one.
+groups:
+  output-dirs:
+    what: "every output directory, umbrellas and children, a reader of recent outputs walks (/next, the outputs memory-index layer)"
+    names:
+      - audit-campaigns
+      - calibrate-reviews
+      - census-bench
+      - council-reports
+      - council-transcripts
+      - crm-dashboard
+      - crm-operations
+      - dashboard
+      - deliverable-documents
+      - doc-watch-reports
+      - doc-watch-snapshots
+      - docparse-reports
+      - dream-reports
+      - email-intel-reports
+      - generated-images
+      - handoff-archive
+      - hindsight-model-bench
+      - inbox-pulse-reports
+      - intel-outputs
+      - intelligence
+      - linkedin-drafts
+      - llm-fit-reports
+      - meeting-prep-briefs
+      - memory-eval-sets
+      - memory-hygiene-reports
+      - negotiations
+      - newsletters
+      - odin-cadence-reports
+      - odin-reflect-proposals
+      - odin-skill-proposals
+      - operations-handoff
+      - operations-reports
+      - operations-scratch
+      - osint-advanced-reports
+      - osint-advanced-sync-reports
+      - partner-enablement
+      - presentations
+      - proposals
+      - scrutiny-reports
+      - scrutiny-sheets
+      - skill-audit
+      - weekly-reviews
+      - x-pulse-briefs
+      - yt-pulse-briefs
+  datastore-homes:
+    what: "the DataStore homes the extractor, the change log and the health check walk"
+    names:
+      - datastore-reference
+      - datastore-dossier
+      - datastore-deliverable
+      - datastore-capture
+      - datastore-documents
+      - datastore-runbook
+      - datastore-brand
+      - system-runbooks
+      - company-investment
+      - book-library
+      - presentations
+  context-homes:
+    what: "the context directories the context memory-index layer and the freshness check walk"
+    names:
+      - context-position
+      - context-reference
+      - context-measurement
+      - context-entity
+      - context-matter
+  context-files:
+    what: "the single context files, which the move splits by file and so follow only by their own names"
+    names:
+      - strategy
+      - current-data
+      - people
+      - friends
+      - partners
+      - pipeline
+      - hiring-pipeline
+      - customers
+  data-config-trees:
+    what: "the data repository's configuration the --data-config audit scans (HOS-240)"
+    names:
+      - data-config
+      - templates
+      - crm-config
+      - crm-aliases
+      - admin-config
+  prose-archives:
+    what: "finished or historical prose the path-reference check does not count as documenting engine code (HOS-240); output-dirs is the other half"
+    names:
+      - plans-archive
+      - superpowers-specs
+      - chronicle
+      - chronicle-personal
+      - threads-archive
+      - handoff-archive
+  business-threads:
+    what: "every directory a business thread sits in: the unscoped business threads and each account's"
+    names:
+      - threads-business
+      - account-threads

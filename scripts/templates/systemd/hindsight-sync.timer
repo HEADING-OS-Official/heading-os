@@ -1,0 +1,11 @@
+[Unit]
+Description=Hindsight sync every 15 minutes (and 10 minutes after start)
+
+[Timer]
+OnCalendar=*:07,22,37,52
+OnStartupSec=10min
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

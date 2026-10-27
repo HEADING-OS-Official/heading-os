@@ -1,0 +1,136 @@
+---
+name: sentinel
+disable-model-invocation: true
+description: "Manage the Sentinel background daemon that monitors corporate email (Exchange) and Telegram for urgent messages. Start, stop, check status, view logs, and configure monitoring. EXPLICIT INVOCATION ONLY - daemons live on the always-on service host and are off-limits without CEO sign-off."
+argument-hint: "[start|stop|status|logs|config]"
+allowed-tools: "Bash(.venv/bin/python:*), Read"
+model: haiku
+metadata:
+  author: Misha Hanin
+  email: misha.hanin@headingos.com
+  version: "1.2"
+x-heading-capability:
+  what: >
+    Manages the Sentinel background daemon that watches Exchange email and
+    Telegram for urgent messages, scores urgency, evaluates meeting invites
+    against the CEO Calendar Policy, and alerts via Telegram.
+  how: >
+    Explicit only: type /sentinel [start|stop|status|logs|config]; not
+    auto-triggered. Drives scripts/sentinel.py; default starts the daemon if
+    it is not already running and shows status.
+  when: >
+    Use to start, stop, or check the comms-monitoring daemon. For a one-off
+    inbox triage use /email-intel; for ad-hoc Telegram use /telegram.
+x-heading-routing:
+  category: Operations
+  triggers:
+    - NEVER auto-trigger. Explicit `/sentinel` only.
+  exclusions:
+    - N/A
+  compound: 'No'
+  router: manual
+---
+# Sentinel -- Unified Comms Monitor
+
+Manage the Sentinel background daemon that monitors corporate email (Exchange) and Telegram for urgent messages.
+
+## Actions
+
+Parse the user's intent and run the appropriate command:
+
+### Default (no arguments / just "/sentinel")
+HELM only: starting, stopping or restarting the daemon never happens from a YARD. Check status first. If Sentinel is already running, show the status. If it is NOT running, start it in daemon mode automatically, then show the status.
+```bash
+.venv/bin/python scripts/sentinel.py --status
+# If output says "NOT running" -> start daemon, then show status again:
+.venv/bin/python scripts/sentinel.py --daemon && .venv/bin/python scripts/sentinel.py --status
+```
+
+### Start Sentinel (foreground)
+```bash
+.venv/bin/python scripts/sentinel.py
+```
+
+### Start Sentinel (background/headless)
+```bash
+.venv/bin/python scripts/sentinel.py --daemon
+```
+
+### Test mode (single cycle, dry-run -- notifications are logged, never sent)
+```bash
+.venv/bin/python scripts/sentinel.py --test
+```
+
+### Check status
+```bash
+.venv/bin/python scripts/sentinel.py --status
+```
+
+### Stop daemon
+```bash
+.venv/bin/python scripts/sentinel.py --stop
+```
+
+### View recent logs
+```bash
+tail -50 "$(.venv/bin/python scripts/data-path.py path runtime:sentinel/logs)/sentinel.log"
+```
+
+### Edit configuration
+Read and present the live config for editing, at the address the Configuration
+section below names.
+
+## Configuration
+
+Config file: `sentinel_config.yaml` under `data-config` (private; engine fallback
+`scripts/sentinel_config.example.yaml`)
+
+Key settings:
+- `general.check_interval_minutes` -- polling frequency (default: 15)
+- `general.urgency_threshold` -- minimum score to trigger notification (default: 7, scale 1-10)
+- `email.vip_senders` -- emails that always get elevated priority
+- `email.ignore_patterns` -- senders/patterns to skip entirely
+- `telegram.monitored_chats` -- specific groups/channels to watch
+- `notification.dedup_cooldown_minutes` -- do not repeat the same alert within N minutes (default: 60). Where alerts LAND is not a config key: they go out over the notifications bot to `SENTINEL_TELEGRAM_TARGET` (falling back to `ODIN_CADENCE_TELEGRAM_TARGET`) in `.env`.
+- `digest.morning_time` / `digest.evening_time` -- daily summary times (local TZ)
+- `calendar.enabled` -- enable meeting invite monitoring (default: true)
+- `calendar.auto_accept` -- auto-accept policy-compliant invites
+- `calendar.auto_decline` -- auto-decline non-compliant invites (non-VIP)
+- `calendar.protected_blocks` -- protected time windows from CEO Calendar Policy
+- `calendar.day_themes` -- weekly theme structure for topic alignment
+
+## Prerequisites
+
+- `ANTHROPIC_API_KEY` must be set in `.env` (get from console.anthropic.com)
+- Telegram session must be authenticated (run `/telegram setup` if needed) -- this covers Sentinel's Telegram *reading* only
+- `TELEGRAM_NOTIFY_BOT_TOKEN` in `.env` -- alerts and digests go out over the notifications bot, and without this token nothing is delivered (setup: `TELEGRAM-AND-ALERTS.md` section 7). That guide is in the data repository under registry name `spec-docs`.
+- `SENTINEL_TELEGRAM_TARGET` in `.env` (falling back to `ODIN_CADENCE_TELEGRAM_TARGET`) -- the chat id alerts land in; unset means no alert is delivered
+- Exchange credentials in `.env` (EXCHANGE_EMAIL, EXCHANGE_PASSWORD, EXCHANGE_SERVER)
+
+## Runtime Files
+
+Each lives in the data repository; resolve its directory with `.venv/bin/python scripts/data-path.py path <name>`.
+
+- `state.json` under `runtime:sentinel/state`: persistent state (processed IDs, dedup hashes)
+- `sentinel.log` under `runtime:sentinel/logs`: rotating log (5MB x 3 files)
+- `sentinel.pid` under `runtime:sentinel/tmp`: process ID for management
+
+## Features
+
+### Email Analysis
+Sentinel analyzes all incoming emails via Claude API and provides CEO-specific recommended actions:
+- Reply needed, Forward to delegate, Schedule follow-up, Approve/Decide, FYI only, Escalate
+
+### Meeting Invite Monitoring
+Sentinel monitors Exchange meeting invites and evaluates them against the CEO Calendar Policy (`calendar-policy`):
+- **Auto-accepts** policy-compliant invites
+- **Auto-declines** non-compliant invites from internal senders with a proposed alternative time
+- **Escalates** VIP/external sender invites and edge cases to the operator via Telegram
+- All decisions (accept, decline, escalate) are notified via Telegram
+
+## Output
+
+When asked about Sentinel, report:
+1. Running status (PID, last check time)
+2. Today's stats (emails, TG messages, urgent alerts, invite decisions)
+3. Any recent errors from the log

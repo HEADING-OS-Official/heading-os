@@ -1,0 +1,16 @@
+{
+  "name": "heading-os-mods",
+  "owner": {
+    "name": "Misha Hanin"
+  },
+  "metadata": {
+    "description": "HEADING OS's own Claude Code mods."
+  },
+  "plugins": [
+    {
+      "name": "agent-watch",
+      "source": "./agent-watch",
+      "description": "A band above the prompt and a panel (/agent-watch) listing this session's subagents with model, progress, elapsed time and an estimated cost."
+    }
+  ]
+}

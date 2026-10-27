@@ -1,0 +1,723 @@
+#!/usr/bin/env python3
+"""Odin Brain Health - validate brain integrity and regenerate INDEX.md.
+
+Usage:
+    python scripts/odin-brain-health.py                  # Full health report
+    python scripts/odin-brain-health.py --update-index   # Regenerate INDEX.md
+    python scripts/odin-brain-health.py --validate       # Validate all brain files (exit 1 if issues)
+    python scripts/odin-brain-health.py --stats          # Quick stats only
+    python scripts/odin-brain-health.py --compile        # JSON compile report for the /odin semantic layer
+"""
+import argparse
+import json
+import sys
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.odin_brain_lint import lint as _temporal_lint
+from scripts.utils.colors import RESET, YELLOW
+from scripts.utils.markdown import frontmatter_date, frontmatter_list
+from scripts.utils.markdown import parse_frontmatter as _parse_frontmatter_text
+from scripts.utils.workspace import get_default_tz, get_knowledge_dir
+
+# ============================================================
+# Configuration
+# ============================================================
+# Resolve under the DATA root (get_knowledge_dir -> get_data_root), so this works
+# from the engine clone against the data sibling. Not a fixed engine-relative path.
+
+
+def brain_root():
+    """Resolved at call time, never at import.
+
+    `get_knowledge_dir()` reads `HEADING_OS_DATA` on every call, so it follows
+    the environment for a caller that asks after the environment moved. As a
+    module-level constant it asked once, during its own import, and stored the
+    answer, so a test that imported this module and then repointed the root
+    still read (and `--update-index` still wrote) the operator's real overlay.
+    """
+    return get_knowledge_dir() / "odin-brain"
+
+
+SUBDIRS = ["sources", "principles", "positions", "episodes", "conflicts", "reference"]
+# Subdirectory -> the frontmatter `type` its notes must carry.
+TYPE_MAP = {"sources": "source", "principles": "principle", "positions": "position",
+            "episodes": "episode", "conflicts": "conflict", "reference": "reference"}
+# Temporal-validity fields are OPTIONAL (not in REQUIRED_FIELDS):
+#   superseded_by   -- slug of the note that supersedes this one (never deleted)
+#   superseded_date -- ISO date the supersession occurred
+#   valid_until     -- ISO date a time-bound stance expires (alt. to superseded_by)
+# Validated by scripts/odin_brain_lint.py; see .claude/skills/odin/references/temporal-validity.md.
+REQUIRED_FIELDS = {
+    "source": ["id", "title", "type", "format", "author", "ingested", "confidence", "keywords"],
+    "principle": ["id", "title", "type", "sources", "confidence", "keywords", "created"],
+    "position": ["id", "title", "type", "principles", "sources", "confidence", "keywords", "created", "revisit_when"],
+    "episode": ["id", "title", "type", "date", "keywords", "created"],
+    "conflict": ["id", "title", "type", "side_a", "side_b", "status", "created"],
+    "reference": ["id", "title", "type", "keywords"],
+}
+
+
+# ============================================================
+# Brain Loading
+# ============================================================
+
+def _date_key(value) -> str:
+    """One orderable string for a frontmatter date of any shape.
+
+    Dates and datetimes both render ISO, so they sort against each other and
+    against an ISO string correctly. Anything unparseable (notably the literal
+    "unknown") sorts to the bottom rather than raising.
+    """
+    import datetime as _dt
+    if isinstance(value, (_dt.datetime, _dt.date)):
+        return value.isoformat()
+    text = str(value or "").strip()
+    return text if text[:4].isdigit() else ""
+
+
+def _recent_rows(files, subdir, date_fields, limit, label):
+    """The `limit` most recent notes of one type, chosen BY DATE.
+
+    `collect_brain_files` orders each subdir by FILENAME descending. For a
+    slug-named note that is reverse-alphabetical and carries no time
+    information at all. The INDEX.md "Recent" section used to slice that order
+    first and sort by date SECOND, so a note the slice had already dropped
+    could never come back.
+
+    Measured on the live brain 2026-08-25: two of the three positions printed
+    under "Recent" were created 3 and 4 months earlier, and the actual newest
+    position was not shown. 63 of 67 positions are slug-named, so this was the
+    normal case, not an edge one.
+
+    `date_fields` is tried in order and the first field carrying a VALUE wins;
+    a note with none sorts to the bottom via `_date_key` rather than raising.
+    """
+    rows = []
+    for f in files[subdir]:
+        fm = parse_frontmatter(f)
+        if not fm:
+            continue
+        value = next((fm[k] for k in date_fields if fm.get(k)), "unknown")
+        rows.append((value, label(fm, f)))
+    rows.sort(key=lambda x: _date_key(x[0]), reverse=True)
+    return rows[:limit]
+
+
+def parse_frontmatter(filepath):
+    """Extract YAML frontmatter from a markdown file. Returns dict or None.
+
+    Thin wrapper around ``scripts.utils.markdown.parse_frontmatter`` that
+    takes a filepath (legacy call shape) and returns ``None`` instead of
+    ``{}`` when no frontmatter is present, since downstream code uses
+    ``if fm is None`` truthiness checks.
+
+    Uses yaml.safe_load (via the shared util) so both inline lists
+    (``principles: ["id1", "id2"]``) and block lists (``principles:\\n  -
+    "id1"\\n  - "id2"``) parse correctly.
+    """
+    try:
+        text = filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so this
+        # handler could not catch the one failure a text read of an
+        # operator-authored note most plausibly produces: the decode happens
+        # inside `read_text` and never reaches the frontmatter parser. The
+        # narrower handler made this engine LOOK like it degraded while it
+        # raised, and its twin `knowledge-health.py` had no handler here at all.
+        # Both are widened in the same change, because these two engines have
+        # drifted apart before over exactly this kind of per-engine repair. A
+        # test held them together until the 2026-09-21 test-suite split; now
+        # the only thing keeping them in step is repairing both at once.
+        #
+        # The warn line matters as much as the return: silence would make an
+        # unreadable brain file indistinguishable from one with no frontmatter,
+        # and the report's counts would be smaller than the tree with nothing
+        # said.
+        print(f"{YELLOW}warn:{RESET} {filepath} could not be read "
+              f"({type(exc).__name__}: {exc}); it is absent from every count "
+              f"in this report.", file=sys.stderr)
+        return None
+    data, _ = _parse_frontmatter_text(text)
+    if not data:
+        return None
+    return data
+
+
+def collect_brain_files():
+    """Collect all .md files from brain subdirectories."""
+    files = {"sources": [], "principles": [], "positions": [], "episodes": [], "conflicts": [], "reference": []}
+    for subdir in SUBDIRS:
+        dirpath = brain_root() / subdir
+        if dirpath.exists():
+            files[subdir] = sorted(
+                [f for f in dirpath.glob("*.md")],
+                key=lambda f: f.name,
+                reverse=True,
+            )
+    return files
+
+
+# ============================================================
+# Health Checks
+# ============================================================
+def validate_file(filepath, expected_type):
+    """Validate a single brain file. Returns list of issues."""
+    issues = []
+    fm = parse_frontmatter(filepath)
+    if fm is None:
+        issues.append(f"  MISSING frontmatter: {filepath.name}")
+        return issues
+
+    file_type = fm.get("type", "")
+    if file_type != expected_type:
+        issues.append(f"  WRONG type: {filepath.name} has type='{file_type}', expected '{expected_type}'")
+
+    required = REQUIRED_FIELDS.get(expected_type, [])
+    for field in required:
+        if field not in fm:
+            issues.append(f"  MISSING field '{field}': {filepath.name}")
+
+    if not fm.get("id", ""):
+        issues.append(f"  EMPTY id: {filepath.name}")
+    if not fm.get("title", ""):
+        issues.append(f"  EMPTY title: {filepath.name}")
+
+    return issues
+
+
+# ============================================================
+# Cross-Reference Checks
+# ============================================================
+def collect_domains(files):
+    """Aggregate keyword stats across all brain files."""
+    domains = defaultdict(lambda: {"sources": 0, "principles": 0, "positions": 0})
+    for subdir in ["sources", "principles", "positions"]:
+        for f in files[subdir]:
+            fm = parse_frontmatter(f)
+            if not fm:
+                continue
+            keywords = frontmatter_list(fm.get("keywords"))
+            for kw in keywords:
+                domains[kw][subdir] += 1
+    return dict(sorted(domains.items(), key=lambda x: sum(x[1].values()), reverse=True))
+
+
+def count_open_conflicts(files):
+    """Count conflicts with status=open."""
+    count = 0
+    for f in files["conflicts"]:
+        fm = parse_frontmatter(f)
+        if fm and fm.get("status") == "open":
+            count += 1
+    return count
+
+
+def find_orphan_principles(files):
+    """Find principles not referenced by any position.
+
+    Position files reference their constituent principles in two interchangeable
+    forms: by timestamp id (e.g. "20260421100100") or by filename slug
+    (e.g. "invented-principle-slug"). A principle counts as
+    referenced if EITHER form appears in any position's `principles:` array.
+    """
+    position_principles = set()
+    for f in files["positions"]:
+        fm = parse_frontmatter(f)
+        if fm:
+            position_principles.update(frontmatter_list(fm.get("principles")))
+
+    orphans = []
+    for f in files["principles"]:
+        fm = parse_frontmatter(f)
+        if not fm:
+            continue
+        pid = fm.get("id", "")
+        slug = f.stem
+        rel_path = f"principles/{f.name}"
+        in_position = (pid in position_principles) or (slug in position_principles)
+
+        if not in_position:
+            orphans.append({
+                "file": rel_path,
+                "title": fm.get("title", f.stem),
+                "keywords": frontmatter_list(fm.get("keywords")),
+                "sources": frontmatter_list(fm.get("sources")),
+            })
+    return orphans
+
+
+def _source_ref_forms(fm, path) -> set:
+    """Every string another note may legitimately use to reference this source.
+
+    `find_orphan_principles` already documents the convention for
+    position-to-principle links: references come "in two interchangeable forms,
+    by timestamp id or by filename slug", and it checks both. The two joins that
+    walk principle `sources:` lists checked only the id, so a slug-form link
+    read as no link at all.
+
+    Measured read-only against the live brain 2026-08-29 (57 sources, 294
+    principles, 441 principle-to-source references): 13 references use the slug
+    form. That suppressed one genuine multi-author domain cluster outright, the
+    `creativity` keyword with 5 principles, whose two sources resolved to one
+    author instead of two and so failed the `len(authors) >= 2` gate. It also
+    produced 11 of the 1318 reported keyword overlaps as false positives,
+    "shares 2+ keywords but isn't wiki-linked" about a link that exists.
+
+    An empty or whitespace-only `id:` is dropped rather than registered. Every
+    id-less source would otherwise share the one `""` key, later file
+    overwriting earlier, merging their distinct authors into one. No source on
+    the live brain has an empty id today, so that half is latent, not measured.
+    """
+    forms = {path.stem}
+    sid = str(fm.get("id", "") or "").strip()
+    if sid:
+        forms.add(sid)
+    return forms
+
+
+def find_domain_clusters(files):
+    """Group principles by keyword and count distinct authors via source lookup."""
+    keyword_map = defaultdict(list)
+    for f in files["principles"]:
+        fm = parse_frontmatter(f)
+        if not fm:
+            continue
+        keywords = frontmatter_list(fm.get("keywords"))
+        source_ids = frontmatter_list(fm.get("sources"))
+        for kw in keywords:
+            keyword_map[kw].append({
+                "file": f"principles/{f.name}",
+                "title": fm.get("title", f.stem),
+                "source_ids": source_ids,
+            })
+
+    # Keyed by BOTH reference forms, so a principle that links its source by
+    # filename slug still contributes that source's author. See _source_ref_forms.
+    source_authors = {}
+    for f in files["sources"]:
+        fm = parse_frontmatter(f)
+        if fm:
+            for ref in _source_ref_forms(fm, f):
+                source_authors[ref] = fm.get("author", "Unknown")
+
+    clusters = []
+    unresolved = set()
+    for keyword, principles in keyword_map.items():
+        if len(principles) < 3:
+            continue
+        all_source_ids = set()
+        for p in principles:
+            all_source_ids.update(p["source_ids"])
+        authors = set()
+        for sid in all_source_ids:
+            if sid in source_authors:
+                authors.add(source_authors[sid])
+            else:
+                unresolved.add(str(sid))
+        if len(authors) >= 2:
+            clusters.append({
+                "keyword": keyword,
+                "principle_count": len(principles),
+                "principles": [p["title"] for p in principles],
+                "source_count": len(all_source_ids),
+                "author_count": len(authors),
+                "authors": sorted(authors),
+            })
+    if unresolved:
+        # Reported, THEN skipped, the same shape as the handler in
+        # `find_stale_seeds`. A reference naming a source with no file in
+        # `sources/` has no author to contribute, so dropping it is right; doing
+        # it WORDLESSLY is not. A cluster is only reported at `len(authors) >=
+        # 2`, so each dropped reference can silently take a whole genuine
+        # multi-author cluster out of a report that then reads as complete.
+        #
+        # Measured read-only on the live brain 2026-08-29: 80 of the 441
+        # principle-to-source references resolve to no source file, across 57
+        # sources and 294 principles. That is the normal case here, not an edge
+        # one, which is why this is a count on stderr rather than a line per
+        # reference. No author is invented for them: an unknown author stays
+        # uncounted, and the operator is told how much was uncounted.
+        print(f"{YELLOW}warn:{RESET} {len(unresolved)} principle source "
+              f"reference(s) name no file in sources/; their authors could not "
+              f"be counted toward any cluster.", file=sys.stderr)
+    return sorted(clusters, key=lambda x: x["principle_count"], reverse=True)
+
+
+def find_keyword_overlaps(files):
+    """Find sources that share 2+ keywords with principles but aren't wiki-linked."""
+    source_keywords = {}
+    for f in files["sources"]:
+        fm = parse_frontmatter(f)
+        if fm:
+            kws = frontmatter_list(fm.get("keywords"))
+            source_keywords[f"sources/{f.name}"] = {
+                "refs": _source_ref_forms(fm, f),
+                "keywords": set(k.lower() for k in kws),
+            }
+
+    principle_data = {}
+    for f in files["principles"]:
+        fm = parse_frontmatter(f)
+        if fm:
+            kws = frontmatter_list(fm.get("keywords"))
+            linked_sources = frontmatter_list(fm.get("sources"))
+            principle_data[f"principles/{f.name}"] = {
+                "keywords": set(k.lower() for k in kws),
+                "linked_sources": {str(s) for s in linked_sources},
+            }
+
+    overlaps = []
+    for src_path, src_info in source_keywords.items():
+        for pri_path, pri_info in principle_data.items():
+            shared = src_info["keywords"] & pri_info["keywords"]
+            if len(shared) >= 2 and not (src_info["refs"] & pri_info["linked_sources"]):
+                overlaps.append({
+                    "source_file": src_path,
+                    "principle_file": pri_path,
+                    "shared_keywords": sorted(shared),
+                    "overlap_count": len(shared),
+                })
+    return sorted(overlaps, key=lambda x: x["overlap_count"], reverse=True)
+
+
+def find_stale_seeds(files, stale_days=7):
+    """Find brain files with status=seed older than stale_days.
+
+    The date field is resolved PER SUBDIR, first field carrying a value wins. A
+    source is dated by `ingested:`, which is what REQUIRED_FIELDS["source"]
+    demands; `created:` is not a required field on a source at all. Requiring
+    `created:` meant a fully valid source seed was skipped every time, silently,
+    and the report then asserted a smaller stale count with nothing said, the
+    exact failure mode the handler below was written to end. Reproduced
+    2026-08-29 on a constructed source seed carrying `ingested: 2026-01-01` and
+    no `created:`: 240 days old, and the function returned nothing. The live
+    brain holds 0 source seeds today, so the defect is real but currently
+    unexercised.
+
+    `created` is tried BEFORE `ingested`, which is the reverse of the order
+    `_recent_rows` uses for the same subdir, and the difference is deliberate.
+    `_recent_rows` answers "when was this learned", where the ingest date is the
+    better recency signal. This answers "how long has this seed sat unfinished",
+    where a seed that states its own `created:` is stating exactly that, and
+    `knowledge-health.py` reads the same field over the sibling subtree. Putting
+    `ingested` first would change the answer for every source carrying both
+    fields and split the two engines apart again, which a test used to pin
+    shut and, since the 2026-09-21 test-suite split, nothing does. Falling
+    back keeps this purely additive: it covers the sources nothing covered
+    before and moves no source that was already covered.
+
+    The result key stays `created` whichever field supplied the value: it is the
+    documented contract with the /odin compile pipeline, and renaming it would
+    break a consumer to fix a label.
+    """
+    stale = []
+    today = datetime.now(get_default_tz()).date()
+    seed_date_fields = {"sources": ("created", "ingested")}
+    for subdir in ["sources", "principles", "positions", "reference"]:
+        for f in files[subdir]:
+            fm = parse_frontmatter(f)
+            if not fm:
+                continue
+            if fm.get("status") != "seed":
+                continue
+            field = next((k for k in seed_date_fields.get(subdir, ("created",))
+                          if fm.get(k)), None)
+            if field is None:
+                continue
+            try:
+                created = frontmatter_date(fm[field])
+                age = (today - created).days
+                if age > stale_days:
+                    stale.append({
+                        "file": f"{subdir}/{f.name}",
+                        "title": fm.get("title", f.stem),
+                        "created": fm[field],
+                        "age_days": age,
+                    })
+            except ValueError as exc:
+                # Reported, THEN skipped. `pass` alone made this hole invisible
+                # from the tool's own output: a seed whose `created` could not
+                # be parsed was dropped from the count, and the report then
+                # asserted a smaller number of stale seeds with nothing said
+                # about what it could not read. The workspace policy is
+                # explicit -- an exception handler logs or re-raises, never
+                # both-silent.
+                #
+                # ValueError only. `TypeError` sat in this tuple and was already
+                # unreachable before `frontmatter_date` existed: the coercion
+                # ends in `date.fromisoformat(str(value).strip())`, whose
+                # argument is a string by construction, and every type
+                # `yaml.safe_load` can produce has a safe `__str__`. A named
+                # exception a function cannot raise reads as a case that was
+                # considered, which is a false claim about behaviour.
+                # Names the field it actually read. Hard-coding `created` here
+                # would raise KeyError out of the handler on a source dated by
+                # `ingested:`, turning a warning into a crash.
+                print(f"{YELLOW}warn:{RESET} {subdir}/{f.name} has an unreadable "
+                      f"`{field}:` value ({fm[field]!r}: {exc}); not aged.",
+                      file=sys.stderr)
+    return stale
+
+
+def collect_all_keywords(files):
+    """Collect keyword frequency across all brain files."""
+    freq = defaultdict(int)
+    for subdir in ["sources", "principles", "positions", "reference"]:
+        for f in files[subdir]:
+            fm = parse_frontmatter(f)
+            if fm:
+                for k in frontmatter_list(fm.get("keywords")):
+                    freq[k.lower()] += 1
+    return dict(sorted(freq.items(), key=lambda x: x[1], reverse=True))
+
+
+def find_stale_positions(files):
+    """Collect positions that CARRY a `revisit_when` condition. Nothing is evaluated here.
+
+    The docstring used to say "positions whose revisit_when condition might be
+    met", which is a relevance claim this function never makes: it tests the
+    field for truthiness and stops. Measured on the live brain 2026-08-25, 67 of
+    67 positions carry a non-empty free-text condition, so the result is the
+    whole position corpus, every time.
+
+    That is by design, not a bug in the pipeline: evaluating a free-text
+    condition is the /odin skill's step (`.claude/skills/odin/references/
+    compile-pipeline.md`, which greps `context/` for the condition's terms). The
+    defect was the wording -- here, and in the human-facing report label that
+    `memory-hygiene.py` prints, which called all 67 "stale".
+
+    The JSON key stays `stale_positions`: it is the documented contract with
+    that skill, and the skill's own reference describes it correctly as
+    "conditions to evaluate". Renaming it would break a consumer to fix a
+    sentence.
+    """
+    stale = []
+    for f in files["positions"]:
+        fm = parse_frontmatter(f)
+        if fm:
+            revisit = fm.get("revisit_when", "")
+            if revisit:
+                stale.append({
+                    "file": f"positions/{f.name}",
+                    "title": fm.get("title", f.stem),
+                    "revisit_when": revisit,
+                })
+    return stale
+
+
+# ============================================================
+# Report Generation
+# ============================================================
+def run_compile(files):
+    """Run full compile analysis and output JSON report."""
+    report = {
+        "brain_stats": {
+            "sources": len(files["sources"]),
+            "principles": len(files["principles"]),
+            "positions": len(files["positions"]),
+            "episodes": len(files["episodes"]),
+            "conflicts": len(files["conflicts"]),
+            "reference": len(files["reference"]),
+            "open_conflicts": count_open_conflicts(files),
+        },
+        "orphan_principles": find_orphan_principles(files),
+        "domain_clusters": find_domain_clusters(files),
+        "keyword_overlaps": find_keyword_overlaps(files),
+        "stale_seeds": find_stale_seeds(files),
+        "stale_positions": find_stale_positions(files),
+        "keyword_frequency": collect_all_keywords(files),
+    }
+
+    # R11: temporal-validity lint (superseded_by).
+    issues = _temporal_lint(brain_root())
+    report["temporal_validity"] = {
+        "total_issues": len(issues),
+        "errors": [i for i in issues if i.get("severity") == "error"],
+        "warnings": [i for i in issues if i.get("severity") == "warn"],
+    }
+
+    # default=str: frontmatter dates (YAML parses `created:`/`updated:` to
+    # datetime.date) reach the report via find_stale_seeds; stringify them so
+    # the JSON report serialises. (Pre-existing latent bug surfaced by R11.)
+    print(json.dumps(report, indent=2, default=str))
+
+
+def generate_index(files):
+    """Generate INDEX.md content."""
+    src_count = len(files["sources"])
+    pri_count = len(files["principles"])
+    pos_count = len(files["positions"])
+    ep_count = len(files["episodes"])
+    con_count = len(files["conflicts"])
+    open_con = count_open_conflicts(files)
+    domains = collect_domains(files)
+    today = datetime.now(get_default_tz()).strftime("%Y-%m-%d")
+
+    lines = [
+        "# Odin's Brain",
+        "",
+        f"Last updated: {today}",
+        f"Sources: {src_count} | Principles: {pri_count} | Positions: {pos_count} | Episodes: {ep_count} | Conflicts: {con_count} ({open_con} open)",
+        "",
+        "## Domains",
+    ]
+
+    if not domains:
+        lines.append("")
+        lines.append("*No domains yet. Feed Odin his first source with `/odin learn [url or file]`.*")
+    else:
+        lines.append("")
+        for domain, counts in domains.items():
+            parts = []
+            if counts["sources"]:
+                parts.append(f"{counts['sources']} sources")
+            if counts["principles"]:
+                parts.append(f"{counts['principles']} principles")
+            if counts["positions"]:
+                parts.append(f"{counts['positions']} positions")
+            lines.append(f"- {domain}: {', '.join(parts)}")
+
+    lines.append("")
+    lines.append("## Recent")
+    lines.append("")
+
+    # Principles are deliberately absent from this section, as they always have
+    # been. Naming it because "Recent" reads as "everything recent": 294
+    # principles never appear here, and that gap is not this fix.
+    recent = []
+    recent += _recent_rows(files, "sources", ("ingested", "created"), 5,
+                           lambda fm, f: f"Learned: {fm.get('title', f.stem)}")
+    recent += _recent_rows(files, "positions", ("created",), 3,
+                           lambda fm, f: f"Position formed: {fm.get('title', f.stem)}")
+    recent += _recent_rows(files, "episodes", ("date", "created"), 5,
+                           lambda fm, f: f"Logged: {fm.get('title', f.stem)}")
+    recent += _recent_rows(
+        files, "conflicts", ("created",), 3,
+        lambda fm, f: f"Conflict {fm.get('status', 'open')}: {fm.get('title', f.stem)}")
+
+    # A COMPARABLE key. `yaml.safe_load` turns `ingested: 2026-08-20` into a
+    # datetime.date and a missing field into the string "unknown", and Python 3
+    # will not order those against each other -- so `--update-index` raised
+    # TypeError on any brain holding one dated note and one undated one. A
+    # timestamp with a time component (datetime) against a bare date crashes the
+    # same way, with no field missing at all.
+    recent.sort(key=lambda x: _date_key(x[0]), reverse=True)
+    if not recent:
+        lines.append("*No activity yet.*")
+    else:
+        for date, desc in recent[:10]:
+            lines.append(f"- [{date}] {desc}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def run_health_report(files):
+    """Print a full health report."""
+    print("=== Odin Brain Health Report ===\n")
+
+    print(f"Sources:    {len(files['sources'])}")
+    print(f"Principles: {len(files['principles'])}")
+    print(f"Positions:  {len(files['positions'])}")
+    print(f"Episodes:   {len(files['episodes'])}")
+    print(f"Conflicts:  {len(files['conflicts'])} ({count_open_conflicts(files)} open)")
+    print(f"Reference:  {len(files['reference'])}")
+    print()
+
+    all_issues = []
+    for subdir in SUBDIRS:
+        for f in files[subdir]:
+            issues = validate_file(f, TYPE_MAP[subdir])
+            all_issues.extend(issues)
+
+    if all_issues:
+        print(f"Validation Issues ({len(all_issues)}):")
+        for issue in all_issues:
+            print(issue)
+    else:
+        print("Validation: all files clean.")
+
+    orphan_principles = [o["title"] for o in find_orphan_principles(files)]
+
+    if orphan_principles:
+        print(f"\nOrphan Principles (not in any position): {len(orphan_principles)}")
+        for title in orphan_principles[:10]:
+            print(f"  - {title}")
+
+    open_conflicts = []
+    for f in files["conflicts"]:
+        fm = parse_frontmatter(f)
+        if fm and fm.get("status") == "open":
+            open_conflicts.append(fm.get("title", f.stem))
+
+    if open_conflicts:
+        print(f"\nOpen Conflicts: {len(open_conflicts)}")
+        for title in open_conflicts:
+            print(f"  - {title}")
+
+    print("\n=== End Report ===")
+    return len(all_issues)
+
+
+# ============================================================
+# Main / CLI
+# ============================================================
+def main():
+    parser = argparse.ArgumentParser(description="Odin Brain Health - validate and index Odin's knowledge brain")
+    parser.add_argument("--update-index", action="store_true", help="Regenerate INDEX.md")
+    parser.add_argument("--validate", action="store_true", help="Validate all brain files (exit 1 if issues)")
+    parser.add_argument("--stats", action="store_true", help="Quick stats only")
+    parser.add_argument("--compile", action="store_true",
+                        help="Run full compile analysis, output JSON for LLM semantic layer")
+    args = parser.parse_args()
+
+    if not brain_root().exists():
+        print(f"Brain root not found: {brain_root()}", file=sys.stderr)
+        sys.exit(1)
+
+    files = collect_brain_files()
+
+    if args.stats:
+        print(f"Sources: {len(files['sources'])}, Principles: {len(files['principles'])}, "
+              f"Positions: {len(files['positions'])}, Episodes: {len(files['episodes'])}, "
+              f"Conflicts: {len(files['conflicts'])} "
+              f"({count_open_conflicts(files)} open), Reference: {len(files['reference'])}")
+        return
+
+    if args.compile:
+        run_compile(files)
+        return
+
+    if args.update_index:
+        index_content = generate_index(files)
+        index_path = brain_root() / "INDEX.md"
+        index_path.write_text(index_content, encoding="utf-8")
+        print(f"INDEX.md regenerated: {index_path}")
+        return
+
+    if args.validate:
+        issue_count = 0
+        for subdir in SUBDIRS:
+            for f in files[subdir]:
+                issues = validate_file(f, TYPE_MAP[subdir])
+                for issue in issues:
+                    print(issue, file=sys.stderr)
+                issue_count += len(issues)
+        if issue_count:
+            print(f"FAIL: {issue_count} issue(s) found", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print("PASS: all brain files valid")
+        return
+
+    issue_count = run_health_report(files)
+    if issue_count:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

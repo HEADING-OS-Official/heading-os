@@ -1,0 +1,15 @@
+[Unit]
+Description=Proxy usage dashboard rebuild (proxy-usage.py dashboard)
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Rewrites the one dashboard file under the registry name proxy-usage-reports
+# only when the ledger moved, the local day turned, or the page format changed;
+# otherwise it exits 0 after one stat and a 512-byte read. No server, no port:
+# the page refreshes itself in the browser.
+ExecStart={{PYTHON}} {{WORKSPACE}}/scripts/proxy-usage.py dashboard
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
