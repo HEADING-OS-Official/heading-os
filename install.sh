@@ -44,6 +44,15 @@ case "$PARENT" in /*) ;; *) PARENT="$PWD/$PARENT" ;; esac
 ENGINE="$PARENT/.heading-os"
 DATA="$PARENT/.heading-os-data"
 
+# Every command below acts on THIS data repository and no other. A HEADING_OS_DATA
+# inherited from another installation on this machine would otherwise send the
+# hooks to that one: MEASURED 2026-10-28, step 6 re-armed the existing data
+# repository's pre-push hook at the new engine before step 7 noticed.
+if [ -n "${HEADING_OS_DATA:-}" ] && [ "$HEADING_OS_DATA" != "$DATA" ]; then
+    warn "HEADING_OS_DATA points at $HEADING_OS_DATA; this install uses $DATA and leaves that one alone"
+fi
+export HEADING_OS_DATA="$DATA"
+
 step "1. Platform"
 case "$(uname -s)" in
     Linux*)
@@ -137,7 +146,8 @@ bash scripts/setup-platform.sh
 bash scripts/setup-platform.sh --check
 
 step "7. Check"
-FOUND="$("$PY" -c 'from scripts.utils.paths import get_data_root; print(get_data_root())')"
+# Without the variable exported above: this checks what a new shell will find.
+FOUND="$(env -u HEADING_OS_DATA "$PY" -c 'from scripts.utils.paths import get_data_root; print(get_data_root())')"
 [ "$(cd "$FOUND" && pwd -P)" = "$(cd "$DATA" && pwd -P)" ] || die "the engine resolves its data at $FOUND, not $DATA"
 ok "the engine finds your data at $DATA"
 

@@ -10,13 +10,15 @@ To move an existing installation to a newer release, follow "Update" in `INSTALL
 
 These are on `main` and will be in the next tagged release. Until then `install.sh` installs `v3.1.0`.
 
-### A cold read by a reviewer who never saw the work
+### The installer touches only your new installation
 
-`/goldfish` hands one document or change to a reviewer that starts without your conversation, your instruction files or memory, and reads only the document and a written standard. Use it before you approve a plan, send a brief, submit a proposal or tender answer, or trust that a document still describes what the code does. You answer each finding as FIX, CONTEST or ESCALATE. The full description is in `SKILLS-SYSTEM.md`. The tree now ships 70 skills.
+If another HEADING OS installation on the same machine had set `HEADING_OS_DATA` in your shell, `install.sh` used to arm that installation's data repository with the new engine's hooks. It now points the variable at the data repository it creates before any step, warns you when an inherited value differs, and checks the result the way a new shell will find it.
+
+What you do: nothing. If you installed a second copy on a machine that already had one, run `.venv/bin/python scripts/install-git-hooks.py` in the first installation's engine to re-arm its own hooks.
 
 ## 3.1.0 (2026-10-27)
 
-Tagged `v3.1.0` on 2026-10-27; `install.sh` installs it.
+Tagged `v3.1.0` on 2026-10-27 and re-cut on 2026-10-28; `install.sh` installs it. The release ships 70 skills.
 
 ### New guides for everyday use
 
@@ -27,9 +29,13 @@ Five new pages join the install guide and the six tool guides in `docs/`:
 - `RULES-AND-PROTECTIONS.md`: the always-on rules and the checks that refuse an action, what you see when one refuses, and what to do.
 - `WHATS-NEW.md`: this page.
 
+### A cold read by a reviewer who never saw the work
+
+`/goldfish` hands one document or change to a reviewer that starts without your conversation, your instruction files or memory, and reads only the document and a written standard. Use it before you approve a plan, send a brief, submit a proposal or tender answer, or trust that a document still describes what the code does. You answer each finding as FIX, CONTEST or ESCALATE. The full description is in `SKILLS-SYSTEM.md`.
+
 ### Seven more skills ship
 
-The Official tree now ships 69 skills, up from 62. These seven were left out of the first three releases because their text was written around one company. Each now reads your company from your own records instead:
+With these seven and `/goldfish`, the Official tree ships 70 skills, up from 62. These seven were left out of the first three releases because their text was written around one company. Each now reads your company from your own records instead:
 
 | Skill | What it gives you |
 |---|---|

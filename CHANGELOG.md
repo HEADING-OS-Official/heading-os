@@ -8,24 +8,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Fro
 
 On `main`, not yet in a tagged release; `install.sh` installs the newest tag, `v3.1.0`.
 
-### Added
+### Fixed
 
-- `/goldfish`: a cold read of one document or change by a reviewer that starts without your conversation, your instruction files or memory, against a written standard per mode (plan, reader, ready, proposal, drift, code). The tree now ships 70 skills. Its standards are adapted from Google's [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model), licensed Apache-2.0.
-- The README opens with what changes on day one, and its VIP section says what the licence adds to the public version, as [headingos.com](https://headingos.com) does.
-
-### Changed
-
-- The authors' credit in the README, `NOTICE` and this file links [Misha Hanin](https://www.linkedin.com/in/mishahanin/)'s profile as well as the co-architect's.
-- A continuation after `/clear` follows the handoff's "Safe resume" block.
+- `install.sh` acts only on the data repository it creates. A `HEADING_OS_DATA` inherited from another installation on the same machine used to send the hook step to that installation's data repository; the installer now points the variable at its own data repository before any step, warns when an inherited value differs, and checks discovery with the variable unset, as a new shell will find it.
 
 ## [3.1.0] - 2026-10-27
 
+The tag was re-cut on 2026-10-28 on a single commit, and the release includes `/goldfish`.
+
 ### Added
 
+- `/goldfish`: a cold read of one document or change by a reviewer that starts without your conversation, your instruction files or memory, against a written standard per mode (plan, reader, ready, proposal, drift, code). Its standards are adapted from Google's [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model), licensed Apache-2.0.
 - Guides for everyday use in `docs/`: `WORKING-WITH-HEADING-OS.md`, `SKILLS.md` with one page per skill group (`SKILLS-INTEL.md`, `SKILLS-COMMUNICATION.md`, `SKILLS-CONTENT.md`, `SKILLS-STRATEGY.md`, `SKILLS-DAILY.md`, `SKILLS-SYSTEM.md`), `RULES-AND-PROTECTIONS.md` and `WHATS-NEW.md`. The same guides are online at [headingos.com/docs](https://headingos.com/docs/).
-- Seven skills that read your company from your own records: `/ceo-intel`, `/competitor-intel`, `/market-brief`, `/intel-briefing-newsletter`, `/investor-pitch`, `/investor-update` and `/keynote-deck`. The tree now ships 69 skills, up from 62.
+- Seven skills that read your company from your own records: `/ceo-intel`, `/competitor-intel`, `/market-brief`, `/intel-briefing-newsletter`, `/investor-pitch`, `/investor-update` and `/keynote-deck`. With `/goldfish`, the tree ships 70 skills, up from 62.
 - `CHANGELOG.md`, `SUPPORT.md` and `CONTRIBUTING.md`.
 - A README section on the [VIP licence](https://headingos.com/vip.html), and a "Status" section with the version.
+- The README opens with what changes on day one, and its VIP section says what the licence adds to the public version, as [headingos.com](https://headingos.com) does.
 - The README names HEADING OS the personal project of [Misha Hanin](https://www.linkedin.com/in/mishahanin/) and [Jochanan Sommerfeld](https://www.linkedin.com/in/jochanansommerfeld/), co-architect of the whole HEADING OS system, as [headingos.com](https://headingos.com/about.html) does; `NOTICE` carries the same credit.
 
 ### Changed
@@ -35,6 +33,8 @@ On `main`, not yet in a tagged release; `install.sh` installs the newest tag, `v
 - Security reports go to `admin@headingos.com` with the subject line `HEADING OS security`, as on [headingos.com/security.html](https://headingos.com/security.html). GitHub private vulnerability reporting works too once the repository is public.
 - The issue form's contact links point at the guides and the security page on headingos.com.
 - The pinned versions of the GitHub Actions used by CI were brought up to date.
+- The authors' credit in the README, `NOTICE` and this file links [Misha Hanin](https://www.linkedin.com/in/mishahanin/)'s profile as well as the co-architect's.
+- A continuation after `/clear` follows the handoff's "Safe resume" block.
 
 ### Fixed
 
