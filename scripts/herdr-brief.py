@@ -6,6 +6,7 @@ Usage:
     python scripts/herdr-brief.py w37:p1 "$(cat brief.md)" --issue HOS-30
     python scripts/herdr-brief.py w37:p1 "$(cat brief.md)" --no-issue "<why>"
     python scripts/herdr-brief.py w37:p1 "$(cat brief.md)" --check
+    python scripts/herdr-brief.py w37:p1 "$(cat brief.md)" --issue HOS-30 --no-goldfish "<why>"
 
 The only sanctioned way HELM sends a brief to a YARD. It prepends the release
 gate's `_BRIEF_MARKER` line and delegates to `herdr agent prompt <PANE> <TEXT>`.
@@ -34,6 +35,12 @@ history of this file):
   `none`, a text that still asks for a test is refused. No bypass flag.
 * `Master instruction:` line: warned on stderr when missing, never refused
   (a convention since 2026-10-12, not a gate).
+* `/goldfish ready` review (HOS-267): a brief is refused unless a report under
+  the registry name `scrutiny-sheets` carries `Brief-SHA256: <hex>` for this
+  exact text, stripped. `--check` prints that line. The one escape is
+  `--no-goldfish "<why>"`, printed and archived with the brief. MEASURED
+  2026-10-28: a brief went out with `--check` green and no cold read, and the
+  late review found 12 gaps, one an authorisation bypass.
 
 * Task dossier (HOS-256): with `--issue`, the delivered text carries a
   `Task: HOS-N` line under the marker, so the yard's `dossier-bind.py` binds
@@ -47,6 +54,7 @@ literal must never become a parameter.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -114,7 +122,8 @@ def compose(marker: str, text: str, issues: list[str] | None = None) -> str:
     return f"{marker}\n\n{dossier.task_header(issues or [])}\n\n{text}"
 
 
-def archive_brief(payload: str, issues: list[str], checkout: Path, pane: str) -> None:
+def archive_brief(payload: str, issues: list[str], checkout: Path, pane: str,
+                  review: str = "unknown") -> None:
     """Save the delivered brief under `brief-archive` and post its `[dossier]` record. Never raises.
 
     After delivery is verified, so the file records a brief that arrived. A
@@ -136,6 +145,7 @@ def archive_brief(payload: str, issues: list[str], checkout: Path, pane: str) ->
                 f"Session: {CP.session_id()}\n"
                 f"Pane: {pane}\n"
                 f"Branch: {branch}\n"
+                f"Goldfish: {review}\n"
                 f"{dossier.task_header(issues)}\n\n"
                 f"## The brief as delivered\n\n{payload}")
         CP.write_text_atomic(path, body)
@@ -257,6 +267,29 @@ def warn_master_line(text: str) -> None:
           f"`Master instruction: none, <why>`. The brief is not refused."
           f"{RESET}",
           file=sys.stderr)
+
+
+GOLDFISH_LINE = "Brief-SHA256: "
+
+
+def brief_fingerprint(text: str) -> str:
+    """The line a `/goldfish ready` report carries for this brief text.
+
+    Stripped first, because `"$(cat brief.md)"` drops trailing newlines and the
+    same file read by the reviewer still has them.
+    """
+    digest = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+    return f"{GOLDFISH_LINE}{digest}"
+
+
+def goldfish_report(text: str) -> Path | None:
+    """The `/goldfish ready` report that names this exact text, or None."""
+    line = brief_fingerprint(text)
+    directory = data_path("scrutiny-sheets")
+    for report in sorted(directory.glob("*goldfish-ready*.md"), reverse=True):
+        if line in report.read_text(encoding="utf-8", errors="replace").splitlines():
+            return report
+    return None
 
 
 def target_dir(checkout: Path, projects_root: Path | None) -> Path | None:
@@ -561,6 +594,10 @@ def main() -> int:
         help=("validate the brief text (the marker, the `Tests:` line) and "
               "exit without sending or asking the tracker. Runs from any "
               "checkout."))
+    parser.add_argument(
+        "--no-goldfish", default=None, metavar="REASON",
+        help=("send a brief that no `/goldfish ready` report covers, stating "
+              "why. The reason is printed and archived with the brief."))
     args = parser.parse_args()
 
     marker = brief_marker()
@@ -572,6 +609,12 @@ def main() -> int:
         return status
     warn_master_line(args.text)
     if args.check:
+        # The fingerprint is what a `/goldfish ready` report records for this
+        # text; printing it here is how the reviewer's session gets it.
+        print(brief_fingerprint(args.text))
+        report = goldfish_report(args.text)
+        print(f"{GRAY}Goldfish ready review: "
+              f"{report if report else 'none found for this exact text'}{RESET}")
         print(f"{GREEN}Brief text accepted. Nothing was sent (--check).{RESET}")
         return 0
 
@@ -609,6 +652,33 @@ def main() -> int:
     else:
         print(f"{YELLOW}Allocation: none, stated as "
               f"\"{args.no_issue}\".{RESET}")
+
+    # The cold read, before anything is sent (HOS-267). Required, like the
+    # allocation, with one stated escape; there is no silent default.
+    if args.no_goldfish is not None:
+        if not args.no_goldfish.strip():
+            print(f"{RED}herdr-brief: REFUSED. --no-goldfish needs a reason."
+                  f"{RESET}", file=sys.stderr)
+            return 7
+        review = f"none, stated as \"{args.no_goldfish.strip()}\""
+        print(f"{YELLOW}Goldfish ready review: {review}.{RESET}")
+    else:
+        report = goldfish_report(args.text)
+        if report is None:
+            print(
+                f"{RED}herdr-brief: REFUSED. No `/goldfish ready` review covers "
+                f"this exact brief.{RESET}\n"
+                f"  Run `/goldfish ready <brief file>`, triage and apply the "
+                f"findings, then put this line, for the FINAL text, in the "
+                f"report under the registry name `scrutiny-sheets`:\n"
+                f"      {brief_fingerprint(args.text)}\n"
+                f"  An edit after the review changes the line; `--check` prints "
+                f"the current one. The one escape:\n"
+                f"      --no-goldfish \"<why this brief goes out unreviewed>\"",
+                file=sys.stderr)
+            return 7
+        review = str(report)
+        print(f"{CYAN}Goldfish ready review:{RESET} {review}")
 
     # None, not a default: the owner resolves the whole path, and only a
     # fixture relocates the root.
@@ -682,7 +752,7 @@ def main() -> int:
     print(f"{YELLOW}Verifying delivery in {target.name} ...{RESET}")
     delivered = verify_delivery(target, brief_id, projects_root or target.parent)
     if delivered == 0:
-        archive_brief(payload, args.issue or [], checkout, args.pane)
+        archive_brief(payload, args.issue or [], checkout, args.pane, review)
     return delivered
 
 

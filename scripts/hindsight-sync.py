@@ -8,6 +8,8 @@
     hindsight-sync.py cleanup plan [--prefix P] [--save FILE]       # bank documents with no source file; deletes nothing
     hindsight-sync.py cleanup apply --plan FILE --numbers 1-20 [--limit 50] [--dry-run] >> ledger.jsonl
     hindsight-sync.py cleanup apply --prefix P [--limit 50] [--dry-run] >> ledger.jsonl
+    hindsight-sync.py blocked list                                   # deletions the mass-delete guard blocked, and their confirm token
+    hindsight-sync.py blocked delete --confirm N:H [--dry-run] >> ledger.jsonl
     hindsight-sync.py capture-check [--hours 24] [--settle-min 15]  # every interactive session reached the bank
     hindsight-sync.py self-test                                      # cleanup, mirror and tag scenarios, invented bank, no network
 
@@ -2110,6 +2112,114 @@ def cmd_cleanup_apply(args) -> int:
 
 
 # ============================================================
+# Blocked: family deletions the mass-delete guard held back (HOS-264)
+# ============================================================
+
+def _uncapped_plan(st: vr.State, led: dict[str, dict], result, root: Path) -> memory_plan.Plan:
+    """The memory plan with the per-pass guard lifted, nothing else changed."""
+    return memory_plan.plan(st, led, result, memory_plan.uploaded_count(led), root=root,
+                            max_deletes=10**9, max_fraction=float("inf"))
+
+
+def _blocked_token(ids: list[str]) -> str:
+    """`N:H`, the count and a short hash of exactly the list the operator saw."""
+    digest = hashlib.sha256("\n".join(sorted(ids)).encode("utf-8")).hexdigest()[:12]
+    return f"{len(ids)}:{digest}"
+
+
+def _blocked_inputs(dry_run: bool, out):
+    """The planning inputs, the uncapped plan, and None; or an exit code when the
+    registry cannot be planned from or the guard blocked nothing."""
+    root = get_data_root()
+    try:
+        reg = vr.registry_path()
+    except DataPathError as exc:
+        print(f"blocked: version registry address unresolved ({exc})", file=sys.stderr)
+        return 1
+    state, result, why = prepare_memory(root, reg, doc_scan.default_cache_path(), dry_run, scan_empty=False)
+    if state is None:
+        print(f"blocked: version registry skipped ({why})", file=sys.stderr)
+        return 1
+    lines = ledger_lines()
+    led = memory_plan.index_ledger(lines)
+    normal = memory_plan.plan(state, led, result, memory_plan.uploaded_count(led), root=root)
+    if normal.blocked is None:
+        print(f"nothing blocked by the guard ({len(normal.delete)} deletion(s) planned for the normal pass)", file=out)
+        return 0
+    return root, reg, state, result, lines, led, _uncapped_plan(state, led, result, root)
+
+
+def cmd_blocked_list(args) -> int:
+    got = _blocked_inputs(True, sys.stdout)
+    if isinstance(got, int):
+        return got
+    _, _, state, _, _, _, full = got
+    fam_of: dict[str, tuple[str, str]] = {}  # member path -> (family id, actual path)
+    for fam in state.families.values():
+        if not fam.confirmed or fam.actual is None:
+            continue
+        for m in fam.members.values():
+            fam_of[m.path] = (fam.family_id, fam.members[fam.actual].path)
+    twin_of = {p.rsplit(".", 1)[0] + "-extract.md": v for p, v in fam_of.items()}
+    for doc_id in sorted(full.delete):
+        path = full.delete_path[doc_id]
+        fid, actual = fam_of.get(path) or twin_of.get(path) or ("?", "?")
+        print(f"{doc_id}\t{path}\t{fid}\t{actual}")
+    print(f"confirm: {_blocked_token(full.delete)}")
+    return 0
+
+
+def cmd_blocked_delete(args) -> int:
+    if not args.dry_run:
+        # before the live scan too: a live pass appends registry events, and that is HELM's
+        from scripts.utils.clone_guard import require_main_clone
+        from scripts.utils.crm_autolog import data_is_readonly
+        require_main_clone(__file__)
+        if data_is_readonly():
+            print("REFUSED: this host's data clone is read-only", file=sys.stderr)
+            return 2
+    got = _blocked_inputs(args.dry_run, sys.stderr)
+    if isinstance(got, int):
+        return got
+    root, reg, state, result, lines, led, full = got
+    token = _blocked_token(full.delete)
+    if args.confirm != token:
+        print(f"refused: confirmation {args.confirm} does not match the current list {token}; "
+              "run blocked list again", file=sys.stderr)
+        return 3
+    confirmed = set(full.delete)  # taken now: the deferral and the cap below cut `full` in place
+    api, bank, key = _conn()
+    check = SendCheck(api, bank, key, lines)
+    deferred = len(full.delete)
+    p = defer_unsettled(full, check)
+    deferred -= len(p.delete)
+    before = len(p.delete)
+    p = memory_plan.cap_daily(p, _family_deletions_today())
+    waiting = before - len(p.delete)
+    if args.dry_run:
+        for doc_id in p.delete:
+            print(f"would delete {doc_id} ({p.delete_path[doc_id]})", file=sys.stderr)
+        print(f"deferred, send in flight: {deferred}", file=sys.stderr)
+        print(f"waiting for a later day: {waiting}", file=sys.stderr)
+        return 0
+    changed = [False]
+
+    def replan(st: vr.State) -> memory_plan.Plan:
+        q = _uncapped_plan(st, led, result, root)
+        if not set(q.delete) <= confirmed:
+            changed[0] = True
+            return memory_plan.Plan()
+        return memory_plan.cap_daily(defer_unsettled(q, check), _family_deletions_today())
+
+    rc = deletion_phase(reg, state.generation, p, replan, api, bank, key)
+    if changed[0]:
+        print("refused: the list changed while deleting; run blocked list again", file=sys.stderr)
+        return 3
+    print(f"waiting for a later day: {waiting}", file=sys.stderr)
+    return rc
+
+
+# ============================================================
 # Capture check: every interactive session reached the bank (HOS-200)
 # ============================================================
 
@@ -3274,6 +3384,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"at most this many deletions per run (default {CLEANUP_DEFAULT_LIMIT})")
     ca.add_argument("--dry-run", action="store_true", help="print what would be deleted; delete nothing")
     ca.set_defaults(fn=cmd_cleanup_apply)
+    b = sub.add_parser("blocked", help="family deletions the mass-delete guard blocked; deleted only on a confirmation")
+    bsub = b.add_subparsers(dest="blocked_cmd", required=True)
+    bsub.add_parser("list", help="list them with their family and the confirm token; deletes nothing").set_defaults(
+        fn=cmd_blocked_list)
+    bd = bsub.add_parser("delete", help="delete the listed set within the daily cap; stdout is ledger lines")
+    bd.add_argument("--confirm", required=True, metavar="N:H", help="the token `blocked list` printed")
+    bd.add_argument("--dry-run", action="store_true", help="print what would be deleted; delete nothing")
+    bd.set_defaults(fn=cmd_blocked_delete)
     cc = sub.add_parser("capture-check", help="every interactive session in the opted-in roots has its conversation "
                                               "document in the bank; exit 1 on a miss")
     cc.add_argument("--hours", type=float, default=24.0, help="transcripts modified in this many hours (default 24)")

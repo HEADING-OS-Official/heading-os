@@ -4280,8 +4280,18 @@ _SEND_CLIENT_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("Mattermost", re.compile(
         r"mattermost_client\.py(?:\s+--?[\w-]+)*\s+(?:send|reply)\b")),
     ("Telegram", re.compile(
-        r"telegram_client\.py(?:\s+--?[\w-]+)*\s+(?:send|send-file|reply|forward|delete)\b")),
+        r"telegram_client\.py(?:\s+--?[\w-]+)*\s+(?:send|send-file|reply|forward)\b")),
     ("Gmail", re.compile(r"gmail-send\.py(?:\s+--?[\w-]+)*\s+send\b")),
+)
+# A Telegram `delete` is its own gated action, released by delete words and never
+# by send words (HOS-266). Until 2026-10-28 it sat in the send pattern above, so
+# the Russian imperative for delete could never release one and the Russian
+# imperative for send released one, MEASURED that day: a skill that deletes
+# processed messages from the operator's own Telegram channel had that step
+# refused on the delete imperative. Read through the same segment logic as a send.
+_DELETE_CLIENT_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("Telegram", re.compile(
+        r"telegram_client\.py(?:\s+--?[\w-]+)*\s+delete\b")),
 )
 _SEND_EMAIL_INERT_RE = re.compile(r"(?:^|\s)(?:--dry-run|-h|--help)(?=\s|$)")
 _SEND_CLIENT_NAMES = ("mattermost_client.py", "telegram_client.py",
@@ -4317,6 +4327,16 @@ def _runs_client(words: list[str], i: int) -> bool:
 
 def outbound_send_target(command: str) -> str | None:
     """The channel a command sends a message through, or None. Pure."""
+    return _client_action_target(command, _SEND_CLIENT_RES, with_email=True)
+
+
+def message_delete_target(command: str) -> str | None:
+    """The channel a command deletes a message in, or None. Pure."""
+    return _client_action_target(command, _DELETE_CLIENT_RES, with_email=False)
+
+
+def _client_action_target(command: str, patterns, *, with_email: bool) -> str | None:
+    """The first channel in `patterns` a segment of `command` runs, or None."""
     bare = _QUOTED_RE.sub(_keep_client_quotes,
                           _strip_inert_heredocs(command or ""))
     for seg in _SEGMENT_SPLIT_RE.split(bare):
@@ -4328,10 +4348,11 @@ def outbound_send_target(command: str) -> str | None:
             if name not in _SEND_CLIENT_NAMES or not _runs_client(words, i):
                 continue
             rest = " ".join([name, *words[i + 1:]])
-            for channel, pattern in _SEND_CLIENT_RES:
+            for channel, pattern in patterns:
                 if pattern.match(rest):
                     return channel
-            if name == "send-email.py" and not _SEND_EMAIL_INERT_RE.search(rest):
+            if (with_email and name == "send-email.py"
+                    and not _SEND_EMAIL_INERT_RE.search(rest)):
                 return "e-mail"
     return None
 
@@ -4343,6 +4364,11 @@ def mattermost_send_action(command: str) -> str | None:
     `_SEND_CLIENT_RES` and `send-email.py`.
     """
     return "send" if outbound_send_target(command) else None
+
+
+def message_delete_action(command: str) -> str | None:
+    """`"delete"` when the command deletes a message (HOS-266), else None. Pure."""
+    return "delete" if message_delete_target(command) else None
 
 
 # A send needs an IMPERATIVE ask, never a stem found anywhere. Until 2026-10-12
@@ -4370,6 +4396,22 @@ _SEND_NEGATIONS = (
     "не отправ", "не посылай", "не отсылай", "без отправки", "не надо", "не нужно",
     "don't send", "dont send", "do not send", "no send", "not send",
 )
+# A Telegram delete (HOS-266), written exactly like a send: Russian imperative
+# word forms, the English verb only at the head of a clause, nothing in a
+# sentence ending in "?". The Russian infinitive for delete is left out on
+# purpose, as the infinitive for send is for a send: a question asking whether
+# to delete is not an order. The negated delete stem also matches the Russian
+# for "it failed", which refuses, the blunt direction this wall keeps.
+_DELETE_IMPERATIVES = re.compile(
+    r"\b(?:удали|удалите|удаляй|удаляйте)\b"
+    r"|(?:^|[,;:]|\b(?:please|pls|ok|okay|now|then|and|just|go ahead and|yes|да|ок))"
+    r"\s*delete(?:\s+(?:it|this|that|them|these|those|the|a|an|my|our"
+    r"|now|message|messages|post|posts)\b|\s*[.!]*$)"
+)
+_DELETE_NEGATIONS = (
+    "не удал", "без удален", "не надо", "не нужно",
+    "don't delete", "dont delete", "do not delete", "no delete", "not delete",
+)
 
 
 def prompt_authorises(prompt: str, action: str) -> bool:
@@ -4395,10 +4437,13 @@ def prompt_authorises(prompt: str, action: str) -> bool:
                     or any(w in low for w in _PROHIBITIONS))
     commit_refused = any(w in low for w in _COMMIT_NEGATIONS)
 
-    if action == "send":
-        if any(w in low for w in _SEND_NEGATIONS) or any(w in low for w in _PROHIBITIONS):
+    if action in ("send", "delete"):
+        negations, imperatives = ((_SEND_NEGATIONS, _SEND_IMPERATIVES)
+                                  if action == "send" else
+                                  (_DELETE_NEGATIONS, _DELETE_IMPERATIVES))
+        if any(w in low for w in negations) or any(w in low for w in _PROHIBITIONS):
             return False
-        return any(_SEND_IMPERATIVES.search(s.strip())
+        return any(imperatives.search(s.strip())
                    for s in _SENTENCE_RE.findall(low)
                    if not s.rstrip().endswith("?"))
 
@@ -4961,6 +5006,7 @@ def check_release_gate(payload: dict) -> dict | None:
     command = (payload.get("tool_input") or {}).get("command") or ""
     release = release_action(command)
     send = mattermost_send_action(command)
+    delete = message_delete_action(command)
     if send and release:
         # One prompt word would otherwise authorise both: "отправь" is a push
         # word too. Two commands, two separate checks.
@@ -4971,7 +5017,17 @@ def check_release_gate(payload: dict) -> dict | None:
                        f"({outbound_send_target(command)}) and does a {release}. "
                        f"Run them as separate commands."),
         }
-    action = send or release
+    if delete and (send or release):
+        # One check per command reads one action, so a delete riding beside a
+        # send or a release would pass on the other's word, or the reverse.
+        return {
+            "decision": "block",
+            "_policy_deny": True,
+            "reason": (f"RELEASE GATE: this command both deletes a message "
+                       f"({message_delete_target(command)}) and does a "
+                       f"{send or release}. Run them as separate commands."),
+        }
+    action = send or delete or release
     if action is None:
         return None
 

@@ -418,6 +418,7 @@ def plan(state: vr.State, ledger: dict[str, dict], result: ScanResult, uploaded_
         p.delete, p.delete_path = [], {}
     n = len(p.delete)
     if n and (n > max_deletes or n > max_fraction * uploaded_count):
-        p.blocked = f"{n} deletions exceed the guard; run doc-versions.py show and confirm"
+        p.blocked = (f"{n} deletions exceed the guard; review them with `hindsight-sync.py blocked list`, "
+                     "then run `hindsight-sync.py blocked delete --confirm <N:H>`")
         p.delete, p.delete_path = [], {}
     return p

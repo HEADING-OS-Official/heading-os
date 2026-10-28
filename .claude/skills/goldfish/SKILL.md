@@ -115,6 +115,11 @@ review.
    a plan, a handoff, a report. For any other artifact, list the changes and
    wait for the operator's approval.
 5. After BLOCKER or HIGH fixes, run one fresh re-review per `references/triage.md`.
+6. Mode `ready` on a yard brief: when the brief is final, run
+   `.venv/bin/python scripts/herdr-brief.py --check x "$(cat <brief file>)"`.
+   Copy the `Brief-SHA256: <hex>` line it prints into the report, on its own
+   line. `herdr-brief.py` refuses a brief whose exact text has no such line
+   (HOS-267).
 
 ## Phase 3 - Output
 
