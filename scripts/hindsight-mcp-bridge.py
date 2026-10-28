@@ -96,6 +96,23 @@ pages), publishes it in one step, and sends `notifications/tools/list_changed` w
 it differs, compared without regard to order. No cache, or a corrupt one: an empty
 catalog, the bridge stays initialized, and recovery fills it.
 
+COMPACT RECALL. A `recall` answer is rewritten before it reaches the client: each
+result keeps only `text`, `fact_type`, `document_id` (`observation` when null),
+`occurred_start`, `mentioned_at` (both cut to YYYY-MM-DD) and `id`, every result is
+kept in order, null top-level keys and the debug key `trace` are dropped. When
+`structuredContent` equals the parsed text (MEASURED 2026-10-28: the live server sends
+the body twice), both copies are compacted to the same object; when they differ,
+nothing is rewritten. MEASURED 2026-10-28 in HELM: one recall answer was 33,462
+characters, 38% of it the facts' text. The served schema
+of `recall` gains a boolean `verbose` (added to a copy at serving time, never to the
+cache); `verbose: true` returns the server's full result, and the key is never
+forwarded. Anything that is not one text item holding a JSON object with a
+`results` list, or an error, is relayed unchanged. The decision is taken only from a
+catalog that holds the recall tool: before one arrives, a recall call's arguments and
+answer pass through untouched. If upstream ever defines `verbose` itself, or gives
+recall an `outputSchema` with `required` or `properties`, the bridge leaves recall alone
+entirely.
+
 STDOUT CARRIES ONLY PROTOCOL. At start the real stdout is duplicated for the writer
 and fd 1 is pointed at stderr, so a stray print from anywhere lands in the log. One
 lock serializes whole messages; each is one line, flushed. The bearer key and memory
@@ -110,6 +127,7 @@ HINDSIGHT_MCP_BRIDGE_DEBUG=1 for per-message log lines.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import http.client
 import itertools
@@ -130,7 +148,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 BRIDGE_NAME = "hindsight-mcp-bridge"
-BRIDGE_VERSION = "1.0.0"
+BRIDGE_VERSION = "1.1.0"
 # Newest first. MEASURED 2026-09-30: the live server echoes 2024-11-05, 2025-06-18
 # and 2025-11-25 when asked for each; 2025-03-26 is in the same family and differs
 # from its neighbours in nothing this bridge touches.
@@ -833,6 +851,67 @@ class Catalog:
                 debug(f"temp cache not removed ({type(unlink_exc).__name__}); never created or already moved")
 
 
+# ---------------------------------------------------------------- compact recall
+
+_RECALL_KEYS = ("text", "fact_type", "document_id", "occurred_start", "mentioned_at", "id")
+_RECALL_DATE_KEYS = ("occurred_start", "mentioned_at")
+_VERBOSE_PROPERTY = {"type": "boolean",
+                     "description": "Return the server's full result, with scores, tags and metadata."}
+
+
+def _short_date(value):
+    if isinstance(value, str) and len(value) >= 10:
+        head = value[:10]
+        if head[4] == "-" and head[7] == "-" and (head[:4] + head[5:7] + head[8:]).isdigit():
+            return head
+    return value
+
+
+_STRUCTURED_DIFFERS = "differs"
+
+
+def compact_recall(result):
+    """The compact form of a recall result; None when its shape is not the one rewritten,
+    `_STRUCTURED_DIFFERS` when `structuredContent` is not the parsed text."""
+    if not isinstance(result, dict) or result.get("isError") is True:
+        return None
+    content = result.get("content")
+    if not (isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
+            and content[0].get("type") == "text" and isinstance(content[0].get("text"), str)):
+        return None
+    try:
+        body = json.loads(content[0]["text"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+        return None
+    structured = "structuredContent" in result
+    if structured and result["structuredContent"] != body:
+        return _STRUCTURED_DIFFERS
+    rows = []
+    for item in body["results"]:
+        row = {}
+        for k in _RECALL_KEYS:
+            v = item.get(k)
+            if k == "document_id" and v is None:
+                v = "observation"
+            if v is None:
+                continue
+            row[k] = _short_date(v) if k in _RECALL_DATE_KEYS else v
+        rows.append(row)
+    slim = {}
+    for k, v in body.items():
+        if k == "results":
+            slim[k] = rows
+        elif k != "trace" and v is not None:
+            slim[k] = v
+    item = dict(content[0], text=json.dumps(slim, ensure_ascii=False))
+    out = dict(result, content=[item])
+    if structured:
+        out["structuredContent"] = slim
+    return out
+
+
 # ---------------------------------------------------------------- the bridge
 
 class Pending:
@@ -840,6 +919,7 @@ class Pending:
         self.fid = fid
         self.key = key
         self.tool = tool
+        self.compact = False
         self.upstream_id: int | None = None
         self.abort = Abort()
         self.done = False
@@ -860,6 +940,7 @@ class Bridge:
         self.inflight: dict[str, Pending] = {}
         self.client_initialized = False
         self._pending_list_changed = False
+        self._compact_notes: set = set()
         self._recovery: threading.Thread | None = None
         self.stop = upstream.stop
         upstream.on_ready = self._on_upstream_ready
@@ -910,11 +991,56 @@ class Bridge:
             if params.get("cursor"):
                 self._error(fid, ERR_INVALID_PARAMS, "unknown cursor: the bridge returns the whole list in one page")
             else:
-                self.out.send({"jsonrpc": "2.0", "id": fid, "result": {"tools": self.catalog.current()}})
+                self.out.send({"jsonrpc": "2.0", "id": fid, "result": {"tools": self._served_tools()}})
         elif method == "tools/call":
             self._submit_call(fid, params)
         else:
             self._error(fid, ERR_METHOD_NOT_FOUND, f"{method} is not supported by the bridge")
+
+    def _note_once(self, message: str) -> None:
+        with self._lock:
+            if message in self._compact_notes:
+                return
+            self._compact_notes.add(message)
+        log(message)
+
+    @staticmethod
+    def _recall_properties(tools: list):
+        """The recall tool and its schema properties, or (tool, None) when it has none."""
+        for tool in tools:
+            if tool.get("name") == "recall":
+                schema = tool.get("inputSchema")
+                props = schema.get("properties") if isinstance(schema, dict) else None
+                return tool, props if isinstance(props, dict) else None
+        return None, None
+
+    def _recall_compact_on(self, tools: list) -> bool:
+        """Whether recall is compacted and takes `verbose`: decided only from a catalog that
+        holds a recall tool, never from an empty one."""
+        tool, props = self._recall_properties(tools)
+        if tool is None:
+            return False
+        if props is not None and "verbose" in props:
+            self._note_once("recall compact disabled: upstream defines verbose")
+            return False
+        out_schema = tool.get("outputSchema")
+        if isinstance(out_schema, dict) and ("required" in out_schema or "properties" in out_schema):
+            self._note_once("recall compact disabled: outputSchema is restrictive")
+            return False
+        return True
+
+    def _served_tools(self) -> list:
+        """The catalog as served: recall's schema gains `verbose` on a copy, never in the cache."""
+        tools = self.catalog.current()
+        if not self._recall_compact_on(tools):
+            return tools
+        tool, props = self._recall_properties(tools)
+        if props is None:
+            self._note_once("recall verbose not advertised: no inputSchema")
+            return tools
+        served = copy.deepcopy(tool)
+        served["inputSchema"]["properties"]["verbose"] = dict(_VERBOSE_PROPERTY)
+        return [served if t is tool else t for t in tools]
 
     def _notification(self, method: str, params) -> None:
         if method == "notifications/initialized":
@@ -948,6 +1074,14 @@ class Bridge:
         if not isinstance(name, str):
             self._error(fid, ERR_INVALID_PARAMS, "tools/call needs a tool name")
             return
+        compact = False
+        if name == "recall" and self._recall_compact_on(self.catalog.current()):
+            compact = True
+            args = params.get("arguments")
+            if isinstance(args, dict):
+                args = dict(args)
+                compact = args.pop("verbose", None) is not True
+                params = dict(params, arguments=args)
         with self._lock:
             if key in self.inflight:
                 duplicate = True
@@ -956,6 +1090,7 @@ class Bridge:
                 busy = len(self.inflight) >= self.max_inflight
                 if not busy:
                     pending = Pending(fid, key, name)
+                    pending.compact = compact
                     self.inflight[key] = pending
         if duplicate:
             self._error(fid, ERR_INVALID_REQUEST, "a request with this id is already running")
@@ -1050,7 +1185,20 @@ class Bridge:
             out["error"] = reply["error"]
         else:
             out["result"] = reply.get("result", {})
+            if p.compact:
+                out["result"] = self._compacted(out["result"])
         self.out.send(out)
+
+    def _compacted(self, result):
+        try:
+            slim = compact_recall(result)
+        except Exception as exc:  # noqa: BLE001 - the full answer is always a safe fallback, and is logged
+            log(f"recall compact skipped: {type(exc).__name__}")
+            return result
+        if slim is _STRUCTURED_DIFFERS:
+            self._note_once("recall compact skipped: structuredContent differs")
+            return result
+        return result if slim is None else slim
 
     def _cancel(self, request_id, reason) -> None:
         if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):

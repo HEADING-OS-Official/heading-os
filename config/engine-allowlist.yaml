@@ -439,6 +439,18 @@ files:
 - path: .claude/skills/scrutinize/references/workspace-areas.md
   class: skill-reference-instruction
   reason: scrutinize/SKILL.md § Phase 0 - Context Loading loads every file under its references/ directory.
+- path: .claude/skills/teach/references/GLOSSARY-FORMAT.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/teach/SKILL.md Phase 4 and § The course tell the model to follow it when it writes GLOSSARY.md."
+- path: .claude/skills/teach/references/LEARNING-RECORD-FORMAT.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/teach/SKILL.md Phase 4 and § The course tell the model to follow it when it writes a learning record."
+- path: .claude/skills/teach/references/MISSION-FORMAT.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/teach/SKILL.md Phase 1 and § The course tell the model to follow it when it writes MISSION.md."
+- path: .claude/skills/teach/references/RESOURCES-FORMAT.md
+  class: skill-reference-instruction
+  reason: ".claude/skills/teach/SKILL.md Phase 2 and § The course tell the model to follow it when it writes RESOURCES.md."
 - path: .claude/skills/telegram/references/commands.md
   class: skill-reference-instruction
   reason: telegram/SKILL.md § Full Command Reference points the model to it for command usage.

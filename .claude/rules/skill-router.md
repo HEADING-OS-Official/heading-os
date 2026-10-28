@@ -178,6 +178,7 @@ Detail: `reference/skill-router/operations.md`
 | `/setup-browser-cookies` | import cookies |
 | `/setup-wizard` | manual |
 | `/sync` | manual |
+| `/teach <topic>` | manual |
 | `/thread` | open a thread, log to thread, close thread, hold thread, reopen, thread list, thread find, what threads are active |
 | `/weekly-review` | end of week review, friday review |
 | `/workspace-deep-audit` | manual |

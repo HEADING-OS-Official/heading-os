@@ -237,7 +237,7 @@ Write or update memory files based on signals gathered in Phase 1. Every write m
 
 ### Apply redundancy merge proposals (human-gated)
 
-Resolve the report directory with `.venv/bin/python scripts/data-path.py path memory-hygiene-reports`. Read the latest report's "## Redundancy (advisory - not gated)" section. For each candidate pair, show the operator both files and ask for approval. On approval, merge the two facts into ONE survivor file. Keep genuinely distinct facts as SEPARATE files, and respect one-fact-per-file. Then retire the other file with `.venv/bin/python scripts/retire-memory.py <other.md>`. The index carries no pointer to either file, so nothing there is updated. Never auto-merge; each pair needs explicit approval.
+Resolve the report directory with `.venv/bin/python scripts/data-path.py path memory-hygiene-reports`. Read the latest report's "## Redundancy (advisory - not gated)" section. For each candidate pair, show the operator both files and ask for approval. On approval, merge the two facts into ONE survivor file. Keep genuinely distinct facts as SEPARATE files, and respect one-fact-per-file. Then retire the other file with `.venv/bin/python scripts/retire-memory.py <other.md> --merged-into <survivor.md>`. The index carries no pointer to either file, so nothing there is updated. Never auto-merge; each pair needs explicit approval.
 
 ### Read the shadow worklist's dormancy list (informational)
 
@@ -306,21 +306,19 @@ Index: {X} lines, {Z} UTF-16 units, within budget and untouched.
 
 ### Step 3: Append consolidation trace
 
-After the report, append one JSON line recording this run's actions. Fill `merged` and `retired` with the run's REAL actions: merged survivor filenames, and retired filenames. Leave them as empty lists if nothing was merged or retired.
+`scripts/retire-memory.py` writes the trace row `{ts, merged, retired}` to `consolidation-trace.jsonl` under `dream-reports` on every run. Pass each survivor of a merge with `--merged-into` when you retire the other file:
 
 ```bash
-python3 - <<'PY'
-import json, time, sys
-from pathlib import Path
-sys.path.insert(0, ".")
-from scripts.utils.data_path import data_path
-p = data_path("dream-reports") / "consolidation-trace.jsonl"
-p.parent.mkdir(parents=True, exist_ok=True)
-row = {"ts": time.time(), "merged": [], "retired": []}  # fill with THIS run's actual actions
-with p.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps(row) + "\n")
-PY
+.venv/bin/python scripts/retire-memory.py <other.md> --merged-into <survivor.md>
 ```
+
+If the run retired nothing, record the run with an empty row:
+
+```bash
+.venv/bin/python scripts/retire-memory.py --trace-only
+```
+
+Do not write the trace from an inline `python - <<'PY'` block. The overlay write guard refuses a write from code that is not a tracked file.
 
 ---
 

@@ -5,6 +5,6 @@
   "_direction": "may only fall",
   "_history": "Measurements and every declared raise: registry name engine-config-history in the data repository (test-budget.json), and git history.",
   "test_files": 20,
-  "test_functions": 156,
-  "test_code_lines": 5418
+  "test_functions": 158,
+  "test_code_lines": 5465
 }

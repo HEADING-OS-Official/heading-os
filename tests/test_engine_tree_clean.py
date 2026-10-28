@@ -478,3 +478,77 @@ def test_the_comms_export_refuses_an_output_directory_inside_the_engine(
                                       "--since", "2026-01-01"])
     assert mod.main() == 0
     assert called == [tmp_path]
+
+
+def test_a_teach_course_is_refused_inside_the_engine(tmp_path, monkeypatch):
+    """/teach writes a course only under `teach-courses`, never in the engine.
+
+    The upstream skill writes its course into the current directory, which from
+    this checkout is the public engine. `scripts/teach.py` is the skill's only
+    door to disk. MEASURED 2026-10-28 on a scratch pair: a data root inside the
+    engine checkout exits 2 and creates nothing; a data root beside it creates
+    the course. Driven through `main()`, with `WORKSPACE_ROOT` naming a stand-in
+    engine so nothing is created inside the real one.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "teach_under_test", get_workspace_root() / "scripts" / "teach.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    registry = ('version: 1\nnames:\n  teach-courses:\n    path: knowledge/courses\n'
+                '    what: "courses"\n')
+
+    engine = tmp_path / "engine"
+    inside = engine / "data"
+    (inside / "config").mkdir(parents=True)
+    (inside / "config" / "data-paths.yaml").write_text(registry, encoding="utf-8")
+    monkeypatch.setenv("WORKSPACE_ROOT", str(engine))
+    monkeypatch.setenv("HEADING_OS_DATA", str(inside))
+    assert mod.main(["init", "demo"]) == 2
+    assert not (inside / "knowledge").exists(), "a course was created inside the engine"
+
+    beside = tmp_path / "data"
+    (beside / "config").mkdir(parents=True)
+    (beside / "config" / "data-paths.yaml").write_text(registry, encoding="utf-8")
+    monkeypatch.setenv("HEADING_OS_DATA", str(beside))
+    assert mod.main(["init", "demo"]) == 0
+    assert (beside / "knowledge" / "courses" / "demo" / "lessons").is_dir()
+
+
+def test_a_teach_course_symlinked_into_the_engine_is_refused(tmp_path, monkeypatch):
+    """A course directory that is a symlink into the engine is refused, not followed.
+
+    MEASURED 2026-10-28 (HELM review of c2008455): with `teach-courses/demo` a
+    symlink to a directory inside the engine checkout, `teach.py init demo`
+    passed the root-only check, created lessons/, reference/, learning-records/
+    and assets/ inside the engine, and exited 0. The resolved course directory
+    is now checked before anything follows it; a plain course beside it is
+    still created.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "teach_symlink_under_test", get_workspace_root() / "scripts" / "teach.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    engine, data = tmp_path / "engine", tmp_path / "data"
+    target = engine / "inside"
+    target.mkdir(parents=True)
+    (data / "config").mkdir(parents=True)
+    (data / "config" / "data-paths.yaml").write_text(
+        'version: 1\nnames:\n  teach-courses:\n    path: knowledge/courses\n'
+        '    what: "courses"\n', encoding="utf-8")
+    (data / "knowledge" / "courses").mkdir(parents=True)
+    (data / "knowledge" / "courses" / "demo").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("WORKSPACE_ROOT", str(engine))
+    monkeypatch.setenv("HEADING_OS_DATA", str(data))
+
+    assert mod.main(["init", "demo"]) == 2
+    assert list(target.iterdir()) == [], "a course was created inside the engine"
+
+    assert mod.main(["init", "plain"]) == 0
+    assert (data / "knowledge" / "courses" / "plain" / "lessons").is_dir()
+
+    lessons = data / "knowledge" / "courses" / "plain" / "lessons"
+    lessons.rmdir()
+    lessons.symlink_to(target, target_is_directory=True)
+    assert mod.main(["next", "plain", "lessons"]) == 2, "next numbered inside the engine"

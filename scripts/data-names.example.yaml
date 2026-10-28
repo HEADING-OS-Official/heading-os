@@ -498,6 +498,9 @@ names:
   knowledge-base:
     what: "the root of the knowledge base shared with Zettlr; odin-brain sits inside it"
     path: knowledge
+  teach-courses:
+    what: "the /teach learning courses, one subdirectory per course: MISSION.md, RESOURCES.md, GLOSSARY.md, NOTES.md, lessons/, reference/, learning-records/, assets/"
+    path: knowledge/courses
   letter-sequence:
     what: "the last issued letter reference number; a second counter re-issues numbers already on letters"
     path: company/documents/_letter-sequence.txt

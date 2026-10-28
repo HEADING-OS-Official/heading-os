@@ -22,6 +22,15 @@ Usage:
     python scripts/context-floor-audit.py --json
     python scripts/context-floor-audit.py --write-baseline
     python scripts/context-floor-audit.py --baseline          # exit 1 on growth
+    python scripts/context-floor-audit.py sessions [--days N] [--root PATH] [--json]
+
+The `sessions` mode reads the top-level session transcripts under
+~/.claude/projects modified in the last N days (default 30) and prints
+aggregates only: attachments by type, path-scoped rules, Hindsight content
+signatures, tool results by tool, and the peak context per session. It never
+prints message text, project directory names or session ids. Subagent
+transcripts and directories whose name contains `probe` are left out and
+counted.
 
 THE BASELINE IS A RATCHET, AND SOMEONE HAS TO TURN IT. `--baseline` fails only
 upward, so every byte the floor loses becomes permanent slack the floor may
@@ -55,14 +64,17 @@ before changing it, because nothing else will object.
 
 import argparse
 import json
+import math
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.claude_md_chain import HARNESS_MAX_DEPTH, resolve_chain  # noqa: E402
 from scripts.utils.atomic import atomic_write_text  # noqa: E402
+from scripts.utils.checkpoint_paths import transcript_dir  # noqa: E402
 from scripts.utils.colors import BOLD, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.markdown import FM_OK, split_frontmatter  # noqa: E402
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
@@ -427,7 +439,284 @@ def render(result: dict) -> None:
           f"total you moved.{RESET}")
 
 
+# ============================================================
+# sessions mode: what fills the context window in real transcripts
+# ============================================================
+
+# Values of these attachment keys are metadata, not text the model reads.
+ATTACHMENT_META_KEYS = frozenset({
+    "type", "hookEvent", "hookName", "path", "uuid", "timestamp", "toolUseID",
+})
+SIGNATURES = (
+    ("refresh", "<hindsight_knowledge_refresh>"),
+    ("reflect", "<hindsight_memory>"),
+    ("facts", "<memory_facts source="),
+)
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf")
+SESSIONS_NOTE = ("bytes/4 underestimates tokens for markdown and JSON; "
+                 "calibrate against /context on your machine.")
+
+
+def _utf8(text: str) -> int:
+    return len(text.encode("utf-8", errors="replace"))
+
+
+def _attachment_strings(value, key: str | None = None):
+    """Every string value inside an attachment, skipping the metadata keys."""
+    if isinstance(value, str):
+        if key not in ATTACHMENT_META_KEYS:
+            yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield from _attachment_strings(v, k)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _attachment_strings(item, key)
+
+
+def _result_size(block: dict) -> tuple[int, int]:
+    """(bytes, images) of one tool_result block."""
+    content = block.get("content")
+    if isinstance(content, str):
+        return _utf8(content), 0
+    size = images = 0
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "image":
+                images += 1
+            elif isinstance(item.get("text"), str):
+                size += _utf8(item["text"])
+    return size, images
+
+
+def _nearest_rank(ordered: list[int], p: float) -> int:
+    rank = max(1, math.ceil(p * len(ordered)))
+    return ordered[rank - 1]
+
+
+def _add(table: dict, name: str, size: int, images: int = 0) -> None:
+    row = table.setdefault(name, [0, 0, 0])
+    row[0] += 1
+    row[1] += size
+    row[2] += images
+
+
+def measure_sessions(root: Path, days: int) -> dict:
+    cutoff = time.time() - days * 86400
+    scope = {"sessions": 0, "days": days, "probe_dirs_skipped": 0,
+             "subagent_files_excluded": 0, "malformed_lines": 0,
+             "unreadable_files": 0}
+    attachments: dict = {}
+    rules: dict = {}
+    # Seeded so all three rows print, at zero when nothing matched.
+    signatures: dict = {needle: [0, 0, 0] for _, needle in SIGNATURES}
+    per_day: dict = {}
+    tools: dict = {}
+    peaks: list[int] = []
+    no_usage = 0
+
+    for project in sorted(p for p in root.iterdir() if p.is_dir()):
+        if "probe" in project.name:
+            scope["probe_dirs_skipped"] += 1
+            continue
+        for sub in project.glob("*/subagents/*.jsonl"):
+            try:
+                if sub.stat().st_mtime >= cutoff:
+                    scope["subagent_files_excluded"] += 1
+            except OSError as exc:
+                print(f"[sessions] cannot stat a subagent file: {exc.strerror}",
+                      file=sys.stderr)
+        for path in project.glob("*.jsonl"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+                # "\n" only: `splitlines` also breaks on U+2028, U+0085 and
+                # the other Unicode separators, which JSON leaves unescaped
+                # inside a string, and so cuts one valid record in two.
+                lines = path.read_text(encoding="utf-8").split("\n")
+            except (OSError, UnicodeDecodeError):
+                scope["unreadable_files"] += 1
+                continue
+            scope["sessions"] += 1
+            records = []
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    scope["malformed_lines"] += 1
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+                else:
+                    scope["malformed_lines"] += 1
+
+            def blocks(record):
+                message = record.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                return [b for b in content if isinstance(b, dict)] \
+                    if isinstance(content, list) else []
+
+            uses = {}
+            for record in records:
+                for b in blocks(record):
+                    if b.get("type") == "tool_use" and isinstance(b.get("id"), str):
+                        uses[b["id"]] = b
+            peak = None
+            for record in records:
+                attachment = record.get("attachment")
+                if isinstance(attachment, dict):
+                    size = sum(_utf8(s) for s in _attachment_strings(attachment))
+                    kind = str(attachment.get("type"))
+                    event = attachment.get("hookEvent")
+                    _add(attachments, f"{kind}:{event}" if event else kind, size)
+                    if kind == "nested_memory":
+                        _add(rules, Path(str(attachment.get("path", ""))).name, size)
+                    values = list(_attachment_strings(attachment))
+                    day = str(record.get("timestamp", ""))[:10]
+                    for label, needle in SIGNATURES:
+                        if any(needle in value for value in values):
+                            _add(signatures, needle, size)
+                            row = per_day.setdefault(
+                                day, {lb: 0 for lb, _ in SIGNATURES})
+                            row[label] += 1
+                for b in blocks(record):
+                    if b.get("type") != "tool_result":
+                        continue
+                    use = uses.get(b.get("tool_use_id"))
+                    if use is None:
+                        name = "unmatched"
+                    else:
+                        name = str(use.get("name"))
+                        target = (use.get("input") or {}).get("file_path")
+                        if name == "Read" and isinstance(target, str) \
+                                and target.lower().endswith(IMAGE_SUFFIXES):
+                            name = "Read(image/pdf)"
+                    _add(tools, name, *_result_size(b))
+                if record.get("type") == "assistant":
+                    message = record.get("message")
+                    usage = message.get("usage") if isinstance(message, dict) else None
+                    if isinstance(usage, dict):
+                        total = sum(int(usage.get(k) or 0) for k in (
+                            "input_tokens", "cache_read_input_tokens",
+                            "cache_creation_input_tokens"))
+                        peak = total if peak is None else max(peak, total)
+            if peak is None:
+                no_usage += 1
+            else:
+                peaks.append(peak)
+
+    def rows(table: dict, count_key: str = "count") -> list[dict]:
+        out = []
+        for name, (count, size, images) in sorted(
+                table.items(), key=lambda kv: (-kv[1][1], kv[0])):
+            row = {"name": name, count_key: count, "bytes": size,
+                   "tokens": _tokens(size)}
+            if count_key == "calls":
+                row["images"] = images
+            out.append(row)
+        return out
+
+    peaks.sort()
+    return {
+        "scope": scope,
+        "attachments": rows(attachments),
+        "rules": rows(rules),
+        "signatures": rows(signatures),
+        "signatures_per_day": [{"date": d, **per_day[d]} for d in sorted(per_day)],
+        "tools": rows(tools, "calls"),
+        "sessions": {
+            "count": len(peaks) + no_usage,
+            "no_usage": no_usage,
+            "median": _nearest_rank(peaks, 0.5) if peaks else None,
+            "p90": _nearest_rank(peaks, 0.9) if peaks else None,
+            "max": peaks[-1] if peaks else None,
+        },
+        "note": SESSIONS_NOTE,
+    }
+
+
+def render_sessions(result: dict) -> None:
+    s = result["scope"]
+    print(f"{BOLD}Scope{RESET}  sessions read {s['sessions']}, days {s['days']}, "
+          f"probe directories skipped {s['probe_dirs_skipped']}, subagent files "
+          f"excluded {s['subagent_files_excluded']}, malformed lines skipped "
+          f"{s['malformed_lines']}, unreadable files skipped "
+          f"{s['unreadable_files']}")
+
+    def table(title: str, rows: list[dict], first: str = "count",
+              images: bool = False) -> None:
+        print(f"\n{BOLD}{title}{RESET}")
+        head = f"{'name':<52}{first:>8}{'bytes':>12}{'~tokens':>10}"
+        if images:
+            head += f"{'images':>8}"
+        print(f"{GRAY}{head}{RESET}")
+        for r in rows:
+            line = f"{r['name']:<52}{r[first]:>8}{r['bytes']:>12}{r['tokens']:>10}"
+            print(line + (f"{r['images']:>8}" if images else ""))
+
+    table("Attachments by type", result["attachments"])
+    table("Path-scoped rules", result["rules"])
+    table("Content signatures", result["signatures"])
+    print(f"\n{BOLD}Signatures per day{RESET}")
+    print(f"{GRAY}{'date':<12}"
+          + "".join(f"{label:>10}" for label, _ in SIGNATURES) + RESET)
+    for row in result["signatures_per_day"]:
+        print(f"{row['date']:<12}"
+              + "".join(f"{row[label]:>10}" for label, _ in SIGNATURES))
+    table("Tool results", result["tools"], "calls", images=True)
+
+    st = result["sessions"]
+    print(f"\n{BOLD}Sessions{RESET}  {GRAY}(peak input + cache read + cache "
+          f"creation tokens per session, nearest-rank){RESET}")
+
+    def show(v):
+        return "-" if v is None else str(v)
+    print(f"count {st['count']}  no usage {st['no_usage']}  median "
+          f"{show(st['median'])}  p90 {show(st['p90'])}  max {show(st['max'])}")
+    print(f"\n{YELLOW}Note:{RESET} {result['note']}")
+
+
+def sessions_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="context-floor-audit.py sessions",
+        description="Aggregate what filled the context window in recent "
+                    "session transcripts. Prints aggregates only.",
+    )
+    parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--root", type=Path,
+                        help="transcript root (default: the harness's own, "
+                             "~/.claude/projects)")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    if args.root is not None:
+        root = args.root.expanduser()
+    else:
+        # The one copy of the harness's transcript layout; its parent is the
+        # root holding every project's transcripts.
+        own = transcript_dir(get_workspace_root())
+        if own is None:
+            print("sessions: no default transcript root off POSIX; pass --root",
+                  file=sys.stderr)
+            return 2
+        root = own.parent
+    if not root.is_dir():
+        print(f"sessions: --root is not a directory: {root}", file=sys.stderr)
+        return 2
+    result = measure_sessions(root, args.days)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        render_sessions(result)
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["sessions"]:
+        return sessions_main(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="Measure the always-loaded context floor by component."
     )
