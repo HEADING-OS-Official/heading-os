@@ -3,7 +3,7 @@
 Document-level structural editing for long deliverables: the **argument architecture** — section ordering, claim-to-evidence linkage, hierarchy, redundancy, buried lede — judged *before* any sentence is touched. Adapted from and extends BMAD-Method `bmad-editorial-review-structure` (v6.8.0) for a CEO operations workspace. The source taxonomy is six operations (CUT / MERGE / MOVE / CONDENSE / QUESTION / PRESERVE); SPLIT, ADD, and PROMOTE/DEMOTE below are workspace additions.
 
 Last Updated: 2026-06-04
-Consumed by: `/editorial-review` (the standalone skill) and the long-doc skills that run it as an optional sub-phase (`/proposal`, `/intel-briefing-newsletter`, `/rfp-response`, `/investor-pitch`).
+Consumed by: `/editorial-review` (the standalone skill) and the long-doc skills that run it as an optional sub-phase (`/proposal`, `/intel-briefing-newsletter`, `/rfp-response`, `/pitch` in mode `investor`).
 
 ## The one inviolable rule
 

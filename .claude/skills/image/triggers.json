@@ -1,0 +1,18 @@
+[
+  {"query": "give me an image prompt to go with this LinkedIn post", "should_trigger": true},
+  {"query": "visualize the announcement I just wrote", "should_trigger": true},
+  {"query": "write a photorealistic prompt for a visual companion to this article", "should_trigger": true},
+  {"query": "I need an image prompt for the email I just drafted", "should_trigger": true},
+  {"query": "what visual would pair with this slide copy - draft me a Midjourney prompt", "should_trigger": true},
+  {"query": "actually generate the image from that prompt now", "should_trigger": true},
+  {"query": "render this prompt into a real picture file with flux", "should_trigger": true},
+  {"query": "create the actual image on disk from the description", "should_trigger": true},
+  {"query": "generate an image of a secure data platform for my post", "should_trigger": true},
+  {"query": "create a picture of a lighthouse over a stormy sea, 16:9", "should_trigger": true},
+  {"query": "make me an actual image file from this prompt using flux", "should_trigger": true},
+  {"query": "produce a branded hero visual for the Nimbus announcement", "should_trigger": true},
+  {"query": "turn this description into a real image on disk", "should_trigger": true},
+  {"query": "just write me a detailed image prompt, don't generate anything yet", "should_trigger": true},
+  {"query": "design a full logo and infographic set for the PartnerCo campaign", "should_trigger": false},
+  {"query": "draft a LinkedIn post about our launch this week", "should_trigger": false}
+]

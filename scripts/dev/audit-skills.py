@@ -651,8 +651,8 @@ def population_shape(rows: list[dict]) -> dict:
                 "skill": row["name"],
                 "kind": "router-says-manual-but-the-harness-will-still-list-it",
                 "detail": "x-heading-routing.router is 'manual', which "
-                          ".claude/rules/skill-router.md says the harness "
-                          "enforces with disable-model-invocation. That flag is "
+                          "the harness enforces only through "
+                          "disable-model-invocation. That flag is "
                           "absent, so the skill IS in the session listing and "
                           "the model CAN invoke it from a message. Declare it, "
                           "`true` or a deliberate `false`.",

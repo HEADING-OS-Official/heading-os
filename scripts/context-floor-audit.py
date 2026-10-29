@@ -76,7 +76,7 @@ from scripts.utils.claude_md_chain import HARNESS_MAX_DEPTH, resolve_chain  # no
 from scripts.utils.atomic import atomic_write_text  # noqa: E402
 from scripts.utils.checkpoint_paths import transcript_dir  # noqa: E402
 from scripts.utils.colors import BOLD, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
-from scripts.utils.markdown import FM_OK, split_frontmatter  # noqa: E402
+from scripts.utils.markdown import FM_OK, parse_frontmatter_strict, split_frontmatter  # noqa: E402
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
 
 # Bytes per token, as an ESTIMATE. English prose and YAML sit near four bytes per
@@ -159,7 +159,8 @@ def measure_skills(root: Path) -> dict:
     measured floor SMALLER: the gate would then pass on a floor that grew, which
     is the one direction a gate must not fail in.
     """
-    total_fm = total_desc = count = 0
+    total_fm = total_desc = listed_desc = count = 0
+    manual_count = manual_desc = 0
     per_skill = []
     unreadable: list[str] = []
     for path in sorted((root / ".claude" / "skills").glob("*/SKILL.md")):
@@ -185,6 +186,15 @@ def measure_skills(root: Path) -> dict:
         desc_bytes = len(found.group(1).encode("utf-8")) if found else 0
         total_fm += fm_bytes
         total_desc += desc_bytes
+        # A `disable-model-invocation: true` skill is not in the harness's skill
+        # listing, so its description is not resident. Counted apart, and still
+        # inside `total_desc`, so `other_frontmatter_bytes` does not move.
+        data, _kind, _detail = parse_frontmatter_strict(text)
+        if isinstance(data, dict) and data.get("disable-model-invocation") is True:
+            manual_count += 1
+            manual_desc += desc_bytes
+            continue
+        listed_desc += desc_bytes
         per_skill.append({
             "skill": path.parent.name,
             "frontmatter_bytes": fm_bytes,
@@ -198,8 +208,9 @@ def measure_skills(root: Path) -> dict:
     return {
         "skills": count,
         "frontmatter_bytes": total_fm,
-        "description_bytes": total_desc,
+        "description_bytes": listed_desc,
         "other_frontmatter_bytes": total_fm - total_desc,
+        "manual_only": {"skills": manual_count, "bytes": manual_desc},
         "per_skill": per_skill,
         "unreadable_skills": unreadable,
     }
@@ -385,6 +396,7 @@ def measure(root: Path) -> dict:
         "observed_bytes": sum(components[k] for k in observed_keys),
         "observed_components": list(observed_keys),
         "path_scoped_rules_bytes": rules["path_scoped_bytes"],
+        "skill_descriptions_manual_only": skills["manual_only"],
         "largest_descriptions": skills["per_skill"][:10],
         "always_on_rules": rules["always_on"],
     }
@@ -401,6 +413,9 @@ def render(result: dict) -> None:
     print(f"{BOLD}{'TOTAL (surfaces on disk)':<28}{total:>12}{_tokens(total):>10}{RESET}")
     print(f"{BOLD}{'OBSERVED FLOOR':<28}{observed:>12}{_tokens(observed):>10}{RESET}"
           f"  {GRAY}<- injection confirmed{RESET}")
+    manual = result["skill_descriptions_manual_only"]
+    print(f"{GRAY}manual-only skills (not listed): {manual['skills']} skills, "
+          f"{manual['bytes']} bytes of descriptions, not counted{RESET}")
 
     scoped = result["path_scoped_rules_bytes"]
     print(f"\n{GRAY}Path-scoped rules, NOT in the total (they load only on a "
@@ -419,10 +434,10 @@ def render(result: dict) -> None:
     if router:
         print(f"\n{YELLOW}Note:{RESET} .claude/rules/skill-router.md is counted "
               f"under always-on rules ({router['bytes']} bytes, "
-              f"~{_tokens(router['bytes'])} tokens). It carries the trigger list "
-              f"for every skill, generated from x-heading-routing.triggers - a "
-              f"DIFFERENT field from description. Compressing descriptions does "
-              f"not shrink it, so the two wins do not add up.")
+              f"~{_tokens(router['bytes'])} tokens). It carries the routing "
+              f"policy and the collision map, generated from x-heading-routing; "
+              f"the full trigger list is in reference/skill-router/. Compressing "
+              f"descriptions does not shrink it, so the two wins do not add up.")
 
     # scope-claims: name what the method cannot establish, rather than letting a
     # partial measurement read as a complete one.

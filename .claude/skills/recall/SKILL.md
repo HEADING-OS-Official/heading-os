@@ -35,7 +35,6 @@ x-heading-routing:
     - external/world intel on a company or person -> /osint
     - capture a NEW note -> /zk
     - exact-string file search -> Grep.
-  compound: 'No'
   router: auto
 ---
 

@@ -1098,48 +1098,62 @@ def check_docs_sync() -> int:
 
 
 def check_skill_router_coverage() -> int:
-    """Cross-reference .claude/rules/skill-router.md against .claude/skills/ directory listing.
+    """Cross-reference the skill-router detail files against .claude/skills/.
 
-    Every skill directory should either:
-    - Appear in the router registry (table rows matching `/skill-name`), or
-    - Be explicitly listed as NEVER auto-trigger (e.g., /prime, /osint-advanced)
-    - Be a plugin-namespaced skill (documented in the plugin doctrine section)
+    Every skill directory must have a row, `/skill-name` in the Skill column, in
+    the union of the per-category detail files `reference/skill-router/*.md`;
+    a duplicate row or a row with no skill directory is an issue too. Those carry the full
+    Skill | Triggers | Exclusions table for every skill, auto and manual alike;
+    since 2026-10-29 the always-on `.claude/rules/skill-router.md` holds only the
+    routing policy and a collision map, so it is no longer the place a skill is
+    registered. A skill in .claude/skills/ named in no detail file is silently
+    orphaned: `generate-skill-router.py` never rendered it.
 
-    A skill in .claude/skills/ without any mention in the router is silently orphaned.
-
-    The match is boundary-anchored. A bare `f"/{name}" in router_text` reported
-    `osint` as covered on the strength of the `/osint-advanced` row alone, and
-    `queue` on `/queue-draft`; both pairs were live in this repo then, so for
-    those names the check could not detect the very class it advertises.
+    The row's name must end at a space (an argument hint) or the closing
+    backtick; `[^`]*` after it read `/osint_advanced` as `osint` (MEASURED
+    2026-10-29, review round 3). A
+    bare `f"/{name}" in router_text` reported `osint` as covered on the strength
+    of the `/osint-advanced` row alone, and `queue` on `/queue-draft`.
     """
     header("Skill Router Coverage")
     issues = 0
-    router_file = WORKSPACE / ".claude" / "rules" / "skill-router.md"
+    detail_dir = WORKSPACE / "reference" / "skill-router"
     skills_dir = WORKSPACE / ".claude" / "skills"
-    if not router_file.exists():
-        action("skill-router.md missing")
+    details = sorted(detail_dir.glob("*.md")) if detail_dir.is_dir() else []
+    if not details:
+        action("reference/skill-router/*.md missing")
         return 1
     if not skills_dir.exists():
         action(".claude/skills/ missing")
         return 1
     try:
-        router_text = router_file.read_text(encoding="utf-8")
+        texts = [d.read_text(encoding="utf-8") for d in details]
     except (OSError, UnicodeDecodeError) as exc:
-        # An unreadable router is the same outcome as a missing one for this
-        # check: no skill can be shown to be covered. The branch above already
-        # returns 1 for the missing case.
-        action(f"skill-router.md could not be read ({type(exc).__name__}); "
+        # An unreadable detail file is the same outcome as a missing one for
+        # this check: no skill can be shown to be covered.
+        action(f"reference/skill-router/ could not be read ({type(exc).__name__}); "
                f"0 skills checked for coverage")
         return 1
+    # The Skill column of real table rows only. A search over the whole text
+    # counted `signal -> /x` in another skill's Exclusions cell as x's
+    # registration: MEASURED 2026-10-29 on a temp tree, a skill with no row
+    # reported covered.
+    rows = [m.group(1) for text in texts
+            for m in re.finditer(r"^\| `/([a-z0-9-]+)(?: [^`]*)?` \|", text, re.MULTILINE)]
+    registered = set(rows)
     skill_dirs = [d.name for d in sorted(skills_dir.iterdir()) if d.is_dir() and not d.name.startswith(".")]
     for name in skill_dirs:
-        # A skill name may not run straight into another name character, so
-        # `/osint` no longer matches inside `/osint-advanced`.
-        if re.search(rf"/{re.escape(name)}(?![\w-])", router_text):
-            ok(f"{name}: mentioned in skill-router.md")
+        if name in registered:
+            ok(f"{name}: has a row in reference/skill-router/")
         else:
-            action(f"{name}: not mentioned in skill-router.md")
+            action(f"{name}: no row in any reference/skill-router/*.md")
             issues += 1
+    for name in sorted({r for r in rows if rows.count(r) > 1}):
+        action(f"{name}: more than one row in reference/skill-router/")
+        issues += 1
+    for name in sorted(registered - set(skill_dirs)):
+        action(f"{name}: row in reference/skill-router/ but no .claude/skills/{name}/")
+        issues += 1
     return issues
 
 

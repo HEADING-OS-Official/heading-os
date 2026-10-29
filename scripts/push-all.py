@@ -87,7 +87,9 @@ from scripts.utils.push_ratchets import (
     IMPORT_ENV_PURITY,
     LEGACY_OUTPUTS,
     OUTSIDE_WORKSPACE_WRITES,
+    RULE_SPLIT_INVENTORY,
     RUNTIME_WRITE_GUARD,
+    SECRETS_BASELINE_DRIFT,
     SKILL_DATA_PATHS,
     run_ratchet,
     scanner_path,
@@ -591,7 +593,7 @@ def _refuse_ratchet(refusal: str, output: str, hint: str = "") -> None:
     sys.exit(2)
 
 
-# The argv of the nine ratchets below lives in `scripts/utils/push_ratchets.py`, and
+# The argv of the eleven ratchets below lives in `scripts/utils/push_ratchets.py`, and
 # `scripts/check-push-ratchets.py` runs the same table on any checkout, so a
 # refusal can be seen before the merge rather than here (HOS-125). Change what a
 # ratchet runs THERE, never by giving one of these functions its own argv again.
@@ -892,6 +894,59 @@ def runtime_write_guard_ratchet(repo: Path) -> None:
         "Resolve the address through `data_path()`, or add a reviewed row "
         "to RECORD_EXEMPTIONS in scripts/utils/runtime_write_guard.py; delete "
         "a row that matches no site.")
+
+
+def rule_split_inventory_ratchet(repo: Path) -> None:
+    """Refuse the push when an always-on rule dropped a snapshotted directive.
+
+    `scripts/rule_split_check.py --check` ran only in CI, so a commit that
+    dropped a line on purpose and left the snapshot unrefreshed turned every
+    engine push red from d7b01354 (2026-10-29) on, first seen in the
+    operator's CI failure mail (2026-10-30).
+    """
+    proc = run_ratchet(repo, RULE_SPLIT_INVENTORY)
+    if proc is None:
+        print(f"{YELLOW}rule-split-inventory ratchet skipped: "
+              f"{scanner_path(repo, RULE_SPLIT_INVENTORY)} is absent.{RESET}")
+        return
+    if proc.returncode == 0:
+        tail = [ln for ln in (proc.stdout + proc.stderr).splitlines()
+                if "inventory check" in ln]
+        for line in tail[-1:]:
+            print(f"{GRAY}{line}{RESET}")
+        return
+    _refuse_ratchet(
+        ": an always-on rule dropped a directive its inventory snapshot holds.",
+        proc.stdout + proc.stderr,
+        "Restore the directive, or, when it was dropped on purpose, re-snapshot "
+        "with `.venv/bin/python scripts/rule_split_check.py --snapshot "
+        ".claude/rules/<file>.md`.")
+
+
+def secrets_baseline_drift_ratchet(repo: Path) -> None:
+    """Refuse the push when `.secrets.baseline` no longer matches a fresh scan.
+
+    `scripts/check-secrets-baseline-drift.py`, the one copy of what the CI
+    step runs, which until 2026-10-30 ran only there, for the reason
+    `rule_split_inventory_ratchet` gives.
+    """
+    proc = run_ratchet(repo, SECRETS_BASELINE_DRIFT)
+    if proc is None:
+        print(f"{YELLOW}secrets-baseline-drift ratchet skipped: "
+              f"{scanner_path(repo, SECRETS_BASELINE_DRIFT)} is absent.{RESET}")
+        return
+    if proc.returncode == 0:
+        tail = [ln for ln in (proc.stdout + proc.stderr).splitlines()
+                if "baseline" in ln]
+        for line in tail[-1:]:
+            print(f"{GRAY}{line}{RESET}")
+        return
+    _refuse_ratchet(
+        ": detect-secrets finds what `.secrets.baseline` does not record, or "
+        "the scan could not run.",
+        proc.stdout + proc.stderr,
+        "Review each finding, then refresh with "
+        "`detect-secrets scan --baseline .secrets.baseline`.")
 
 
 def data_config_paths_ratchet(engine: Path) -> None:
@@ -1619,6 +1674,8 @@ def push_repo(name: str, repo: Path, message: str, do_commit: bool, dry_run: boo
         skill_data_paths_ratchet(repo)
         engine_data_paths_ratchet(repo)
         runtime_write_guard_ratchet(repo)
+        rule_split_inventory_ratchet(repo)
+        secrets_baseline_drift_ratchet(repo)
 
     # 1. pre-push secret scan over every file this push would CARRY
     #

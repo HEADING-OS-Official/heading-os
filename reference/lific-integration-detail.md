@@ -1,5 +1,7 @@
-<!-- version: 1.0.0 | last-updated: 2026-09-18 -->
+<!-- version: 1.0.0 | last-updated: 2026-10-29 -->
 # Lific integration: the measured detail
+
+Last Updated: 2026-10-29
 
 Detail file for `.claude/rules/lific.md`. The rule carries the conduct that has to fire without anyone going to look something up. Everything here is fetched when it is needed and costs nothing the rest of the time.
 
@@ -99,6 +101,20 @@ So HELM's merge commit carries one `closes <ID>` per issue the branch finished, 
 
 The sentence lives once in code, as `DONE_REQUEST_MARKER` in `scripts/lific-board.py`. Nothing checks that the two agree, so whoever renames the marker updates this page in the same change.
 
+### The yard's closing comment (rule item 5)
+
+The opening comment names the yard and its branch because this workspace does not use Lific's assignment, which names a person rather than a yard or a branch, and `active` alone says that somebody is working without saying who.
+
+Nothing else goes on the marker line. `scripts/lific-board.py` matches the entire first line, never a substring, so the sentence above is prose here and a command only there. `/prime` surfaces every issue carrying it, and the operator closes it.
+
+A yard's closing comment also carries, verbatim, the `Unattended:` line that `checkpoint-paths.py --done` printed, so the comment says whether the yard ever continued on its own (operator decision 2026-10-14).
+
+Before a yard writes `branch <name> ready for merge`, it runs `/security-review` over the branch, passing the commit message file as its argument so the message text is reviewed too, beside `pre-commit run --files` over the entire staged set and `scripts/check-push-ratchets.py`, which takes no argument because it reads only the tree. The engine copy of the command (`.claude/commands/security-review.md`) diffs from the merge-base of `HEAD` with local `main` to the working tree, so a staged, uncommitted branch is reviewed whole. The closing comment carries its verdict: the diff base it printed, the count of findings, and each high or medium finding with its `file:line`. Every such finding is either fixed in the yard before the comment is written or listed under what was NOT done. (operator approval 2026-10-19)
+
+Run all three before reporting a branch ready, `pre-commit` over the ENTIRE staged set and not only the files you last touched: otherwise the first gate to refuse is the one that runs on the operator's "commit", after the yard has already said it is done. Report the last line `scripts/check-push-ratchets.py` printed: it runs the same ratchets `push-all.py` runs before a push, on any checkout, while `push-all.py --dry-run` itself refuses in a yard (`require_main_clone` is its first line).
+
+The closing comment keeps its first line exactly as above; the yard's `close` record for the task journal is a SEPARATE comment, item 10.
+
 Two measurements decided how that marker is matched.
 
 **Comment bodies ARE searchable**, correcting an earlier reading of the FTS schema. `search_index` is an FTS5 table whose own definition comments `entity_type -- 'issue' or 'page'`, which suggested comments were invisible to search. They are not: searching a comment's text returned it with `result_type: "comment"`.
@@ -145,7 +161,7 @@ The one surface with no CLI is plans, and this workspace does not use plans. Ope
 
 ## 11. The `[dossier]` journal (HOS-256)
 
-Rule item 10 owns when a record is written; this section owns its shape. The code is `scripts/utils/dossier.py`; the CLI is `scripts/dossier-journal.py`; the reader is `scripts/lific-board.py dossier HOS-N`.
+Rule item 10 owns when a record is written; this section owns its shape. Scripts in HELM and in yards post a `[dossier]` comment, as the bot, through `lific comment add --user` with the bot username from `LIFIC_BOT_USER` (the one exception to rule item 7), on exactly four events: a prompt saved, a handoff saved, a brief sent, a task closed. A record is a head line, at most three summary lines and a data-root path; never a full text (rule item 8). A closing comment keeps the done marker as its whole first line; the `close` record is a separate comment posted with `scripts/dossier-journal.py post --event close`. A wrong or missing link is corrected by a later `relink` or `unlink` record, never by editing a file or a record. The code is `scripts/utils/dossier.py`; the CLI is `scripts/dossier-journal.py`; the reader is `scripts/lific-board.py dossier HOS-N`.
 
 One record is one comment on each issue in the session's task list:
 

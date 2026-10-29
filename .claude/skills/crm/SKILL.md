@@ -32,7 +32,6 @@ x-heading-routing:
     - contact health
   exclusions:
     - N/A
-  compound: 'No'
   router: auto
 ---
 

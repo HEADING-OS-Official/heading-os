@@ -34,7 +34,6 @@ x-heading-routing:
   exclusions:
     - Telegram -> /telegram
     - email -> /email-draft
-  compound: 'No'
   router: auto
 ---
 # Mattermost Client

@@ -27,7 +27,6 @@ x-heading-routing:
     - debrief [event]
   exclusions:
     - N/A
-  compound: 'No'
   router: auto
 ---
 

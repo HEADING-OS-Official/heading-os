@@ -3,8 +3,9 @@
 
 HELM runs this on a finished yard branch, before `git merge --no-ff
 --no-commit`. It sends the branch's diff against `main`, with the work's stated
-intent, to one reviewer configuration from `scripts/utils/diff_review.py` and
-prints a summary that opens with the count: how many findings need fixing
+intent, to one reviewer configuration from `scripts/utils/diff_review.py`, one
+call per part when the diff is split at file boundaries to fit the size limit
+(code first, prose last), and prints a summary that opens with the count: how many findings need fixing
 before the merge, or, plainly, that nothing does. Every finding carries a file
 and a line, a bug or security finding blocks, and nits are capped.
 
@@ -19,9 +20,10 @@ name is always a branch, even when its tip is a merge of `main` into it.
 
 A blocking finding stays open until a later round's reviewer names it fixed in
 the diff it saw, or a `--full` round, which reviews the whole branch afresh, no
-longer raises it; a clean incremental round does not clear it. A round whose
-diff was cut at the size limit is partial: it is never reused, never the base
-of the next incremental round, and with nothing blocking it exits 3.
+longer raises it; a clean incremental round does not clear it. A round is
+partial only when a single file was longer than the size limit and was cut: it
+is never reused, never the base of the next incremental round, and with nothing
+blocking it exits 3.
 
 The stated intent is `--intent-file` (the brief or the master instruction the
 yard executed) followed by the branch's own commit messages; without the file,
@@ -40,7 +42,8 @@ Usage:
 Exit codes: 0 nothing blocks the merge; 1 bug or security findings, this
 round's or still open from an earlier one; 2 usage error; 3 the review did not
 happen or did not cover the whole change (the reviewer failed, answered off
-contract, or the diff was cut), which is never a clean result.
+contract, or a single file longer than the size limit was cut), which is never
+a clean result.
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.colors import BOLD, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.data_path import data_path, data_write_dir  # noqa: E402
 from scripts.utils.diff_review import (  # noqa: E402
-    BLOCKING, CONFIGS, git, numbered, raw_diff, review, summary_lines,
+    BLOCKING, CONFIGS, Review, git, numbered_parts, raw_diff, review, summary_lines,
 )
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
 
@@ -139,6 +142,30 @@ def print_open(carried: list[dict]) -> None:
             print(ln)
 
 
+def merge_parts(reviews: list[Review], part_files: list[list[str]], already: list[dict] | None) -> Review:
+    """One Review from the parts' reviews, in part order; the last one's error, if any, stops the round.
+
+    A resolved id `R<i>` counts only from a part that rendered the file of
+    `already[i-1]`: a part that never saw the file cannot vouch that it was fixed.
+    """
+    if reviews[-1].error:
+        return Review([], "", sum(p.seconds for p in reviews), sum(p.prompt_chars for p in reviews),
+                      sum(p.answer_chars for p in reviews), error=reviews[-1].error, dropped_nits=0,
+                      raw=reviews[-1].raw, extra={"resolved": []})
+    resolved: set[str] = set()
+    for p, seen in zip(reviews, part_files, strict=True):
+        for x in p.extra.get("resolved", []):
+            m = re.fullmatch(r"R(\d{1,9})", x)
+            i = int(m.group(1)) if m else 0
+            if already and 1 <= i <= len(already) and already[i - 1].get("file") in seen:
+                resolved.add(x)
+    return Review([f for p in reviews for f in p.findings], " | ".join(p.summary for p in reviews),
+                  sum(p.seconds for p in reviews), sum(p.prompt_chars for p in reviews),
+                  sum(p.answer_chars for p in reviews), error=None,
+                  dropped_nits=sum(p.dropped_nits for p in reviews), raw="\n".join(p.raw for p in reviews),
+                  extra={"resolved": sorted(resolved)})
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("target", help="a branch name, or a merge commit to review work already merged")
@@ -168,7 +195,7 @@ def main() -> int:
     if complete and not args.full and last.get("head"):
         since = last["head"]
     diff_base = since or base
-    text, files, truncated = numbered(raw_diff(ROOT, diff_base, head))
+    parts, files, truncated, part_files = numbered_parts(raw_diff(ROOT, diff_base, head, prose_context=3))
     if not files:
         print(f"{YELLOW}No reviewable change between {diff_base[:12]} and {head[:12]}.{RESET}")
         print_open(open_blockers(rounds))
@@ -184,7 +211,12 @@ def main() -> int:
     # "Already reported" is what is still open plus the earlier nits; a finding
     # resolved since is left out, so the same defect brought back is raised again.
     already = open_blockers(rounds) + [f for f in earlier if f["severity"] not in BLOCKING] if since else None
-    r = review(cfg, text, intent, already=already)
+    done: list[Review] = []
+    for part in parts:
+        done.append(review(cfg, part, intent, already=already))
+        if done[-1].error:
+            break
+    r = merge_parts(done, part_files, already)
     dropped_repeats = 0
     resolved: list[str] = []
     if since and not r.error:
@@ -197,7 +229,7 @@ def main() -> int:
     scope = f"since round {len(rounds)} ({since[:12]})" if since else "whole branch"
     entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "base": base, "head": head,
              "diff_base": diff_base, "scope": scope, "config": cfg.name, "model": cfg.model, "files": files,
-             "truncated": truncated, "seconds": round(r.seconds, 1), "findings": r.findings,
+             "truncated": truncated, "parts": len(parts), "seconds": round(r.seconds, 1), "findings": r.findings,
              "dropped_nits": r.dropped_nits, "dropped_repeats": dropped_repeats, "resolved": resolved,
              "summary": r.summary, "error": r.error}
     rounds.append(entry)
@@ -205,7 +237,7 @@ def main() -> int:
     out.write_text(json.dumps(state, indent=1) + "\n")
 
     print(f"{BOLD}Review of {args.target}{RESET}: {base[:12]}..{head[:12]}, {scope}, {len(files)} file(s), "
-          f"{cfg.name} ({cfg.model}), {r.seconds:.0f}s, round {len(rounds)}")
+          f"{cfg.name} ({cfg.model}), {r.seconds:.0f}s, round {len(rounds)}, parts: {len(parts)}")
     if r.error:
         print(f"{RED}The review did not happen: {r.error}. This is not a clean result.{RESET}")
         print(f"Recorded: {out}")
@@ -222,8 +254,8 @@ def main() -> int:
         print(f"({len(resolved)} earlier finding(s) named fixed by this diff)")
     print_open(carried)
     if truncated:
-        print(f"{YELLOW}PARTIAL: the diff was cut at the size limit; files past the cut were not reviewed. "
-              f"This is not a clean result, and the round is not reused.{RESET}")
+        print(f"{YELLOW}PARTIAL: a single file was longer than the size limit and was cut; the rest of that "
+              f"file was not reviewed. This is not a clean result, and the round is not reused.{RESET}")
     print(f"Recorded: {out}")
     if r.findings or carried:
         # The yard that receives these answers each one as FIX, CONTEST (with

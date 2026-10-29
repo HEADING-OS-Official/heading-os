@@ -26,7 +26,6 @@ x-heading-routing:
     - external intel brief
   exclusions:
     - Internal-only brief -> /ceo-intel
-  compound: 'No'
   router: auto
 ---
 

@@ -130,8 +130,9 @@ def mark_unattended_done(state: dict, note: str) -> dict:
 # The standing instruction for a run nobody is watching. Anthropic's paragraph,
 # verbatim except "the user" -> "the operator". Source: the Opus 5.5 prompting
 # guide, section "Unattended agentic runs", adopted on the operator's decision of
-# 2026-09-27. ONE copy for both unattended paths: the Stop hook sends it in a
-# continuation, and scripts/night-repair.py appends it to its system prompt.
+# 2026-09-27. scripts/night-repair.py appends it to its system prompt; the Stop
+# hook sends UNATTENDED_STANDING_SHORT below instead, because Claude Code prints
+# a continuation to the operator in full (operator request 2026-10-29).
 UNATTENDED_STANDING_INSTRUCTION = (
     "A standing instruction from the operator, the person you are working for. "
     "It is about how your turns end. A message with no tool call in it ends your "
@@ -152,6 +153,14 @@ UNATTENDED_STANDING_INSTRUCTION = (
     "does want are the ones where nothing can move without them, or where the "
     "thing blocking you is deliberately protected from you. This does not "
     "override the need for confirmation on risky or destructive actions."
+)
+
+# The same instruction in one sentence, for the Stop-hook continuation.
+UNATTENDED_STANDING_SHORT = (
+    "Never end a turn on a summary, an offer to wait, or decisions that block "
+    "nothing; put status in the same message as the next tool call. Stop only "
+    "when nothing can move without the operator; risky actions still need "
+    "confirmation."
 )
 
 
@@ -368,22 +377,18 @@ def continuation_claimant(
 # The unattended continuation
 # ============================================================
 
-# Short on purpose: a blocking Stop reason is printed to the operator's
-# transcript at every pause. `{open_items}` and `{standing}` follow Anthropic's
-# Opus 5.5 guidance on unattended runs (operator decision 2026-09-27); a hook
-# cannot reach the system prompt, so the standing instruction goes here.
+# Short on purpose: Claude Code prints a blocking Stop reason in full to the
+# operator at every pause (cut to a few lines on his request, 2026-10-29).
+# `{open_items}` and `{standing}` follow Anthropic's Opus 5.5 guidance on
+# unattended runs (operator decision 2026-09-27); a hook cannot reach the
+# system prompt, so the standing instruction goes here in its short form.
 UNATTENDED_WRAPPER = """\
-{usage}, unattended on, {wait}s grace passed, so the turn continues. \
-Resume the unfinished task. Decide alone. Never invent work. \
-Do not touch the unattended switch, and do not run /compact.
-
-{open_items}
-
-Finished, or left only a judgement the operator owns? Run `python \
-scripts/checkpoint-paths.py --done "<one line>"` and stop; this hook reads \
-state, never prose. Continuation {done} of {maximum}.
-
-{standing}"""
+{usage}, unattended on, no reply in {wait}s: the turn continues. {open_items}
+Work alone, invent nothing, leave the unattended switch and /compact alone. \
+{standing}
+Done, or only the operator's call left: `python scripts/checkpoint-paths.py \
+--done "<one line>"` (the hook reads state, never prose), then stop. \
+Continuation {done} of {maximum}."""
 
 # From the second continuation on: only what changes, the counter and the one
 # command that ends the stretch.
@@ -574,8 +579,8 @@ def _apply_task_result(tasks: dict, call: tuple[str, dict], block: dict, result)
 def _open_items_sentence(tasks: dict | None) -> str:
     """The sentence naming what is still open. With no task list, the assistant names them."""
     if not tasks:
-        return ("List what is still open in the task you were given, then continue "
-                "with it. If an item is blocked, say what is blocking it.")
+        return ("Name what is still open and continue with it; say what blocks "
+                "a blocked item.")
     still_open = [
         task["subject"] or "(no subject)"
         for task in tasks.values()
@@ -1010,7 +1015,7 @@ def unattended_turn(
             open_items=open_items,
             done=done,
             maximum=maximum,
-            standing=UNATTENDED_STANDING_INSTRUCTION,
+            standing=UNATTENDED_STANDING_SHORT,
         )
     else:
         reason = UNATTENDED_WRAPPER_REPEAT.format(

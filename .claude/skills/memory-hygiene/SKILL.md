@@ -1,6 +1,7 @@
 ---
 name: memory-hygiene
 description: Objective-defect detector for the memory ecosystem (auto-memory + Odin brain). Runs scripts/memory-hygiene.py, which flags ONLY mechanically-verifiable rot - dangling/circular superseded_by refs, orphan memory files (reachable through neither MEMORY.md nor the Hindsight bank `main`), and an over-budget MEMORY.md - into a dated report, and exits non-zero when any are present. It never mutates memory. Use when the user says "memory hygiene", "check memory health", "memory rot", "scan memory for defects", or wants to know whether the memory store has accumulated objective defects. Do NOT use to consolidate/merge/delete/reword memory (that is judgement - use /dream); or to recall a past fact (use /recall).
+disable-model-invocation: true
 argument-hint: ""
 allowed-tools: "Read, Bash(.venv/bin/python:*)"
 model: haiku
@@ -26,15 +27,11 @@ x-heading-capability:
 x-heading-routing:
   category: Operations
   triggers:
-    - memory hygiene
-    - check memory health
-    - memory rot
-    - scan memory for defects
+    - NEVER auto-trigger. Explicit `/memory-hygiene` only. Runs the objective-defect detector over auto-memory and the Odin brain and writes a dated report.
   exclusions:
     - Consolidate/merge/delete memory -> /dream
     - recall a fact -> /recall
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 # Memory Hygiene
 

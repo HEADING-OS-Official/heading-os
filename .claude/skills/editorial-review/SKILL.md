@@ -36,7 +36,6 @@ x-heading-routing:
     - typo or grammar fix -> sanitize-text + humanization-check
     - artifact check -> scripts/artifact-evaluator.py
     - atomic note -> /zk
-  compound: 'No'
   router: auto
 ---
 # Editorial Review (structural pass)

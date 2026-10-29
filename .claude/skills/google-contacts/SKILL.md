@@ -10,6 +10,7 @@ description: >
   contacts in Google. This is a STANDALONE connector -- completely separate
   from the workspace CRM system. Do NOT trigger for CRM operations (use /crm
   for that). Do NOT trigger for Exchange/Outlook contacts.
+disable-model-invocation: true
 argument-hint: "[search|add|edit] [name]"
 allowed-tools: "Bash(.venv/bin/python:*)"
 model: haiku
@@ -33,13 +34,10 @@ x-heading-capability:
 x-heading-routing:
   category: CRM
   triggers:
-    - google contacts
-    - look up contact number
-    - add to google contacts
+    - NEVER auto-trigger. Explicit `/google-contacts` only. Searches, adds and edits Google Contacts through the People API.
   exclusions:
     - CRM operations -> /crm
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 # Google Contacts
 

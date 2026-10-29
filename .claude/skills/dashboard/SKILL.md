@@ -30,7 +30,6 @@ x-heading-routing:
     - daily brief
   exclusions:
     - Full prime -> /prime
-  compound: 'No'
   router: auto
 ---
 

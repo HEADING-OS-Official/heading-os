@@ -31,7 +31,6 @@ x-heading-routing:
   exclusions:
     - internal sync without external counterpart -> just answer
     - generic "briefing" without named target -> /market-brief or /dashboard
-  compound: 'No'
   router: auto
 ---
 

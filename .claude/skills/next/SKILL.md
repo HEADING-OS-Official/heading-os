@@ -36,7 +36,6 @@ x-heading-routing:
     - Full context load -> /prime
     - morning briefing -> /dashboard
     - 'weekly review -> /weekly-review. Read-only: names the next command, never runs it.'
-  compound: 'No'
   router: auto
 ---
 # Next (state-aware recommender)

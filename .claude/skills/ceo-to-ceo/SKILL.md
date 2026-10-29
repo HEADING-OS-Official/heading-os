@@ -29,7 +29,6 @@ x-heading-routing:
   exclusions:
     - Non-CEO recipient -> /email-draft
     - formal external letter -> /corporate-letter
-  compound: 'No'
   router: auto
 ---
 

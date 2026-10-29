@@ -31,7 +31,6 @@ x-heading-routing:
     - 'NEVER auto-trigger. Explicit `/devil [N]` or `/devil [N]: <claim>` only.'
   exclusions:
     - All natural language
-  compound: 'No'
   router: manual
 ---
 

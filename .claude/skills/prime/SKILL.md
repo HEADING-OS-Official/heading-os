@@ -22,7 +22,6 @@ x-heading-routing:
     - NEVER auto-trigger. Explicit `/prime` or "prime" only.
   exclusions:
     - All natural language
-  compound: 'No'
   router: manual
 ---
 

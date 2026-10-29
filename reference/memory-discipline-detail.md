@@ -1,6 +1,6 @@
 # Memory discipline — the Economy half, written out
 
-Last Updated: 2026-10-04
+Last Updated: 2026-10-29
 
 Companion to the always-on `.claude/rules/memory-discipline.md`, which keeps the
 Fidelity half resident. This file carries the Economy half: the convention that
@@ -14,18 +14,6 @@ It moved out of the resident rule on 2026-09-04 because it fires at one moment,
 writing or consolidating a memory hook, and the skills that do that are named
 above. The Fidelity half stayed resident because it fires on a judgement about
 consequence that no path and no skill can signal.
-
-## 2026-09-20: the rules left the index
-
-The rules of conduct live in `CLAUDE.private.md` in the private overlay,
-imported through `CLAUDE.operational.md` from the USER-level
-`~/.claude/CLAUDE.md`, because the 200-line / 25,000-unit truncation belongs to
-the memory index alone and the import chain has no such cap (MEASURED
-2026-09-20). The index is now a router plus the rules whose violation cannot be
-reversed, and the budget arithmetic below still binds on it. The full account is
-`memory-discipline-history.md` under registry name `reference-docs`; what the
-index used to hold is `2026-09-20-index-to-policy/` under registry name `memory-
-archive`, checked by `python scripts/check-memory-preservation.py`.
 
 ## 2026-10-04: Hindsight answers for reachability
 
@@ -50,6 +38,37 @@ Hindsight unchanged: ask the store, not a list of what was sent, and never read
 "no answer" as "nothing missing".
 
 ## Economy — what a line in the index costs
+
+**Why conduct stays resident.** A rule needed in the moment of work retrieves
+far worse than a fact asked for by name, so habits stay resident and facts go to
+memory. A new line in a rule file earns its place only by being a rule
+that must fire when it would not occur to anyone to search; anything else is a
+record.
+
+**Read live figures from the tool.** Any count or budget written in prose is a
+snapshot; take the current one from `scripts/utils/memory_health.py`.
+
+**Orphans.** A record is an orphan only when `MEMORY.md` does not link it AND
+Hindsight's bank `main` holds no document for it, asked of the bank itself
+(`scripts/utils/memory_health.py`), never of the directory, which lists what is
+eligible rather than what was sent. Since the index became a router, orphan
+status rests on Hindsight alone, and a record written between two passes of the
+file sync reads as an orphan until the next one. Leave the router unlinked to
+records.
+
+**The weekly gate.** When Hindsight does not answer, the orphan check returns
+`None`, and the gate then drops the orphan category and says so on stdout as NOT
+EVALUATED rather than passing silently. Its `policy_layer` category asks `check_policy_layer` whether any root
+still reaches the conduct rules, and refuses to credit a hook route over the cap.
+Read the category names in its output, never the evaluated fraction.
+
+The convention written out, what `scripts/memory-hygiene.py` checks, the index's
+two budgets, what consolidation does and does not mean, and how this composes
+with `/recall` and auto-memory: `reference/memory-discipline-detail.md`. Read it
+before writing or consolidating the index; `/memory-hygiene` and `/dream` open it
+as a matter of course.
+
+### What a line in the index costs
 
 - **A line never quotes volatile state.** It does NOT carry a live value — a
   price, a ceiling, an offer, a live count, a live deadline, a current status.
@@ -110,3 +129,10 @@ read the record before acting on it. Auto-memory recalled inside a
 the current record before asserting it as fact. Applies to auto-memory, business
 threads, CRM, outputs, and any pointer-to-record structure, not only the memory
 system.
+
+## Deletion protection: how the derived copies behave
+
+- **A file's Hindsight copy is derived.** On the next sync pass a changed file replaces its document; a file deleted, renamed or excluded from sync has its document removed, in portions, each removal written to the sync ledger and recoverable from git and the backups.
+- **Hindsight-only content** (observations, mental models, directives, knowledge pages, documents with no file behind them, `memory:` memories) is removed only on the operator's word: a path-shaped id through the cleanup command's apply, any other id by that id.
+- **The daily snapshot** under `runtime:hindsight-snapshot/cache` is a derived copy of the Hindsight-only content: each run replaces it whole, a failed run keeps the previous one, and nobody edits or prunes it by hand.
+- **MCP tools.** `delete_mental_model`, `clear_mental_model`, `delete_knowledge_node`, `delete_directive`, `invalidate_memory` and `clear_memories` may be used; `delete_document` and `delete_bank` stay off, because a document removed past the sync ledger desyncs it silently.

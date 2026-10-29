@@ -33,7 +33,6 @@ x-heading-routing:
     - analyze carefully
   exclusions:
     - Simple question -> just answer it
-  compound: 'No'
   router: auto
 ---
 # Deep Think
@@ -154,7 +153,7 @@ Deep-think is an **analysis layer** that feeds downstream skills. Use it BEFORE 
 - `/create-plan`: settle architectural decisions before writing the plan
 - `/meeting-prep`: map counterpart motivations and information asymmetry before talking points
 - `/proposal`: establish why THIS buyer cares before filling the template
-- `/investor-pitch`: find the assumptions investors will attack before building the narrative
+- `/pitch investor`: find the assumptions investors will attack before building the narrative
 
 **Chaining pattern:**
 1. Run deep-think to produce the analysis.

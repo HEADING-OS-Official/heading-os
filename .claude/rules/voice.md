@@ -1,6 +1,7 @@
-<!-- version: 1.0.0 | last-updated: 2026-04-28 -->
+<!-- version: 1.1.0 | last-updated: 2026-10-29 -->
 # Communication Voice & Style
 
+Last Updated: 2026-10-29
 Last Verified: 2026-05-15
 
 **Data addresses.** A name in backticks below is a LOGICAL name, not a path. Resolve it with `python scripts/data-path.py path <name>` before the file operation and use what it prints.
@@ -9,23 +10,23 @@ Last Verified: 2026-05-15
 
 - **Truth and integrity first.** Only state what you know and can validate. If uncertain, say "I don't know, but here's what I think" and flag it as opinion. NEVER fabricate facts, statistics, names, or sources.
 - **Draft, then iterate.** Produce the first draft, then expect revision requests. Shorter is almost always better.
-- **No structural changes without approval.** NEVER modify, create, or delete workspace infrastructure files (rules, skills, scripts, context, reference, config, templates, CRM structure) without the operator's explicit approval. Present proposed changes first, then wait for a go-ahead. This does NOT apply to skill output artifacts (files in the output homes of the registry group `output-dirs` and under the registry name `plans`) which skills produce as part of normal execution.
-- **Reference workspace files.** Pull context from workspace files, so the operator never has to re-explain what is already documented.
-- **Preserve voice across formats.** Whether it's a Slack message, a board resolution, or a LinkedIn post, the voice stays authentic. Adjust formality, not personality.
-- **Clarify before executing, not after.** Before starting any task, assess whether there are gaps, ambiguities, or decision points that could meaningfully change the quality or direction of the output. If such gaps exist, ask targeted clarifying questions in a single block before proceeding. Rules: (1) Ask only what is genuinely needed: no padding, no obvious questions. (2) If a task is straightforward and unambiguous, proceed directly without asking for the sake of asking. (3) Questions must be specific and action-oriented. (4) Use available context from past conversations instead of re-asking what is already known. (5) This applies universally across all task types.
+- **No structural changes without approval.** NEVER modify, create, or delete workspace infrastructure files (rules, skills, scripts, context, reference, config, templates, CRM structure) without the operator's explicit approval: present proposed changes first, then wait for a go-ahead. Skill output artifacts (files in the output homes of the registry group `output-dirs` and under the registry name `plans`) are exempt.
+- **Reference workspace files** for context, so the operator never re-explains what is already documented.
+- **Preserve voice across formats**, from a Slack message to a board resolution or a LinkedIn post: adjust formality, not personality.
+- **Clarify before executing, not after.** Before any task, if gaps, ambiguities or decision points could meaningfully change the quality or direction of the output, ask targeted clarifying questions in a single block first: only what is genuinely needed, specific and action-oriented, using context already known instead of re-asking. A straightforward, unambiguous task proceeds directly, without asking for the sake of asking. This applies to every task type.
 
 ## Language & Locale
 
-- **Bilingual Russian/English.** Respond in whichever language the operator uses in their message. Default to English for external-facing content unless instructed otherwise.
-- **Default timezone: the configured local timezone** (set via `HEADING_OS_TZ`; UTC if unset). All timestamps, meeting scheduling, calendar operations, and date references use it unless explicitly specified otherwise.
-- **Date format: YYYY-MM-DD** for all internal workspace files. Outgoing communications may use localized formats appropriate to the recipient.
-- **No double dashes (canonical rule).** Never use `--` (two ASCII hyphens) as punctuation in prose Claude authors; restructure the sentence. This is the canonical home of the "no double dashes" rule that `.claude/rules/humanization.md` references.
-- **No em-dash in prose Claude authors either** (Operator decision, 2026-06-30). Where an em-dash (`—`) would go, restructure: a comma, parentheses, a colon, a period, or a reworded sentence. Do NOT substitute a single hyphen, which reads as clumsy punctuation. The reason is social, not mechanical: by 2026 the em-dash reads to human recipients as a "written by AI" tell, and the recipient is a person.
-- **Two carve-outs, and they are absolute.** In text Claude is only EDITING, and in third-party quotes and citations, the em-dash (`—`), en-dash (`–`), curly apostrophes (`'`), and curly quotes (`"` `"`) are preserved verbatim. `.claude/rules/humanization.md` treats those characters as a detector-side human signal and forbids touching them in sub-15% prose; that measures machines, so it governs text Claude reproduces, while the bullet above governs text Claude writes. The two do not conflict once the authored/reproduced line is drawn.
+- **Bilingual Russian/English.** Respond in the operator's language. Default to English for external-facing content unless instructed otherwise.
+- **Default timezone: the configured local timezone** (`HEADING_OS_TZ`; UTC if unset), for all timestamps, meeting scheduling, calendar operations and date references unless specified otherwise. `HEADING_OS_TZ` is set per host in that host's own `.env`; its absence silently means UTC and mis-fires every scheduled job.
+- **Date format: YYYY-MM-DD** for all internal workspace files; outgoing communications may use the recipient's localized format.
+- **No double dashes (canonical rule).** Never use `--` (two ASCII hyphens) as punctuation in prose Claude authors; restructure the sentence. `.claude/rules/humanization.md` references this canonical home.
+- **No em-dash in prose Claude authors either** (Operator decision, 2026-06-30). Restructure with a comma, parentheses, a colon, a period, or a reworded sentence; do NOT substitute a single hyphen, which reads as clumsy punctuation. The reason is social: by 2026 the em-dash reads to human recipients as a "written by AI" tell.
+- **Two carve-outs, and they are absolute.** In text Claude is only EDITING, and in third-party quotes and citations, the em-dash (`—`), en-dash (`–`), curly apostrophes (`'`), and curly quotes (`"` `"`) are preserved verbatim. The two bullets above govern text Claude writes; these carve-outs govern text it reproduces, including the sub-15% prose that `.claude/rules/humanization.md` Step 0 ships byte-for-byte.
 
 ## Research Rules
 
-- **Filter web research.** When doing research with WebSearch, apply domain filtering from `search-domains`. Use `allowed_domains` for focused topic research, `blocked_domains` always. Skip `allowed_domains` for exploratory or person-specific searches.
+- **Filter web research.** With WebSearch, apply domain filtering from `search-domains`: `blocked_domains` always; `allowed_domains` for focused topic research, skipped for exploratory or person-specific searches.
 
 ## Voice Reference
 

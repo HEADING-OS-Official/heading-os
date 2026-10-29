@@ -27,7 +27,6 @@ x-heading-routing:
     - email [person] about
   exclusions:
     - Responding to existing email -> /email-respond
-  compound: 'No'
   router: auto
 ---
 

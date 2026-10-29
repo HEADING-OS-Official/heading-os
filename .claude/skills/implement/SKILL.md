@@ -25,7 +25,6 @@ x-heading-routing:
     - build it
   exclusions:
     - Planning -> /create-plan
-  compound: 'No'
   router: auto
 ---
 # Implement

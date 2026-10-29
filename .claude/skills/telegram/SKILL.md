@@ -38,7 +38,6 @@ x-heading-routing:
     - what's new on telegram
   exclusions:
     - N/A
-  compound: 'No'
   router: auto
 ---
 # Telegram Client

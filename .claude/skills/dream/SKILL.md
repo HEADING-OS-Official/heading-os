@@ -40,7 +40,6 @@ x-heading-routing:
     - NEVER auto-trigger. Explicit `/dream` only.
   exclusions:
     - N/A
-  compound: 'No'
   router: manual
 ---
 

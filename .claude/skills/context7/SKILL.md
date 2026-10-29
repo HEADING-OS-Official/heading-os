@@ -1,6 +1,7 @@
 ---
 name: context7
 description: Fetch up-to-date, version-specific library documentation from Context7 for accurate API references, code examples, and usage patterns. Use when working with any library or framework and you need current documentation instead of relying on training data. Trigger when the user says "context7", "/context7", "look up docs for [library]", "get documentation for [library]", or when you need to validate code against current library APIs. Also use when writing code against an external library whose current API you have not verified.
+disable-model-invocation: true
 metadata:
   author: Misha Hanin
   email: misha.hanin@headingos.com
@@ -18,13 +19,10 @@ x-heading-capability:
 x-heading-routing:
   category: Operations
   triggers:
-    - context7
-    - look up docs for [library]
-    - library documentation
+    - NEVER auto-trigger. Explicit `/context7` only. Fetches current, version-specific library documentation from Context7.
   exclusions:
     - N/A
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 # Context7 - Library Documentation
 

@@ -39,7 +39,6 @@ x-heading-routing:
     - or explicitly by CEO for ad-hoc audits.
   exclusions:
     - All natural language
-  compound: 'No'
   router: manual
 ---
 

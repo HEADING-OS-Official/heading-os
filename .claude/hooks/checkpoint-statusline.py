@@ -110,6 +110,23 @@ def git_branch(cwd: Path) -> str:
         return ""
 
 
+def is_linked_worktree(cwd: Path) -> bool:
+    """True in a linked worktree (a yard): its git dir differs from the common one."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=2,
+        )
+        lines = result.stdout.splitlines()
+        return result.returncode == 0 and len(lines) == 2 and lines[0] != lines[1]
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return False
+
+
 def progress_bar(used: float) -> str:
     remaining = max(0, min(100, round(100 - used)))
     filled = round(remaining / 10)
@@ -147,11 +164,19 @@ def build_status_line(
     workspace = payload.get("workspace") or {}
     cwd_str = workspace.get("current_dir") or payload.get("cwd") or str(project)
     dir_name = Path(cwd_str).name or str(project)
-    parts.append(f"{C_CYAN_B}{dir_name}{C_RESET}")
 
     branch = git_branch(Path(cwd_str))
-    if branch:
-        parts.append(f"{C_DIM}on{C_RESET} {C_YELLOW_B}{branch}{C_RESET}")
+    if branch and is_linked_worktree(Path(cwd_str)):
+        # herdr names a yard's directory after its branch: say it once.
+        if dir_name == branch:
+            parts.append(f"{C_DIM}YARD{C_RESET} {C_YELLOW_B}{branch}{C_RESET}")
+        else:
+            parts.append(f"{C_DIM}YARD{C_RESET} {C_CYAN_B}{dir_name}{C_RESET}")
+            parts.append(f"{C_DIM}on{C_RESET} {C_YELLOW_B}{branch}{C_RESET}")
+    else:
+        parts.append(f"{C_CYAN_B}{dir_name}{C_RESET}")
+        if branch:
+            parts.append(f"{C_DIM}on{C_RESET} {C_YELLOW_B}{branch}{C_RESET}")
 
     if used is None:
         parts.append(f"{C_DIM}context: n/a{C_RESET}")

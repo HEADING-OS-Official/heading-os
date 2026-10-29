@@ -37,7 +37,6 @@ x-heading-routing:
   exclusions:
     - Brand-heavy client deck -> /pptx-generator
     - Carousel -> /pptx-generator
-  compound: 'No'
   router: auto
 ---
 # /marp - Markdown Presentation Pipeline

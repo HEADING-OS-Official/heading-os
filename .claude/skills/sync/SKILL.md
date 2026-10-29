@@ -26,7 +26,6 @@ x-heading-routing:
     - NEVER auto-trigger. Explicit `/sync` only.
   exclusions:
     - Backup alone -> /backup
-  compound: 'No'
   router: manual
 ---
 # Workspace Sync

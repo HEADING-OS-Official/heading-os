@@ -1,6 +1,6 @@
 ---
 name: design
-description: Professional design system - illustrations, UI mockups, social graphics, brochures, logos, infographics, and image editing. Routes to optimal pipeline (HTML Studio for layouts, Replicate AI for creative imagery, PPTX for presentations). Use when user asks to design, create visuals, generate graphics, make a mockup, create a brochure, design a logo, build an infographic or social graphic, or edit an image. Do NOT use for simple one-off image generation (use /flux-image instead).
+description: Professional design system - illustrations, UI mockups, social graphics, brochures, logos, infographics, and image editing. Routes to optimal pipeline (HTML Studio for layouts, Replicate AI for creative imagery, PPTX for presentations). Use when user asks to design, create visuals, generate graphics, make a mockup, create a brochure, design a logo, build an infographic or social graphic, or edit an image. Do NOT use for simple one-off image generation (use /image generate instead).
 argument-hint: "[type] [brief]"
 allowed-tools: "Read, Write, Edit, Bash(.venv/bin/python:*)"
 model: sonnet
@@ -17,7 +17,7 @@ x-heading-capability:
     Run /design <type> <brief> (e.g. /design infographic, /design logo, /design photo, /design edit).
     HTML renders land in design-output; AI images in generated-images.
   when: >
-    Use for any branded visual asset. For a simple one-off image from a prompt use /flux-image;
+    Use for any branded visual asset. For a simple one-off image from a prompt use /image generate;
     for presentation slides use /pptx-generator.
 x-heading-routing:
   category: Design
@@ -29,8 +29,7 @@ x-heading-routing:
     - design logo
   exclusions:
     - Presentations -> /pptx-generator
-    - image from prompt -> /flux-image
-  compound: 'No'
+    - image from prompt -> /image generate
   router: auto
 ---
 # Design System

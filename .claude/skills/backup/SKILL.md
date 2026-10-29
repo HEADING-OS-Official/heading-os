@@ -25,7 +25,6 @@ x-heading-routing:
     - NEVER auto-trigger. Explicit `/backup` only.
   exclusions:
     - N/A
-  compound: 'No'
   router: manual
 ---
 Backup the entire workspace to GitHub.

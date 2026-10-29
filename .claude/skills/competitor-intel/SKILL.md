@@ -1,11 +1,11 @@
 ---
 name: competitor-intel
 x-heading-requires: ["research"]   # F-7.1: optional-dependency extras this skill needs
-description: Competitive analysis of a named vendor versus the user's own company and product - product gaps, geographic overlap, honest strengths, exploitable weaknesses, win strategy, and recommended actions. Use when comparing the company against a specific competitor or sizing a competitive landscape. Trigger when the user says "competitor analysis", "how does [company] compare to [competitor]", "competitive advantage vs [competitor]", or "competitive landscape for [sector]". Do NOT use when the target is a person (use /osint), for market sizing (use /market-brief), or a generic "vs" with no named second party (ask to disambiguate first).
+description: Competitive analysis of a named vendor versus the user's own company and product - product gaps, geographic overlap, honest strengths, exploitable weaknesses, win strategy, and recommended actions. Use when comparing the company against a competitor or sizing a competitive landscape, including when no competitor is named yet ("how do we stack up against a competitor"), in which case the skill asks which one first. Trigger when the user says "competitor analysis", "how does [company] compare to [competitor]", "competitive advantage vs [competitor]", or "competitive landscape for [sector]". Do NOT use when the target is a person (use /osint), or for market sizing (use /market-brief).
 metadata:
   author: Misha Hanin
   email: misha.hanin@headingos.com
-  version: "2.1"
+  version: "2.2"
 argument-hint: "[company]"
 context: fork
 allowed-tools: "WebSearch, WebFetch, Read, Bash(.venv/bin/python:*)"
@@ -33,9 +33,7 @@ x-heading-routing:
     - competitive landscape for [sector]
   exclusions:
     - Target is a person -> /osint
-    - generic "vs" without explicit 2nd party -> ask for disambiguation
     - market sizing -> /market-brief
-  compound: 'No'
   router: auto
 ---
 
@@ -87,6 +85,8 @@ Also read:
 ---
 
 ## Instructions
+
+If the request names no competitor, ask one question first: "Which company should I compare us against?" Wait for the answer, then continue.
 
 Search the web for the latest information on this company using two search passes:
 

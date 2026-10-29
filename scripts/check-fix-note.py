@@ -21,18 +21,33 @@ dependency bumps, where it has nothing to say, and a required field with
 nothing to say in it gets filled with noise and then stops being read. It also
 cannot check that the line is TRUE, or that the three parts are the three parts.
 It checks that a human wrote a sentence where a test used to go.
+
+A SECOND CHECK LIVES HERE, `--no-claude-trailer`: it refuses a commit message
+carrying a `Co-Authored-By:` trailer that names Claude or `anthropic.com`
+(rule M042.2; engine commit messages are public). It sits in this file rather
+than in a script of its own because the test budget in `config/test-budget.json`
+is at its ceiling on all three dimensions, and a new hook script would have to
+be named by a test under `tests/` (`names_script` in
+`scripts/check-gate-integrity.py`); this file is already a named commit-msg
+hook. Its proof is the built-in `--self-test`.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKER = "Fix-Note:"
 SUBJECTS = ("fix:", "emergency:")
 CODE_PREFIXES = ("scripts/", ".claude/hooks/")
+USAGE = ("usage: check-fix-note.py <commit-msg-file> | "
+         "check-fix-note.py --no-claude-trailer <commit-msg-file> | "
+         "check-fix-note.py --self-test")
 
 
 def _git(*args: str) -> str | None:
@@ -85,9 +100,77 @@ def _adds_a_test_function() -> bool:
     )
 
 
+def claude_trailer_lines(path: str) -> list[tuple[int, str]]:
+    """(1-based line number, line) of every Co-Authored-By trailer naming Claude.
+
+    Git comment lines (first non-space character `#`) are ignored.
+    """
+    message = Path(path).read_text(encoding="utf-8", errors="replace")
+    hits = []
+    for n, line in enumerate(message.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        head, sep, rest = stripped.partition(":")
+        if not sep or head.lower() != "co-authored-by":
+            continue
+        rest = rest.lower()
+        if "claude" in rest or "anthropic.com" in rest:
+            hits.append((n, line))
+    return hits
+
+
+def check_claude_trailer(path: str) -> int:
+    hits = claude_trailer_lines(path)
+    if not hits:
+        return 0
+    for n, line in hits:
+        print(f"no-claude-coauthor: REFUSED. line {n}: {line}", file=sys.stderr)
+    print("Rule M042.2: no Co-Authored-By trailer naming Claude, in any form. "
+          "Remove the line and commit again.", file=sys.stderr)
+    return 1
+
+
+SELF_TEST_CASES = (
+    ("refuse", "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", 1),
+    ("refuse", "  co-authored-by: claude <x@example.com>", 1),
+    ("refuse", "Co-Authored-By: Someone <noreply@anthropic.com>", 1),
+    ("pass", "Co-Authored-By: Jane Doe <jane@example.com>", 0),
+    ("pass", "# Co-Authored-By: Claude <noreply@anthropic.com>", 0),
+    ("pass", None, 0),
+)
+
+
+def self_test() -> int:
+    # Imported here so the two commit-msg forms never load the data registry.
+    sys.path.insert(0, str(ROOT))
+    from scripts.utils.data_path import data_write_dir
+
+    failed = 0
+    with tempfile.TemporaryDirectory(
+            prefix="check-fix-note-st.",
+            dir=data_write_dir("runtime:scratch/tmp")) as tmp:
+        for i, (kind, trailer, expected) in enumerate(SELF_TEST_CASES, 1):
+            msg = Path(tmp) / f"case-{i}.msg"
+            text = "feat: x\n" + (f"\n{trailer}\n" if trailer else "")
+            msg.write_text(text, encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = main(["--no-claude-trailer", str(msg)])
+            ok = code == expected and (expected == 0 or "M042.2" in err.getvalue())
+            label = trailer if trailer else "(no trailer)"
+            print(f"{'PASS' if ok else 'FAIL'} {kind}: {label} (exit {code})")
+            failed += not ok
+    return 1 if failed else 0
+
+
 def main(argv: list[str]) -> int:
-    if not argv:
-        print("usage: check-fix-note.py <commit-msg-file>", file=sys.stderr)
+    if argv == ["--self-test"]:
+        return self_test()
+    if len(argv) == 2 and argv[0] == "--no-claude-trailer":
+        return check_claude_trailer(argv[1])
+    if len(argv) != 1 or argv[0].startswith("--"):
+        print(USAGE, file=sys.stderr)
         return 1
 
     message = Path(argv[0]).read_text(encoding="utf-8", errors="replace")

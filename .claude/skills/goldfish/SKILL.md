@@ -40,7 +40,6 @@ x-heading-routing:
     - full review gate with refutation -> /scrutinize
     - outside model opinion -> /council
     - restructure a draft -> /editorial-review
-  compound: 'No'
   router: auto
 ---
 

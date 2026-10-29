@@ -29,7 +29,6 @@ x-heading-routing:
   exclusions:
     - save without clearing -> /handover
     - free context and keep background work running -> /second-wind
-  compound: 'No'
   router: manual
 ---
 

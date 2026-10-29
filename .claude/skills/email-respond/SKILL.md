@@ -25,7 +25,6 @@ x-heading-routing:
     - draft reply
   exclusions:
     - New outbound email -> /email-draft
-  compound: 'No'
   router: auto
 ---
 

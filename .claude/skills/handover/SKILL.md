@@ -36,7 +36,6 @@ x-heading-routing:
     - cross-session memory consolidation -> /dream
     - save and free the context in one step -> /second-wind
     - save and always clear -> /clear-handover
-  compound: 'No'
   router: manual
 ---
 

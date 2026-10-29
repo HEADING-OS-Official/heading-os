@@ -4,7 +4,8 @@ Two consumers read this table and nothing else: `data_path_ratchet`,
 `legacy_outputs_ratchet`, `import_env_purity_ratchet` and
 `outside_workspace_writes_ratchet`, `engine_dir_writes_ratchet`,
 `engine_only_ratchet`, `skill_data_paths_ratchet`,
-`engine_data_paths_ratchet` and `runtime_write_guard_ratchet` in
+`engine_data_paths_ratchet`, `runtime_write_guard_ratchet`,
+`rule_split_inventory_ratchet` and `secrets_baseline_drift_ratchet` in
 `scripts/push-all.py`, which refuse the push, and
 `scripts/check-push-ratchets.py`, which runs the same argv on any checkout,
 a yard included, so the refusal can be seen before a merge rather than at the
@@ -122,6 +123,25 @@ RUNTIME_WRITE_GUARD = Ratchet(
     (),
 )
 
+#: Refuses when an edit drops a directive snapshotted under
+#: `config/rule-split-inventory/` from a compressed or split always-on rule.
+#: CI alone ran it, so a drop was first seen in a CI failure mail: every
+#: engine push from 2026-10-29 (d7b01354) on was red (2026-10-30).
+RULE_SPLIT_INVENTORY = Ratchet(
+    "rule-split-inventory",
+    "scripts/rule_split_check.py",
+    ("--check",),
+)
+
+#: Refuses when `.secrets.baseline` no longer matches a fresh detect-secrets
+#: scan; added beside the previous one for the same CI-only reason (2026-10-30).
+#: No argv: the default run is the gate.
+SECRETS_BASELINE_DRIFT = Ratchet(
+    "secrets-baseline-drift",
+    "scripts/check-secrets-baseline-drift.py",
+    (),
+)
+
 #: The same question over the DATA repository's own config files, against the
 #: ledger at the registry name `data-config-exemptions`, ceiling 0 (HOS-234 part
 #: 5, 2026-10-13). push-all runs it before the DATA push, from the engine clone,
@@ -136,7 +156,8 @@ DATA_CONFIG_PATHS = Ratchet(
 RATCHETS: tuple[Ratchet, ...] = (DATA_PATH, LEGACY_OUTPUTS, IMPORT_ENV_PURITY,
                                  OUTSIDE_WORKSPACE_WRITES, ENGINE_DIR_WRITES,
                                  ENGINE_ONLY, SKILL_DATA_PATHS, ENGINE_DATA_PATHS,
-                                 RUNTIME_WRITE_GUARD, DATA_CONFIG_PATHS)
+                                 RUNTIME_WRITE_GUARD, RULE_SPLIT_INVENTORY,
+                                 SECRETS_BASELINE_DRIFT, DATA_CONFIG_PATHS)
 
 
 def scanner_path(repo: Path, ratchet: Ratchet) -> Path:

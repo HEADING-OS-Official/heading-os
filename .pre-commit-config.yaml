@@ -526,3 +526,9 @@ repos:
         entry: .venv/bin/python scripts/check-fix-note.py
         language: system
         stages: [commit-msg]
+
+      - id: no-claude-coauthor
+        name: No Claude co-author trailer (M042.2)
+        entry: .venv/bin/python scripts/check-fix-note.py --no-claude-trailer
+        language: system
+        stages: [commit-msg]

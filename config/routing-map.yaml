@@ -143,6 +143,7 @@ rules:
   "reference/hidden-characters.md": engine
   "reference/humanization-banned-vocabulary.md": engine
   "reference/humanization-rule-detail.md": engine
+  "reference/lethal-trifecta-detail.md": engine
   "reference/lific-integration-detail.md": engine
   "reference/memory-discipline-detail.md": engine
   "reference/osint-advanced-toolkit.md": engine

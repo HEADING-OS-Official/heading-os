@@ -29,7 +29,6 @@ x-heading-routing:
     - "запомни -> Lific issue (.claude/rules/lific.md item 2)"
     - "Odin remember -> /odin"
     - "a fact that outlives the work -> auto-memory"
-  compound: 'No'
   router: auto
 ---
 

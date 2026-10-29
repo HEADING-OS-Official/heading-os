@@ -112,14 +112,26 @@ def git(repo: Path, *args: str) -> str:
     return proc.stdout
 
 
-def raw_diff(repo: Path, base: str, head: str, paths: list[str] | None = None, context: int = 12) -> str:
-    """`git diff base head`, rename-aware, restricted to `paths` when given."""
+def raw_diff(repo: Path, base: str, head: str, paths: list[str] | None = None, context: int = 12,
+             *, prose_context: int | None = None) -> str:
+    """`git diff base head`, rename-aware, restricted to `paths` when given.
+
+    With `prose_context` set to a value other than `context`, and no `paths`,
+    git runs twice over the same range: every file except `*.md` with
+    `-U{context}`, then the `*.md` files with `-U{prose_context}`, the second
+    output after the first. A file renamed between a `.md` and a non-`.md` name
+    then shows as a delete in one pass and an add in the other.
+    """
     args = ["diff", f"-U{context}", "-M", "--no-color", base, head]
     if paths is not None:
         if not paths:
             return ""
         args += ["--", *paths]
-    return git(repo, *args)
+    if paths is not None or prose_context is None or prose_context == context:
+        return git(repo, *args)
+    code = git(repo, *args, "--", ":(exclude)*.md")
+    prose = git(repo, "diff", f"-U{prose_context}", "-M", "--no-color", base, head, "--", "*.md")
+    return code + prose
 
 
 def numbered(diff: str, max_chars: int = 120_000) -> tuple[str, list[str], bool]:
@@ -134,8 +146,22 @@ def numbered(diff: str, max_chars: int = 120_000) -> tuple[str, list[str], bool]
     first hunk; inside a hunk a removed line reading "-- x" arrives as "--- x"
     and is content, not a header.
     """
+    blocks = _blocks(diff)
+    files = [path for path, _ in blocks]
+    text = "\n".join(ln for _, block in blocks for ln in block)
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars] + "\n" + TRUNCATED_MARK
+    return text, files, truncated
+
+
+TRUNCATED_MARK = "[... diff truncated here; nothing below this line was reviewed ...]"
+
+
+def _blocks(diff: str) -> list[tuple[str, list[str]]]:
+    """Each kept file of a unified diff as (path, its `=== <label>` line and rendered lines), in diff order."""
+    blocks: list[tuple[str, list[str]]] = []
     out: list[str] = []
-    files: list[str] = []
     new_no = 0
     path = old = None
     skipping = header = False
@@ -156,8 +182,8 @@ def numbered(diff: str, max_chars: int = 120_000) -> tuple[str, list[str], bool]
                 path, label = old, f"{old} (deleted)"
             skipping = path in (None, "/dev/null") or path.lower().endswith(SKIP_SUFFIXES)
             if not skipping:
-                files.append(path)
-                out.append(f"=== {label}")
+                out = [f"=== {label}"]
+                blocks.append((path, out))
             continue
         if header and line.startswith(("index ", "similarity ", "dissimilarity ", "rename ", "copy ", "new file",
                                        "deleted file", "old mode", "new mode", "Binary files")):
@@ -181,11 +207,59 @@ def numbered(diff: str, max_chars: int = 120_000) -> tuple[str, list[str], bool]
         else:
             out.append(f"{new_no:>6}   {line[1:]}")
             new_no += 1
-    text = "\n".join(out)
-    truncated = len(text) > max_chars
-    if truncated:
-        text = text[:max_chars] + "\n[... diff truncated here; nothing below this line was reviewed ...]"
-    return text, files, truncated
+    return blocks
+
+
+def order_key(path: str) -> tuple[int, str]:
+    """Review order: code under `scripts/` and `.claude/hooks/` first, prose (`*.md`) last, the rest between."""
+    if path.endswith(".md"):
+        return (2, path)
+    if path.startswith(("scripts/", ".claude/hooks/")):
+        return (0, path)
+    return (1, path)
+
+
+def numbered_parts(diff: str, max_chars: int = 120_000) -> tuple[list[str], list[str], bool, list[list[str]]]:
+    """Render a unified diff as `numbered()` does, split at file boundaries into parts.
+
+    Returns (parts, files, truncated, part_files). Files are sorted by `order_key` and
+    packed greedily, in that order, into parts joined with a newline, each part
+    at most `max_chars` long. A single file longer than `max_chars` is a part
+    of its own, cut to fit with the truncation marker; `truncated` is True only
+    when that happened. `files` is in the sorted order; `part_files[k]` lists
+    the paths rendered in `parts[k]`, in order.
+    """
+    blocks = sorted(_blocks(diff), key=lambda b: order_key(b[0]))
+    files = [path for path, _ in blocks]
+    parts: list[str] = []
+    part_files: list[list[str]] = []
+    current = ""
+    current_files: list[str] = []
+    truncated = False
+    for path, block in blocks:
+        text = "\n".join(block)
+        if len(text) > max_chars:
+            if current:
+                parts.append(current)
+                part_files.append(current_files)
+                current, current_files = "", []
+            keep = max_chars - len("\n" + TRUNCATED_MARK)
+            parts.append(text[:keep] + "\n" + TRUNCATED_MARK)
+            part_files.append([path])
+            truncated = True
+        elif not current:
+            current, current_files = text, [path]
+        elif len(current) + 1 + len(text) <= max_chars:
+            current += "\n" + text
+            current_files.append(path)
+        else:
+            parts.append(current)
+            part_files.append(current_files)
+            current, current_files = text, [path]
+    if current:
+        parts.append(current)
+        part_files.append(current_files)
+    return parts, files, truncated, part_files
 
 
 # ============================================================

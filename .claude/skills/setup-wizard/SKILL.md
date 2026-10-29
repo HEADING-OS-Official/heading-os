@@ -28,7 +28,6 @@ x-heading-routing:
   exclusions:
     - Refuses to run on CEO master workspace
     - intended for public HEADING OS clones
-  compound: 'No'
   router: manual
 ---
 # Setup Wizard

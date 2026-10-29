@@ -40,7 +40,6 @@ x-heading-routing:
   exclusions:
     - Reasoning alone -> /deep-think
     - Claude + curated knowledge brain -> /odin
-  compound: 'No'
   router: auto
 ---
 

@@ -27,7 +27,6 @@ x-heading-routing:
     - CEO intelligence brief
   exclusions:
     - Specific company or person -> /osint
-  compound: 'No'
   router: auto
 ---
 

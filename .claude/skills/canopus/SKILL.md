@@ -18,7 +18,6 @@ x-heading-routing:
   category: Operations
   triggers: ["NEVER auto-trigger. Explicit `/canopus [note | check | probe]` only. Bare `/canopus` prints the seven steps and the two the operator owns."]
   exclusions: ["N/A"]
-  compound: "No"
   router: manual
   label: "/canopus [note | check | probe]"
 x-heading-capability:

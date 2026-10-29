@@ -50,14 +50,15 @@ Use for any skill whose description already says "EXPLICIT INVOCATION ONLY" or "
 Hides the skill from the `/` menu so the CEO never invokes it directly, while leaving the model free to trigger it contextually.
 Use for background-context or internal-only skills that other skills depend on but should not appear as user-facing commands.
 They are harness-enforced and supersede any prose policy ("NEVER auto-trigger") written into `description`.
-category: Operations triggers: ["example phrase", "another trigger"] exclusions: ["<signal> -> /<other-skill>"]   # or ["N/A"] compound: "No" router: auto                                  # or manual (NEVER auto-trigger skills)
+category: Operations triggers: ["example phrase", "another trigger"] exclusions: ["<signal> -> /<other-skill>"]   # or ["N/A"] router: auto                                  # or manual (NEVER auto-trigger skills)
 Keep writing them anyway, 1-2 sentences each, ASCII-only, grounded in the skill's real behaviour and router exclusions: they are the only place a skill states what it does in prose a person reads rather than in trigger vocabulary a router matches.
 Whether a terminal surface should render them again is open and unresolved.
 Router registry (under `x-heading-routing:` namespaced block, required for every routable skill; F-5.1):
 - `router` -- `auto` (routable from natural language) or `manual` (NEVER auto-trigger / `disable-model-invocation` skills).
-**The skill router is GENERATED from these blocks** by `scripts/generate-skill-router.py`, in a two-layer split (F-5.2): a compact core index (Skill + Triggers) between the `<!-- BEGIN GENERATED REGISTRY -->` / `<!-- END GENERATED REGISTRY -->` markers in the always-on `.claude/rules/skill-router.md`, plus a full per-category detail table (Skill | Triggers | Exclusions | Compound) in each `reference/skill-router/<category>.md`.
+**The skill router is GENERATED from these blocks** by `scripts/generate-skill-router.py`, in a two-layer split (F-5.2): a compact always-on policy with a generated collision map for the overlap clusters in `.claude/rules/skill-router.md`, and the full per-category table (Skill | Triggers | Exclusions) in each `reference/skill-router/<category>.md`.
 Never hand-edit either layer: edit the skill's `x-heading-routing` frontmatter, then run `python scripts/generate-skill-router.py`.
 - Reference files must include: H1 title, "Consumed by" pointer, "Last Updated" date
+- Voice rules section matching workspace standards (hyphens, product names, required terms)
 - NEVER section listing explicit prohibitions
 "Auto-routable" means `x-heading-routing.router: auto` AND NOT `disable-model-invocation: true`; a `router: manual` or `disable-model-invocation: true` skill is EXEMPT (it never auto-routes, so a routing corpus is meaningless).
 Pre-F-6.1 uncovered skills are grandfathered by the committed, only-shrinks `config/triggers-coverage-baseline.json` (regenerated shrink-only via `--write-baseline`: it removes now-covered skills, never adds a newly-shipped one), so a NEW auto-routable skill must ship a corpus.

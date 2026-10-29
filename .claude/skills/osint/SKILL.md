@@ -39,7 +39,6 @@ x-heading-routing:
     - '"market for [sector]" -> /market-brief'
     - '"world intel"/"global" -> /ceo-intel'
     - competitor earnings/quarterly -> /competitor-intel
-  compound: 'No'
   router: auto
 ---
 

@@ -100,6 +100,24 @@ RESOLVED_ATOMS = {
               "touching tests, scripts, hooks, skills, agents, rules, config or "
               "reference. VERIFIED 2026-09-20 by reading it. The caveat "
               "described the package's blindness, not a property of the rule.",
+    "M019.2": "Removed 2026-10-29 on the operator's explicit word. Its "
+              "text and the approval are kept in the private overlay under "
+              "registry name `memory-archive`, entry "
+              "`2026-10-29-private-optimization`.",
+    "M047.1": "Removed 2026-10-29 on the operator's explicit word. It only "
+              "pointed at `.claude/rules/craft-silent-failure.md`, which is "
+              "path-scoped and loads itself. Its text and the approval are "
+              "kept in the private overlay under registry name "
+              "`memory-archive`, entry `2026-10-29-private-audit`.",
+    "M048.1": "Removed 2026-10-29 on the operator's explicit word. It "
+              "concerned a frozen CI threshold. Its text and the approval are "
+              "kept in the private overlay under registry name "
+              "`memory-archive`, entry `2026-10-29-private-audit`.",
+    "M048.2": "Removed 2026-10-29 on the operator's explicit word. It "
+              "concerned a migration rehearsal for a migration completed "
+              "2026-09-16. Its text and the approval are kept in the private "
+              "overlay under registry name `memory-archive`, entry "
+              "`2026-10-29-private-audit`.",
 }
 
 ATOM_RE = re.compile(r"\[([MK]\d{3}(?:\.\d+)?)\]")

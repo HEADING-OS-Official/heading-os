@@ -38,7 +38,6 @@ x-heading-routing:
     - '"add a note" -> /zk'
     - '"podcast" alone -> /yt-pulse'
     - '"presentation" -> /pptx-generator'
-  compound: 'No'
   router: auto
 ---
 # NotebookLM Integration

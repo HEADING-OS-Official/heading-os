@@ -32,7 +32,6 @@ x-heading-routing:
     - friday review
   exclusions:
     - Daily briefing -> /dashboard
-  compound: 'No'
   router: auto
 ---
 

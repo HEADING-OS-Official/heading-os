@@ -2,6 +2,7 @@
 name: playwright
 x-heading-requires: ["browser", "media"]   # F-7.1: optional-dependency extras this skill needs
 description: "Drive a real browser for a SCRIPTED, non-interactive job: screenshots, scraping a JS-rendered page, filling a form, PDF from a page, or reading a YouTube video's transcript. Do NOT use for a plain URL fetch that WebFetch already handles, and do NOT use for live interactive browsing (clicking around a session by hand) - that is agent-browser."
+disable-model-invocation: true
 argument-hint: "[url] [action]"
 allowed-tools: "Bash(.venv/bin/python:*), Read"
 metadata:
@@ -18,14 +19,10 @@ x-heading-capability:
 x-heading-routing:
   category: Operations
   triggers:
-    - screenshot this site
-    - scrape this page
-    - browse to
-    - headless browser
+    - NEVER auto-trigger. Explicit `/playwright` only. Drives a real browser for a scripted job, such as a screenshot, a scrape, a form, a PDF or a YouTube transcript.
   exclusions:
     - N/A
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 
 **Data addresses.** Resources in the data repository are named here by their

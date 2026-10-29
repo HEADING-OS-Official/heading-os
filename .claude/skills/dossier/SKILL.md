@@ -35,7 +35,6 @@ x-heading-routing:
   exclusions:
     - board or close requests -> /prime
     - free-text search with no issue id -> /recall
-  compound: 'No'
   router: auto
 ---
 # Dossier (one Lific issue, every trace of it)

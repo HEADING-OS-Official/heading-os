@@ -21,7 +21,7 @@
       "WebFetch(domain:finance.worldmonitor.app)",
       "WebFetch(domain:www.worldmonitor.app)",
       "Skill(deep-think)",
-      "Skill(flux-image)",
+      "Skill(image)",
       "Skill(odin)",
       "Skill(odin:*)",
       "Edit(.claude/skills/**)",

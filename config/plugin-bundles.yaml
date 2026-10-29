@@ -156,19 +156,31 @@ bundles:
     session_start_env: true
     scripts: []
   heading-content:
+    # Operator decision 2026-10-30: the moded /linkedin and /image ship whole,
+    # although `archive` needs a data repository and `generate` needs
+    # REPLICATE_API_TOKEN. Both modes stop with a message naming what is
+    # missing; post, series and prompt run for a stranger. The old names ship
+    # as typed aliases of the merged skills.
     description: >-
-      Content drafting: LinkedIn posts and series, plus image prompts
-      (linkedin-post, linkedin-series, image-prompt). Reserved: flux-image
-      (API key), linkedin-archive (private data).
+      Content drafting: LinkedIn posts, series and filing (linkedin), image
+      prompts and generation (image), with the aliases linkedin-post,
+      linkedin-series, linkedin-archive, image-prompt and flux-image. The
+      linkedin archive mode needs a data repository; image generate needs
+      REPLICATE_API_TOKEN.
     skills:
+      - linkedin
+      - image
       - linkedin-post
       - linkedin-series
+      - linkedin-archive
       - image-prompt
+      - flux-image
     hooks: []
     hook_events: {}
     session_start_env: true
     scripts:
       - data-path.py
+      - linkedin-archive.py
       - memlog.py
   heading-crm:
     description: CRM skills (crm, google-contacts, the assistant-inbox skill). Not built yet.

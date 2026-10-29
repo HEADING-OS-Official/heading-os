@@ -26,7 +26,6 @@ x-heading-routing:
     - design the approach
   exclusions:
     - Execute plan -> /implement
-  compound: 'No'
   router: auto
 ---
 # Plan

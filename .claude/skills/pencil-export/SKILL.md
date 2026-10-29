@@ -1,6 +1,7 @@
 ---
 name: pencil-export
 description: "Export a Pencil (.pen) deck to PNG + PDF + PPTX + a self-contained HTML on WSL. PNG and PDF come from Pencil natively through the execute tool. PPTX defaults to an EDITABLE twin (identical look, native editable text, brand fonts embedded); the image-per-slide locked-look PPTX is opt-in via pptx-flat. The PPTX and self-contained HTML branches dump the frames to one HTML, then scripts/pencil-export.py renders each frame in isolation via chromium and assembles the formats. Pencil never receives a WSL path for writing: every export goes to a C: path and the result is collected from /mnt/c. Use when asked to export/convert a Pencil deck to slides/PDF/PPTX, or to make an editable version of a Pencil deck. Do NOT use for MARP markdown decks (use /marp) or for a brand PPTX authored from scratch (use /pptx-generator)."
+disable-model-invocation: true
 argument-hint: "<path-to.pen> [--formats png,pdf,html,pptx,pptx-flat]"
 allowed-tools: "Read, Write, Bash(.venv/bin/python:*), mcp__pencil__execute, mcp__pencil__get_app_state"
 metadata:
@@ -27,19 +28,11 @@ x-heading-capability:
 x-heading-routing:
   category: Design
   triggers:
-    - export pencil deck
-    - export the .pen deck
-    - pencil deck to pdf
-    - convert .pen to pdf
-    - render pencil deck
-    - editable version of a pencil deck
-    - same-look editable pptx from a .pen
-    - shareable flat pptx of a .pen
+    - NEVER auto-trigger. Explicit `/pencil-export` only. Exports a Pencil (.pen) deck to PNG, PDF, PPTX and a self-contained HTML.
   exclusions:
     - MARP markdown deck -> /marp
     - editable brand PPTX authored from scratch -> /pptx-generator
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 # /pencil-export - Export a Pencil deck (WSL-safe)
 

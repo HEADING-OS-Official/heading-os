@@ -33,7 +33,6 @@ x-heading-routing:
   exclusions:
     - Specific named company -> /competitor-intel or /osint
     - global/geopolitical -> /ceo-intel
-  compound: 'No'
   router: auto
 ---
 

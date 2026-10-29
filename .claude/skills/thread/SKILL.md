@@ -35,7 +35,6 @@ x-heading-routing:
     - Single email -> /email-draft
     - knowledge note -> /zk
     - CRM log -> /crm
-  compound: 'No'
   router: auto
 ---
 

@@ -1,6 +1,6 @@
 # Platform-Specific Parameters
 
-Consumed by: `.claude/skills/image-prompt/SKILL.md`, at the "Platform Suffix" step of the output template, when the target platform is not Midjourney.
+Consumed by: `.claude/skills/image/references/prompt.md` (mode `prompt` of `/image`), at the "Platform Suffix" step of the output template, when the target platform is not Midjourney.
 
 ## Midjourney
 

@@ -38,7 +38,6 @@ x-heading-routing:
   exclusions:
     - Cross-session memory hygiene -> /dream
     - quality check on a single artifact -> scripts/artifact-evaluator.py
-  compound: 'No'
   router: manual
 ---
 

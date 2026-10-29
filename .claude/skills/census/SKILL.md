@@ -22,7 +22,6 @@ x-heading-routing:
     - "\"what would Odin say\" -> /odin"
     - "background on a company or person -> /osint"
     - "an exact string in a known file -> Grep"
-  compound: "No"
   router: auto
 x-heading-capability:
   what: >

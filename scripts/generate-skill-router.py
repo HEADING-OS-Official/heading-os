@@ -1,33 +1,28 @@
 #!/usr/bin/env python3
-"""Generate the skill-router registry from each SKILL.md's x-heading-routing frontmatter.
+"""Generate the skill router from each SKILL.md's x-heading-routing frontmatter.
 
-The registry is a build artifact. Each skill owns its router row in its own SKILL.md
-frontmatter under ``x-heading-routing`` (category, triggers[], exclusions[], compound,
-router, optional label). This script renders those rows into a two-layer split (F-5.2):
+The router is a build artifact. Each skill owns its routing row in its own SKILL.md
+frontmatter under ``x-heading-routing`` (category, triggers[], exclusions[],
+router, optional label). This script renders two layers:
 
-  1. A compact core index between the sentinel markers in the always-active
-     ``.claude/rules/skill-router.md`` -- enough for first-pass routing and no more.
-     It carries Skill + Triggers for the ``router: auto`` skills ONLY, minus any
-     trigger that merely repeats the skill's own name. The ``router: manual``
-     skills keep a ROW (several gates parse the registry through it) but their
-     trigger cell is reduced to ``MANUAL_TRIGGER_CELL``, because no message can
-     route to them and they are owed no matching vocabulary in the layer that is
-     paid for on every session.
-  2. Per-category detail files ``reference/skill-router/<category>.md`` carrying the full
-     Skill | Triggers | Exclusions | Compound table for EVERY skill, auto and manual
-     alike -- read on demand for disambiguation.
+  1. The always-on ``.claude/rules/skill-router.md``, WHOLE: a compact routing
+     policy (``POLICY_TEMPLATE`` below) plus a collision map, one line per
+     overlap cluster in ``scripts.utils.router_payload.OVERLAP_CLUSTERS``, derived
+     from the members' exclusions (``collision_line``). No per-skill table: the
+     harness already lists every model-invocable skill's description, and the
+     table repeated it on every session (2026-10-29, measured by the competitive
+     mode of ``skill-trigger-test.py``).
+  2. Per-category detail files ``reference/skill-router/<category>.md`` carrying the
+     full Skill | Triggers | Exclusions table for EVERY skill, auto and manual
+     alike, read on demand for disambiguation.
 
-Everything outside the markers (protocol header, corporate-docs guardrail, compound-
-workflow section, plugin notes, ...) is preserved unchanged, LINE ENDINGS ASIDE:
-`read_text`/`write_text` apply universal-newline translation, so a CRLF router file
-is rewritten LF on POSIX. "byte-for-byte" was the old wording and it was false for
-any non-LF file. The repository is LF, `--check` compares translated text, and the
-claim is narrowed rather than the I/O rewritten. ``--check`` regenerates
-BOTH layers in memory and diffs against disk, failing on any *content* drift, so a router
-row can no longer disagree with its skill.
+The policy prose lives in this file, so editing the rule means editing
+``POLICY_TEMPLATE`` and regenerating; a hand edit of the rule is drift.
+``--check`` regenerates BOTH layers in memory and diffs against disk, failing on
+any content drift, so the rule can no longer disagree with its skills.
 
 Usage:
-    python scripts/generate-skill-router.py            # default: write the split layout (core + per-category files)
+    python scripts/generate-skill-router.py            # default: write the rule + per-category files
     python scripts/generate-skill-router.py --check    # regen both layers -> diff; exit 1 on drift (CI / pre-commit)
     python scripts/generate-skill-router.py --split-by-category   # explicit synonym of the default write
     python scripts/generate-skill-router.py --flat     # print the legacy flat monolith to stdout (debug / semantics proof); no write
@@ -46,6 +41,7 @@ from scripts.utils.workspace import get_workspace_root  # noqa: E402
 from scripts.utils import markdown as md  # noqa: E402
 from scripts.utils.markdown import parse_frontmatter_strict  # noqa: E402
 from scripts.utils.repo_files import read_sources  # noqa: E402
+from scripts.utils.router_payload import OVERLAP_CLUSTERS  # noqa: E402
 
 # ============================================================
 # Configuration
@@ -54,8 +50,8 @@ from scripts.utils.repo_files import read_sources  # noqa: E402
 ROOT = get_workspace_root()
 SKILLS_DIR = ROOT / ".claude" / "skills"
 ROUTER_FILE = ROOT / ".claude" / "rules" / "skill-router.md"
-# F-5.2: the verbose per-category detail tables live here (engine-routed, shareable),
-# read on demand; only the compact index stays in the always-on router rule.
+# The per-category detail tables live here (engine-routed, shareable), read on
+# demand; the always-on rule carries the policy and the collision map only.
 CATEGORY_FILE_DIR = ROOT / "reference" / "skill-router"
 
 # Skill subdirs that are not actual skills (archived, internal).
@@ -71,33 +67,14 @@ EXCL_SEP = "; "
 
 ROUTING_KEY = "x-heading-routing"
 
-MARKER_BEGIN = "<!-- BEGIN GENERATED REGISTRY (generate-skill-router.py; do not edit) -->"
-MARKER_END = "<!-- END GENERATED REGISTRY -->"
-
-TABLE_HEADER = "| Skill | Triggers | Exclusions | Compound |"
-TABLE_SEP = "|---|---|---|---|"
-
-# F-5.2 compact core index: only Skill + Triggers stay always-on; Exclusions and
-# Compound move to the per-category detail files.
-CORE_TABLE_HEADER = "| Skill | Triggers |"
-CORE_TABLE_SEP = "|---|---|"
-
-# The Triggers cell of a `router: manual` row in the ALWAYS-ON core index.
-# A manual skill cannot be matched from a message (most carry
-# `disable-model-invocation: true`, which the harness enforces; a few, such as
-# `brain-audit` and `handover`, omit it so a skill or another session can call
-# them), so the
-# cell carries one word instead of trigger prose (2026-09-04). The full row
-# lives in `reference/skill-router/<category>.md`. Nothing parses this value;
-# the gates that read the core index parse the LABEL.
-MANUAL_TRIGGER_CELL = "manual"
+TABLE_HEADER = "| Skill | Triggers | Exclusions |"
+TABLE_SEP = "|---|---|---|"
 
 FIX_IT_SNIPPET = """\
 x-heading-routing:
   category: <Intel|Communication|Content|CRM|Design|Strategy|Operations>
   triggers: ["<trigger phrase>", "<another>"]
   exclusions: ["<signal> -> /<other-skill>"]   # or ["N/A"]
-  compound: "No"                                 # or "Yes: <pattern>"
   router: auto                                   # or manual (NEVER auto-trigger skills)
   # label: "/name [args]"                        # only when the Skill cell is not the plain /name"""
 
@@ -188,11 +165,11 @@ def parse_frontmatter(skill_md: Path) -> tuple[dict, str]:
 # refusing it would fail a working SKILL.md over a symptom no reader can see.
 FORBIDDEN_IN_CELL = {"\n": "newline", "\r": "carriage return"}
 
-# `label` alone is rendered INSIDE a backtick code span, by both `render_row` and
-# `render_core_row`: `| `{label}` | ...`. So a backtick in it closes the span
+# `label` alone is rendered INSIDE a backtick code span, by `render_row`:
+# `| `{label}` | ...`. So a backtick in it closes the span
 # early and the Skill cell of an always-on rule renders mangled - the same
 # deterministic corruption `--check` regenerates and passes that the two
-# characters above are refused for. Triggers, exclusions and compound are NOT in
+# characters above are refused for. Triggers and exclusions are NOT in
 # a code span and backticks there are ordinary house style: measured on the live
 # corpus 2026-09-02, 30 of the 94 skills carry one, so refusing the character
 # everywhere would fail a third of the tree over nothing.
@@ -202,9 +179,8 @@ FORBIDDEN_IN_CODE_SPAN = {"`": "backtick"}
 def _as_cell(value, *, field: str, code_span: bool = False) -> str:
     """One string, safe to place in a markdown table cell.
 
-    `_as_list` below guards the item TYPE and the container TYPE, and `compound`
-    is guarded against the YAML 1.1 boolean. Cell CONTENT was the hole all three
-    left: a trigger written as a folded scalar, which is the house style for
+    `_as_list` below guards the item TYPE and the container TYPE. Cell CONTENT
+    was the hole both left: a trigger written as a folded scalar, which is the house style for
     `x-heading-capability` in this same frontmatter, arrives with a trailing
     newline and splits the row.
 
@@ -241,7 +217,7 @@ def _as_cell(value, *, field: str, code_span: bool = False) -> str:
     # alternative - falling back to `/{name}` - is the same silent-ignore this
     # function was written to end for `label: no`. The author wrote something,
     # so they hear about it. Measured on the live corpus 2026-08-27: no
-    # trigger, exclusion, compound or label is empty, so nothing regresses.
+    # trigger, exclusion or label is empty, so nothing regresses.
     if not value.strip():
         raise ValueError(
             f"{field} is empty (or only whitespace). An empty markdown cell "
@@ -299,7 +275,7 @@ def load_routing_rows() -> tuple[list[dict], list[str]]:
     """Read every skill's x-heading-routing block.
 
     Returns (rows, errors). Each row is a dict with keys name, category, label,
-    triggers, exclusions, compound, router. errors is a list of human-readable
+    triggers, exclusions, router, model_invocable. errors is a list of human-readable
     strings (missing block, bad category, ...); a non-empty errors list means the
     registry must not be generated.
 
@@ -397,26 +373,6 @@ def load_routing_rows() -> tuple[list[dict], list[str]]:
         # deliberately does NOT set it, because composing skills invoke it
         # through the Skill tool and the flag would block them. One measured
         # exception is enough to say that link is not an invariant either.
-        # `str()` on an unvalidated value, and PyYAML is YAML 1.1: an unquoted
-        # `compound: No` parses to the BOOLEAN False, and `str(False)` is
-        # "False". The always-on router rule then showed `| False |` in the
-        # Compound column -- and because the corruption is deterministic,
-        # `--check` regenerated the same wrong cell and passed. Every other
-        # field here is type-checked for exactly this reason; this one was not.
-        compound_raw = routing.get("compound", "No")
-        if isinstance(compound_raw, bool):
-            errors.append(
-                f"{rel}: {ROUTING_KEY}.compound is the YAML boolean "
-                f"{compound_raw!r}. Unquoted No/Yes/On/Off are booleans in "
-                f"YAML 1.1 -- write compound: \"No\" (quoted) or a real "
-                f"description like 'Yes: Meeting Prep'.")
-            continue
-        try:
-            compound = _as_cell(compound_raw, field=f"{ROUTING_KEY}.compound")
-        except ValueError as exc:
-            errors.append(f"{rel}: {exc}")
-            continue
-
         says_never = "never auto-trigger" in " ".join(triggers).lower()
         if (router == "manual") != says_never:
             warnings.append(
@@ -431,8 +387,10 @@ def load_routing_rows() -> tuple[list[dict], list[str]]:
                 "label": label,
                 "triggers": triggers,
                 "exclusions": exclusions,
-                "compound": compound,
                 "router": router,
+                # The harness flag, read for the command-only roster: a manual
+                # skill WITHOUT it is still listed to the model.
+                "model_invocable": fm.get("disable-model-invocation") is not True,
             }
         )
     for warning in warnings:
@@ -490,8 +448,7 @@ def render_row(row: dict) -> str:
     label = escape_pipes(row["label"])
     triggers = escape_pipes(TRIGGER_SEP.join(row["triggers"]))
     exclusions = escape_pipes(EXCL_SEP.join(row["exclusions"]))
-    compound = escape_pipes(row["compound"])
-    return f"| `{label}` | {triggers} | {exclusions} | {compound} |"
+    return f"| `{label}` | {triggers} | {exclusions} |"
 
 
 def render_registry(rows: list[dict]) -> str:
@@ -516,98 +473,152 @@ def category_slug(category: str) -> str:
     return category.lower()
 
 
-def _normalise_token(text: str) -> str:
-    """Lowercase and strip every non-alphanumeric, for trigger-vs-label comparison."""
-    return re.sub(r"[^a-z0-9]", "", text.lower())
+# The always-on rule, whole. `{detail_files}` and `{collision_map}` are filled
+# from the skills; everything else is the policy itself. Kept small on purpose:
+# the harness lists every model-invocable skill's description already, so this
+# file carries only what a description cannot (precedence, the command-only
+# rule, the gates, the collisions). Target 3,500 bytes.
+POLICY_TEMPLATE = """\
+<!-- version: 2.1.0 | last-updated: 2026-10-29 -->
+---
+paths: []
+always_active: true
+---
+
+# Skill Router
+
+Last Updated: 2026-10-29
+Last Verified: 2026-10-29
+
+Generated by `scripts/generate-skill-router.py`; never hand-edit. Rationale:
+`skill-router-notes.md` under registry name `reference-docs`.
+
+A typed `/slash-command` bypasses the router. Otherwise, when a skill plausibly
+applies, invoke it before responding and announce it ("Using /osint for this");
+if it turns out wrong once loaded, say so and continue without it. Hold ordinary
+conversation only when no skill plausibly applies. Operator decision 2026-09-27
+to keep the superpowers plugin and its invoke-first stance.
+
+**Corporate documents route first**, by `.claude/rules/corporate-docs.md`, even
+when no template is named.
+
+**VPN pre-flight.** Any skill reaching a public site that blocks datacenter IPs
+(`/yt-pulse`, `/playwright` on YouTube, `/osint`, anything calling
+`scripts/firecrawl.py`) runs the gate in `reference/vpn-preflight.md` before its
+first network call and waits for an explicit answer; proceeding unanswered is a
+protocol violation. Resident because the obligation has no path signal.
+
+**Command-only skills** (`router: manual`) run on the typed command, never from
+a message; {callable_from_outside} deliberately leave
+`disable-model-invocation` off so other sessions and hooks can call them.
+
+When 2-3 skills plausibly apply, read the category Detail file:
+{detail_files}. If it does not settle it, offer a numbered menu and wait.
+
+## Two fallbacks
+
+**Local skill not in the registry.** If nothing matches but the intent clearly
+maps to a slash command in `.claude/skills/`, invoke it anyway, then note: "This
+skill isn't in the router registry yet. It should be added through its
+`x-heading-routing` frontmatter and `scripts/generate-skill-router.py`."
+
+**Plugin-namespaced skills (`plugin:skill`) are NEVER auto-routed from natural
+language.** Invoke one by its namespaced name through the Skill tool when its own
+metadata clearly applies, or when the operator types `/plugin:skill`. On a
+bare-name collision the local `.claude/skills/` entry wins. Why, and the installed
+roster with costs: `skill-router-notes.md` under `reference-docs`.
+
+## Collision map
+
+{collision_map}
+"""
+
+# `/token` on the right of an exclusion's `->`: the skill it points at.
+_TARGET_RE = re.compile(r"/([a-z0-9-]+)")
 
 
-def core_triggers(row: dict) -> list[str]:
-    """The triggers worth spending always-on bytes on, for one auto-routable skill.
+def parse_exclusion(text: str) -> tuple[str, str] | None:
+    """(SIGNAL, TARGET) of one exclusion string, or None when it names no skill.
 
-    Drops a trigger that is EXACTLY the skill's own name or its rendered label,
-    modulo case and punctuation -- `/mullvad` listing
-    "/mullvad", `/telegram` listing "telegram". The Skill cell of the same row
-    already spells it, so the duplicate buys no match and costs bytes in the one
-    layer that is paid for on every session.
-
-    EXACT match only, and the narrowness is the point. Dropping every trigger that
-    merely CONTAINS the name was measured on 2026-09-04 and saved 1587 bytes by
-    deleting real matching surface: `/thread` fell from 8 triggers to 1, losing
-    "open a thread", "close thread", "thread list" and "thread find" -- distinct
-    phrases a user actually types -- and `/design` kept only "design social" while
-    "design infographic", "design mockup" and "design logo" went. A containment
-    rule cannot tell a redundant echo from a compound phrase built on the name.
-    The exact rule saves less and loses nothing.
-
-    Never returns empty: a skill whose only trigger is its own name keeps it, so
-    the row still shows what the model is matching against.
+    Split at the FIRST `->`. TARGET is the first `/token` on the right, anything
+    after it ignored, so `/odin recall (brain-scoped)` targets `odin`. SIGNAL is
+    the left part, trimmed, with escaped and surrounding double quotes removed
+    from each ` / ` alternative and the alternation kept as written. An exclusion
+    with no `/token` on the right (`Grep.`, `just answer`) is None.
     """
-    label_key = _normalise_token(row["label"])
-    name_key = _normalise_token(row["name"])
-    kept = [
-        t for t in row["triggers"]
-        if _normalise_token(t) not in (label_key, name_key)
-    ]
-    return kept or row["triggers"][:1]
+    if "->" not in text:
+        return None
+    left, right = text.split("->", 1)
+    match = _TARGET_RE.search(right)
+    if not match:
+        return None
+    parts = []
+    for alt in left.replace('\\"', '"').split(" / "):
+        alt = alt.strip()
+        if len(alt) >= 2 and alt.startswith('"') and alt.endswith('"'):
+            alt = alt[1:-1]
+        parts.append(alt)
+    return " / ".join(parts).strip(), match.group(1)
 
 
-def render_core_row(row: dict) -> str:
-    """Compact 2-column core-index row: backtick label + first-pass triggers.
+def collision_line(cluster: str, members: tuple[str, ...],
+                   by_name: dict[str, dict], fallbacks: list[str]) -> str | None:
+    """One collision-map line: each member with the signals its siblings route to it.
 
-    A `router: manual` row gets MANUAL_TRIGGER_CELL instead of its triggers. The
-    row itself stays -- gates read it, and an operator should find the command
-    listed -- but the cell does not, because a skill that cannot be reached by
-    matching a message is owed no matching vocabulary in the layer that is paid
-    for on every session.
+    A command-only member prints `/X typed only`. A member no sibling points at
+    falls back to its own first trigger, and is appended to `fallbacks` so the
+    caller can name it. Members absent from the tree (a public build that does
+    not ship one) are skipped; a cluster with none present is None.
     """
-    label = escape_pipes(row["label"])
-    if row["router"] == "manual":
-        return f"| `{label}` | {MANUAL_TRIGGER_CELL} |"
-    triggers = escape_pipes(TRIGGER_SEP.join(core_triggers(row)))
-    return f"| `{label}` | {triggers} |"
+    present = [m for m in members if m in by_name]
+    if not present:
+        return None
+    cells = []
+    for name in present:
+        row = by_name[name]
+        if row["router"] == "manual":
+            cells.append(f"/{name} typed only")
+            continue
+        signals: list[str] = []
+        for other in present:
+            if other == name:
+                continue
+            for excl in by_name[other]["exclusions"]:
+                parsed = parse_exclusion(excl)
+                if parsed and parsed[1] == name and parsed[0] not in signals:
+                    signals.append(parsed[0])
+        if not signals:
+            fallbacks.append(name)
+            signals = row["triggers"][:1]
+        cells.append(f"/{name} for {'; '.join(signals)}")
+    return f"- {cluster}: " + " | ".join(cells)
 
 
-def render_core_index(rows: list[dict]) -> str:
-    """Render the compact always-on core index (the content between the markers).
+def render_policy(rows: list[dict], fallbacks: list[str] | None = None) -> str:
+    """The whole always-on rule: POLICY_TEMPLATE with the detail-file list and the
+    collision map filled in. Deterministic; trailing newline."""
+    by_name = {r["name"]: r for r in rows}
+    used = fallbacks if fallbacks is not None else []
+    lines = [line for cluster, members in OVERLAP_CLUSTERS.items()
+             if (line := collision_line(cluster, members, by_name, used))]
+    detail = ("`reference/skill-router/{"
+              + ",".join(category_slug(c) for c in CATEGORY_ORDER) + "}.md`")
+    return POLICY_TEMPLATE.format(detail_files=detail,
+                                  collision_map="\n".join(lines),
+                                  callable_from_outside=callable_roster(rows))
 
-    Per category: a heading, a pointer to the detail file, and a 2-column
-    Skill|Triggers table. Exclusions and compound patterns live in the category
-    file, read on demand. Deterministic order: fixed category order, then skill
-    name ascending. Blocks separated by a blank line; no trailing newline
-    (matches splice_region's contract).
 
-    Every skill keeps a ROW, including the `router: manual` ones. Their rows are
-    what several gates read the registry FOR. One is still live:
-    `workspace-health.py::check_skill_router_coverage` requires every skill
-    directory to be named here. Two more went with the 2026-09-21 test-suite
-    split, one asserting two-way set equality between the ``| `/name`` rows here
-    and `reference/skill-graph.csv`, the other reading `/scrutinize`'s
-    flag-bearing label out of this table. Both of those now rest on review, so
-    a row dropped from here drifts silently against the CSV. What a manual skill
-    does NOT keep is its trigger
-    PROSE: see MANUAL_TRIGGER_CELL.
-    """
-    blocks: list[str] = []
-    for category in CATEGORY_ORDER:
-        members = sorted(
-            (r for r in rows if r["category"] == category), key=lambda r: r["name"]
-        )
-        slug = category_slug(category)
-        # The pointer says only where the detail is; WHAT is in it, and that
-        # reading it is mandatory before selecting, is stated once in the rule's
-        # prose above the registry. Spelling that out per category cost 108 bytes
-        # seven times over in an always-on file to repeat one sentence.
-        lines = [
-            f"### {category}",
-            "",
-            f"Detail: `reference/skill-router/{slug}.md`",
-            "",
-            CORE_TABLE_HEADER,
-            CORE_TABLE_SEP,
-        ]
-        lines.extend(render_core_row(r) for r in members)
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
+def callable_roster(rows: list[dict]) -> str:
+    """`/a`, `/b` and `/c`: every `router: manual` skill that does NOT carry
+    `disable-model-invocation: true`, so the sentence naming them cannot fall
+    behind a new one. The three were written by hand until 2026-10-29."""
+    names = [f"`/{r['name']}`" for r in sorted(rows, key=lambda r: r["name"])
+             if r["router"] == "manual" and r["model_invocable"]]
+    if not names:
+        return "no skill"
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def render_category_file(category: str, rows: list[dict]) -> str:
@@ -615,7 +626,7 @@ def render_category_file(category: str, rows: list[dict]) -> str:
 
     H1 + one-line description + a generated-by note (no volatile date, so the file
     is byte-identical every run and --check stays deterministic), then the full
-    4-column table via the shared render_row. Trailing newline (whole-file).
+    3-column table via the shared render_row. Trailing newline (whole-file).
     """
     members = sorted(
         (r for r in rows if r["category"] == category), key=lambda r: r["name"]
@@ -623,7 +634,7 @@ def render_category_file(category: str, rows: list[dict]) -> str:
     lines = [
         f"# Skill Router — {category}",
         "",
-        f"Full routing detail (triggers, exclusions, compound patterns) for the "
+        f"Full routing detail (triggers, exclusions) for the "
         f"{category} skill category.",
         "",
         "Generated by scripts/generate-skill-router.py from each SKILL.md "
@@ -637,70 +648,6 @@ def render_category_file(category: str, rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def splice_region(router_text: str, region: str) -> str:
-    """Replace the text strictly between the two markers with ``region``.
-
-    Everything outside the markers is preserved unchanged, LINE ENDINGS ASIDE, and
-    the qualifier is the module docstring's, not a hedge added here: ``read_text``
-    and ``write_text`` apply universal-newline translation, so a CRLF router file
-    is rewritten LF and the bytes outside the markers DO change. "byte-for-byte"
-    was the old wording in both places; the module docstring was narrowed and this
-    one, describing the same I/O, was left carrying the claim its own file had
-    already recorded as false.
-
-    Raises ValueError if a marker is missing, or if either marker appears more
-    than once.
-    """
-    if MARKER_BEGIN not in router_text or MARKER_END not in router_text:
-        raise ValueError(
-            f"sentinel markers not found in {ROUTER_FILE.relative_to(ROOT)}; "
-            f"add\n  {MARKER_BEGIN}\n  {MARKER_END}\naround the '### Intel' ... last registry row."
-        )
-    # Duplicates are settled BEFORE the splice, because the pattern below cannot
-    # report them afterwards. Under DOTALL the non-greedy body happily spans a
-    # SECOND `BEGIN`, so `subn` returned n == 1 and the n > 1 guard at the foot
-    # of this function never fired. Measured 2026-08-31 on
-    # `BEGIN / row A / BEGIN / row B / END`: the result held ONE `BEGIN`, the
-    # second marker and every line between the two were gone, exit 0, nothing
-    # printed, and a following `--check` regenerated the same result and PASSED.
-    # A doubled `END` is the mirror image: the body stops at the first one, so
-    # `row B` and a stray `END` survive outside the region and `--check` blesses
-    # that file too. This runs in pre-commit and in CI, which is exactly where a
-    # gate that certifies its own corruption does the most damage.
-    begins = router_text.count(MARKER_BEGIN)
-    ends = router_text.count(MARKER_END)
-    if begins > 1 or ends > 1:
-        detail = (f"found {begins} marker regions" if begins == ends
-                  else f"found {begins} BEGIN and {ends} END markers")
-        raise ValueError(
-            f"{detail} in {ROUTER_FILE.relative_to(ROOT)}; there must be "
-            f"exactly one. Remove the extra {MARKER_BEGIN} / {MARKER_END} "
-            f"pair(s). Nothing was written: the splice would otherwise destroy "
-            f"the content between them.")
-    # `\n.*?\n` demanded at least one line BETWEEN the markers, so a file whose
-    # markers sit on adjacent lines -- which is what you get after clearing the
-    # region for the generator to refill, or after adding the markers exactly as
-    # the error above instructs -- matched zero times and raised "expected
-    # exactly one marker region, found 0". One pair of markers was present; the
-    # message sent the reader hunting for duplicates that did not exist, and
-    # both --write and --check exited 2 with no way back.
-    pattern = re.compile(
-        re.escape(MARKER_BEGIN) + r"\n?.*?\n?" + re.escape(MARKER_END), re.DOTALL
-    )
-    replacement = MARKER_BEGIN + "\n" + region + "\n" + MARKER_END
-    new_text, n = pattern.subn(lambda _m: replacement, router_text)
-    if n == 0:
-        raise ValueError(
-            "both markers are present but no region could be matched between "
-            "them; this should not happen -- report the router file's contents")
-    if n > 1:
-        raise ValueError(
-            f"found {n} marker regions in "
-            f"{ROUTER_FILE.relative_to(ROOT)}; there must be exactly one. "
-            f"Remove the extra {MARKER_BEGIN} / {MARKER_END} pair(s).")
-    return new_text
-
-
 # ============================================================
 # Commands
 # ============================================================
@@ -712,18 +659,14 @@ def _report_errors(errors: list[str]) -> None:
 
 
 def cmd_split_write(rows: list[dict]) -> int:
-    """Write the compact core index into the markers AND the 7 category detail files."""
-    router_text = ROUTER_FILE.read_text(encoding="utf-8")
-    core = render_core_index(rows)
-    try:
-        new_text = splice_region(router_text, core)
-    except ValueError as exc:
-        print(f"{RED}ERROR{RESET}: {exc}", file=sys.stderr)
-        return 2
+    """Write the always-on rule AND the 7 category detail files."""
+    router_text = _existing_text(ROUTER_FILE)
+    fallbacks: list[str] = []
+    new_text = render_policy(rows, fallbacks)
 
-    # DETAIL FILES FIRST, the core index last. Neither order is atomic, but the
+    # DETAIL FILES FIRST, the rule last. Neither order is atomic, but the
     # order decides what a reader sees if a write fails mid-way: the router
-    # index is the always-on layer the model reads every session, so it is the
+    # rule is the always-on layer the model reads every session, so it is the
     # one that must never point at detail files that have not caught up. This
     # ran the other way round, so a permissions or disk failure inside the loop
     # left the always-on index describing frontmatter the detail files did not.
@@ -763,28 +706,26 @@ def cmd_split_write(rows: list[dict]) -> int:
         wrote_any = True
 
     if wrote_any:
-        print(f"{GREEN}WROTE{RESET}: regenerated compact core index + "
+        print(f"{GREEN}WROTE{RESET}: regenerated router rule + "
               f"{len(CATEGORY_ORDER)} category files ({len(rows)} skills).")
     else:
-        print(f"{GREEN}OK{RESET}: core index + category files already current "
+        print(f"{GREEN}OK{RESET}: router rule + category files already current "
               f"({len(rows)} skills).")
+    if fallbacks:
+        print(f"{CYAN}note{RESET}: collision map fell back to the first trigger "
+              f"for {', '.join(fallbacks)} (no sibling exclusion points at them)")
     return 0
 
 
 def cmd_split_check(rows: list[dict]) -> int:
-    """Verify both layers (core region + every category file) for content idempotency."""
+    """Verify both layers (the rule + every category file) for content idempotency."""
     router_text = ROUTER_FILE.read_text(encoding="utf-8")
-    core = render_core_index(rows)
-    try:
-        new_text = splice_region(router_text, core)
-    except ValueError as exc:
-        print(f"{RED}ERROR{RESET}: {exc}", file=sys.stderr)
-        return 2
+    new_text = render_policy(rows)
 
     # (name, on_disk_text, regenerated_text) for each drifted/missing/orphan artifact.
     drift: list[tuple[str, str, str]] = []
     if new_text != router_text:
-        drift.append((".claude/rules/skill-router.md (core region)", router_text, new_text))
+        drift.append((".claude/rules/skill-router.md", router_text, new_text))
 
     for category in CATEGORY_ORDER:
         slug = category_slug(category)
@@ -812,7 +753,7 @@ def cmd_split_check(rows: list[dict]) -> int:
             drift.append((f"reference/skill-router/{f.name} (ORPHAN)", text, ""))
 
     if not drift:
-        print(f"{GREEN}OK{RESET}: core index + category files in sync with "
+        print(f"{GREEN}OK{RESET}: router rule + category files in sync with "
               f"SKILL.md frontmatter ({len(rows)} skills).")
         return 0
 
@@ -835,7 +776,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--write", action="store_true",
-                     help="Write the split layout in place: compact core index + per-category files (default).")
+                     help="Write the router rule + per-category files in place (default).")
     mode.add_argument("--check", action="store_true",
                      help="Regenerate both layers and diff; exit 1 on drift (CI / pre-commit).")
     # INSIDE the group. `--check --flat` used to be accepted, print the flat
@@ -846,7 +787,7 @@ def main() -> int:
                       help="Print the legacy flat monolith to stdout (debug + semantics proof); no write.")
     mode.add_argument(
         "--split-by-category", action="store_true",
-        help="Explicit synonym of the default split write (compact core + per-category files).",
+        help="Explicit synonym of the default write (router rule + per-category files).",
     )
     args = parser.parse_args()
 

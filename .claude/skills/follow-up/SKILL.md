@@ -27,7 +27,6 @@ x-heading-routing:
     - follow-up email after
   exclusions:
     - Post-event recap -> /event-debrief
-  compound: 'No'
   router: auto
 ---
 

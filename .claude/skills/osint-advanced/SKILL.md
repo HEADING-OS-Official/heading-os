@@ -31,7 +31,6 @@ x-heading-routing:
     - NEVER auto-trigger. Explicit `/osint-advanced` only.
   exclusions:
     - All natural language
-  compound: 'No'
   router: manual
 ---
 

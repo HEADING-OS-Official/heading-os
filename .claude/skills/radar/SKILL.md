@@ -1,6 +1,7 @@
 ---
 name: radar
 description: Manual-actions + silent-health detector. Runs scripts/ops-radar.py, which surfaces which high-consequence MANUAL actions are objectively overdue (backup, weekly-review, Odin collect/reflect) and which machine-domain states have degraded (model server down, memory-index stale), self-healing the latter (Tier A) and nudging only on exception for the former (Tier B), counts-only. Use when the user says "radar", "ops radar", "what's overdue", "what do I need to run", "what am I forgetting", or wants to ack/silence a known item or toggle crunch-mode. Do NOT use for a full morning brief (use /dashboard or /prime), or for naming the single next action (use /next) - the radar FEEDS those, it does not replace them.
+disable-model-invocation: true
 argument-hint: "[ack <key> | crunch on|off]"
 allowed-tools: "Read, Bash(.venv/bin/python:*)"
 model: haiku
@@ -26,20 +27,13 @@ x-heading-capability:
 x-heading-routing:
   category: Operations
   triggers:
-    - radar
-    - ops radar
-    - what's overdue
-    - what am I forgetting to run
-    - what manual actions are due
-    - ack a radar item
-    - crunch mode on/off
+    - NEVER auto-trigger. Explicit `/radar` only. Reports overdue manual actions and degraded machine states through scripts/ops-radar.py.
   exclusions:
     - Morning brief -> /dashboard or /prime
     - single next action -> /next
     - Detector that FEEDS those
     - never executes a manual action.
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 # Ops-Radar
 

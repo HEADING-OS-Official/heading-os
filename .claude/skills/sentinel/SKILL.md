@@ -27,7 +27,6 @@ x-heading-routing:
     - NEVER auto-trigger. Explicit `/sentinel` only.
   exclusions:
     - N/A
-  compound: 'No'
   router: manual
 ---
 # Sentinel -- Unified Comms Monitor

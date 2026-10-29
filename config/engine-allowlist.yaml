@@ -223,30 +223,45 @@ files:
 - path: .claude/skills/docparse/references/integration.md
   class: skill-reference-instruction
   reason: .claude/skills/docparse/SKILL.md § Integration points to it for full details; build-plugins rewrites its command lines in the bundle.
-- path: .claude/skills/flux-image/references/models.md
+- path: .claude/skills/image/references/generate.md
   class: skill-reference-instruction
-  reason: .claude/skills/flux-image/SKILL.md § Model Selection points model selection at it.
-- path: .claude/skills/image-prompt/references/platforms.md
+  reason: .claude/skills/image/SKILL.md § Modes sends mode `generate` to it.
+- path: .claude/skills/image/references/models.md
   class: skill-reference-instruction
-  reason: .claude/skills/image-prompt/SKILL.md § Output Format points non-Midjourney platforms at it; bundled by build-plugins.
+  reason: .claude/skills/image/references/generate.md § Model Selection points model selection at it.
+- path: .claude/skills/image/references/platforms.md
+  class: skill-reference-instruction
+  reason: .claude/skills/image/references/prompt.md § Output Format points non-Midjourney platforms at it.
+- path: .claude/skills/image/references/prompt.md
+  class: skill-reference-instruction
+  reason: .claude/skills/image/SKILL.md § Modes sends mode `prompt` to it.
 - path: .claude/skills/implement/.eval-accept.json
   class: config-read-by-code
   reason: scripts/artifact-evaluator.py (load_accepted_warnings()) loads it when evaluating the skill.
 - path: .claude/skills/implement/references/implement-details.md
   class: skill-reference-instruction
   reason: ".claude/skills/implement/SKILL.md § Phase 2: Execute the Plan sends wave execution to it."
-- path: .claude/skills/linkedin-archive/evals/cases/case-1-what-it-moves.json
+- path: .claude/skills/linkedin/evals/cases/case-1-what-it-moves.json
   class: skill-eval-fixture
   reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
-- path: .claude/skills/linkedin-archive/evals/cases/case-2-confirm-before-disk.json
+- path: .claude/skills/linkedin/evals/cases/case-2-confirm-before-disk.json
   class: skill-eval-fixture
   reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
-- path: .claude/skills/linkedin-archive/evals/cases/case-3-content-types.json
+- path: .claude/skills/linkedin/evals/cases/case-2-no-emoji-no-hashtags-on-ask.json
   class: skill-eval-fixture
   reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
-- path: .claude/skills/linkedin-post/evals/cases/case-2-no-emoji-no-hashtags-on-ask.json
+- path: .claude/skills/linkedin/evals/cases/case-3-content-types.json
   class: skill-eval-fixture
   reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
+- path: .claude/skills/linkedin/references/archive.md
+  class: skill-reference-instruction
+  reason: .claude/skills/linkedin/SKILL.md § Modes sends mode `archive` to it.
+- path: .claude/skills/linkedin/references/post.md
+  class: skill-reference-instruction
+  reason: .claude/skills/linkedin/SKILL.md § Modes sends mode `post` to it.
+- path: .claude/skills/linkedin/references/series.md
+  class: skill-reference-instruction
+  reason: .claude/skills/linkedin/SKILL.md § Modes sends mode `series` to it.
 - path: .claude/skills/marp/evals/cases/case-1-subcommands.json
   class: skill-eval-fixture
   reason: scripts/run-skill-eval.py globs evals/cases/*.json and runs it.
@@ -325,6 +340,15 @@ files:
 - path: .claude/skills/osint/references/streams-technology.md
   class: skill-reference-instruction
   reason: "osint/SKILL.md § Phase 1: Research Streams (Parallel) tells the model to load it as the TECHNOLOGY-mode stream procedure."
+- path: .claude/skills/pitch/references/investor.md
+  class: skill-reference-instruction
+  reason: .claude/skills/pitch/SKILL.md § Modes sends mode `investor` to it.
+- path: .claude/skills/pitch/references/keynote.md
+  class: skill-reference-instruction
+  reason: .claude/skills/pitch/SKILL.md § Modes sends mode `keynote` to it.
+- path: .claude/skills/pitch/references/update.md
+  class: skill-reference-instruction
+  reason: .claude/skills/pitch/SKILL.md § Modes sends mode `update` to it.
 - path: .claude/skills/playwright/references/selectors.md
   class: skill-reference-instruction
   reason: playwright/SKILL.md § Selector Patterns points the model to it for selector strategy.
@@ -625,6 +649,9 @@ files:
 - path: reference/humanization-rule-detail.md
   class: skill-reference-instruction
   reason: .claude/rules/humanization.md tells the model to read it before any outbound voice pass.
+- path: reference/lethal-trifecta-detail.md
+  class: skill-reference-instruction
+  reason: .claude/rules/lethal-trifecta.md defers the self-notification boundary's limit to it.
 - path: reference/memory-discipline-detail.md
   class: skill-reference-instruction
   reason: .claude/rules/memory-discipline.md tells the model to read it before writing or consolidating the index; /dream cites it.
@@ -636,7 +663,7 @@ files:
   reason: .claude/rules/persistence.md defers the carve-outs and the full validation step to it.
 - path: reference/prompt-refinement-escalations.md
   class: skill-reference-instruction
-  reason: .claude/rules/prompt-refinement.md points to it for the escalations and the corporate-docs interaction.
+  reason: .claude/rules/prompt-refinement.md points to it for the escalations, the full reasoning of Phase 3 and the corporate-docs interaction.
 - path: reference/scheduled-tasks.md
   class: skill-reference-instruction
   reason: .claude/rules/development-standards.md § Script Standards points to it when wiring a scheduled task.

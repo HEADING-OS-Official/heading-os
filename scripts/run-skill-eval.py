@@ -39,10 +39,10 @@ Case file format (each case is a self-contained test):
     }
 
 Usage:
-    python scripts/run-skill-eval.py --skill linkedin-post
-    python scripts/run-skill-eval.py --skill linkedin-post --case case-2-no-emoji-no-hashtags-on-ask
-    python scripts/run-skill-eval.py --skill linkedin-post --dry-run
-    python scripts/run-skill-eval.py --skill linkedin-post --no-write
+    python scripts/run-skill-eval.py --skill linkedin
+    python scripts/run-skill-eval.py --skill linkedin --case case-2-no-emoji-no-hashtags-on-ask
+    python scripts/run-skill-eval.py --skill linkedin --dry-run
+    python scripts/run-skill-eval.py --skill linkedin --no-write
     python scripts/run-skill-eval.py --all                   # every skill with evals/
 
 Exit codes: 0 all checks passed, 1 one or more failed, 2 setup error, 3 API error.

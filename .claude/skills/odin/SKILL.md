@@ -62,7 +62,6 @@ x-heading-routing:
     - '"think through" without Odin address -> /deep-think'
     - '"add a note" -> /zk'
     - '"research [company]" -> /osint'
-  compound: 'No'
   router: auto
 ---
 

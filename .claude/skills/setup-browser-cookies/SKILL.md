@@ -1,6 +1,7 @@
 ---
 name: setup-browser-cookies
 description: "Import logged-in cookies from a real Chromium-family browser (Brave, Chrome, Chromium, Edge) into the workspace's Playwright/headless cookie store (the registry name `browser-cookies` in the data overlay), using the workspace-native scripts/utils/chromium_cookies.py reader. Use before QA-testing or scraping pages that require an authenticated session. For the browser automation itself use /playwright."
+disable-model-invocation: true
 argument-hint: "[domain] (omit to be prompted for the domains to import)"
 allowed-tools: "Bash(.venv/bin/python:*), Read, Write"
 model: haiku
@@ -24,12 +25,10 @@ x-heading-capability:
 x-heading-routing:
   category: Operations
   triggers:
-    - setup browser cookies
-    - import cookies
+    - NEVER auto-trigger. Explicit `/setup-browser-cookies` only. Imports logged-in cookies from a Chromium-family browser into the workspace cookie store.
   exclusions:
     - N/A
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 
 **Data addresses.** Resources in the data repository are named here by their

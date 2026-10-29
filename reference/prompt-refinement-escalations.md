@@ -1,10 +1,11 @@
-# Prompt refinement — the two explicit escalations
+# Prompt refinement — the two explicit escalations, and Phase 3 in full
 
 Consumed by: `.claude/rules/prompt-refinement.md`.
 
-Last Updated: 2026-09-04
+Last Updated: 2026-10-29
 
-The three-phase flow in the always-on rule is always active and leaves "when to
+The two explicit escalations, and the full reasoning behind the Phase 3 shape
+test, which the always-on rule states in short. The three-phase flow in the always-on rule is always active and leaves "when to
 clarify" to Claude's judgement. These two commands override that default. Each
 is typed by the operator, which loads the skill that implements it, so their
 descriptions do not need to be resident — the rule names them in one line and
@@ -50,3 +51,17 @@ reconcile as follows:
   approves the expanded prompt.
 - Escape Valve 1 (the `!` prefix) bypasses both rules and lets the skill execute
   directly.
+
+## Phase 3 in full: which prompts are saved
+
+Read this when it is unclear whether a message fixes or changes the shape of a task. The paragraphs below stood in the always-on rule until 2026-10-29, verbatim except that the operator's quoted words moved to the provenance file in the data repository.
+
+A handoff written later asks `prompt-archive.py list` and carries the ordered paths; nothing is registered at approval time, because a prompt approved after the last handoff would otherwise be the one that is lost.
+
+**Which prompts are saved, and the test is the SHAPE OF THE TASK rather than the gate a message passed.** Operator decision, 2026-09-22: a path named out loud survives the compaction that eats the turn it came from. A file is written when a message FIXES the shape of a task, and again when a later message CHANGES that shape. Nothing is written when a message only moves a task whose shape is already on disk.
+
+**The 2026-09-20 decision stands and this is where it still bites.** An archive of every keystroke is a place nobody looks. The line moved from the approval gate to the task, which is a wider set and still a small one: an evening of forty messages carries perhaps six tasks, and the test above writes about six files.
+
+**Where no approval stop happens, the file is written anyway, and still before the first action.** The escape valves, a direct command, a reply that arrives carrying new work, and `/unattended` all bypass the stop by construction, and any of them can fix the shape of a task. The order there is: expand, save, name the absolute path, then act. Nothing else about this phase changes, and the expansion is the master instruction exactly as it is above.
+
+**The verbatim half holds the message that fixed the shape**, which is usually an EARLIER message than the one that released execution. When "go" approves an expansion presented a turn ago, the operator's words in the file are the task he typed, never the word "go".

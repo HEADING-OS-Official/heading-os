@@ -315,7 +315,6 @@ x-heading-routing:
   category: Operations
   triggers: ["example phrase", "another trigger"]
   exclusions: ["<signal> -> /<other-skill>"]   # or ["N/A"]
-  compound: "No"
   router: auto                                  # or manual (NEVER auto-trigger skills)
   # label: "/name [args]"                       # only when the Skill cell is not the plain /name
 x-heading-capability:
@@ -336,11 +335,10 @@ Router registry (under `x-heading-routing:` namespaced block, required for every
 - `category` -- one of `Intel | Communication | Content | CRM | Design | Strategy | Operations`; which registry table the skill's row lands in.
 - `triggers` -- list of the router-cell trigger phrases (the Triggers column). 
 - `exclusions` -- list of the router-cell disambiguation rules (the Exclusions column), e.g. `["\"competitor\" -> /competitor-intel"]`, or `["N/A"]`.
-- `compound` -- the Compound column string, `"No"` for every skill since the compound workflows and their orchestrator were retired on 2026-09-28.
 - `router` -- `auto` (routable from natural language) or `manual` (NEVER auto-trigger / `disable-model-invocation` skills).
 - `label` -- OPTIONAL; only when the Skill-column cell is not the plain `/name` (e.g. an arg-hint like `/scrutinize [target] ...`).
 
-**The skill router is GENERATED from these blocks** by `scripts/generate-skill-router.py`, in a two-layer split (F-5.2): a compact core index (Skill + Triggers) between the `<!-- BEGIN GENERATED REGISTRY -->` / `<!-- END GENERATED REGISTRY -->` markers in the always-on `.claude/rules/skill-router.md`, plus a full per-category detail table (Skill | Triggers | Exclusions | Compound) in each `reference/skill-router/<category>.md`. Never hand-edit either layer: edit the skill's `x-heading-routing` frontmatter, then run `python scripts/generate-skill-router.py`. CI and pre-commit run `--check` (regen -> diff across BOTH layers), which fails on any content drift, a missing/orphan category file, or a skill missing its block (the last fails with the file path and a paste-ready fix-it snippet). `--flat` prints the legacy flat monolith to stdout for debugging. The one-shot migration that first populated these blocks was removed on 2026-09-28 (commit `f5d8a9b4`, HOS-166) and archived in the data repository in `2026-09-28-decision-map-removals.zip`, under the registry name `system-code`, in `archive/`.
+**The skill router is GENERATED from these blocks** by `scripts/generate-skill-router.py`, in a two-layer split (F-5.2): a compact always-on policy with a generated collision map for the overlap clusters in `.claude/rules/skill-router.md`, and the full per-category table (Skill | Triggers | Exclusions) in each `reference/skill-router/<category>.md`. Never hand-edit either layer: edit the skill's `x-heading-routing` frontmatter, then run `python scripts/generate-skill-router.py`. CI and pre-commit run `--check` (regen -> diff across BOTH layers), which fails on any content drift, a missing/orphan category file, or a skill missing its block (the last fails with the file path and a paste-ready fix-it snippet). `--flat` prints the legacy flat monolith to stdout for debugging. The one-shot migration that first populated these blocks was removed on 2026-09-28 (commit `f5d8a9b4`, HOS-166) and archived in the data repository in `2026-09-28-decision-map-removals.zip`, under the registry name `system-code`, in `archive/`.
 
 **Body:**
 - Size budget (F-5.3): each `SKILL.md` is capped at **500 lines AND 18432 bytes (18 KB)** hard, with a **16384-byte (16 KB) warn** threshold; use the `references/` subdirectory for overflow. `scripts/skill-metadata-check.py` enforces the budget in CI (flagless) and pre-commit (`skill-size-budget` hook) - a HARD violation exits 1 unconditionally; a WARN prints but does not block.

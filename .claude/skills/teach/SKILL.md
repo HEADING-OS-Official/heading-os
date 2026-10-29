@@ -30,7 +30,6 @@ x-heading-routing:
     - 'NEVER auto-trigger. Explicit `/teach <topic>` only.'
   exclusions:
     - All natural language
-  compound: 'No'
   router: manual
 ---
 

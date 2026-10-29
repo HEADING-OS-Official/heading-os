@@ -32,7 +32,6 @@ x-heading-routing:
   exclusions:
     - "\"what do we know about\" -> `/recall`"
     - Learned knowledge -> `/odin`; situations -> `/thread`; cross-session facts -> auto-memory.
-  compound: 'No'
   router: auto
 ---
 

@@ -19,17 +19,22 @@ proof rests on. It was asserted against resolved paths rather than against this
 sentence, until the 2026-09-21 test-suite split; now this sentence is all there
 is, so resolve the paths yourself before trusting it.
 
-Consumed by: scripts/skill-trigger-test.py, scripts/router-accuracy-nightly.py.
+Consumed by: scripts/skill-trigger-test.py, scripts/router-accuracy-nightly.py,
+scripts/generate-skill-router.py (OVERLAP_CLUSTERS only).
 """
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
-from scripts.utils.markdown import FM_OK, split_frontmatter
+from scripts.utils.markdown import FM_OK, parse_frontmatter_strict, split_frontmatter
 from scripts.utils.workspace import get_workspace_root
 
 ROOT = get_workspace_root()
@@ -46,6 +51,27 @@ JUDGE_INSTRUCTION = (
     "Reply with ONLY a compact JSON object, no prose:\n"
     '{"routes_to_target": true|false, "skill": "<skill you think fires, or none>", '
     '"reason": "<one short clause>"}'
+)
+
+# The skill families whose descriptions overlap, where a live session most often
+# picks the wrong sibling. ONE copy: the competitive mode of
+# `skill-trigger-test.py` scores per cluster from it, and `generate-skill-router.py`
+# renders the always-on collision map from it. A skill may sit in two clusters
+# (corporate-letter is in both `email` and `corporate`); order inside a cluster is
+# the order the collision map prints.
+OVERLAP_CLUSTERS: dict[str, tuple[str, ...]] = {
+    "recall": ("recall", "census", "odin", "zk"),
+    "email": ("email-draft", "email-respond", "follow-up", "ceo-to-ceo",
+              "corporate-letter"),
+    "handover": ("handover", "clear-handover", "second-wind"),
+    "status": ("dashboard", "next", "prime"),
+    "intel": ("osint", "competitor-intel", "market-brief", "meeting-prep"),
+    "corporate": ("corporate-letter", "proposal", "partnership-doc",
+                  "official-doc", "xpager"),
+}
+
+COMPETITIVE_INSTRUCTION = (
+    "You route a user message to at most one skill. Answer with the JSON object only."
 )
 
 
@@ -133,7 +159,13 @@ def load_skill_description(skill_dir: Path) -> str:
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
         return ""
-    text = skill_md.read_text(encoding="utf-8")
+    return description_from_text(skill_md.read_text(encoding="utf-8"))
+
+
+def description_from_text(text: str) -> str:
+    """The raw `description` field of SKILL.md TEXT already read; see
+    `load_skill_description`. Split out so the competitive snapshot parses the
+    very bytes it captured instead of reading the file a second time."""
     fm, _body, kind = split_frontmatter(text)
     if fm is None or kind != FM_OK:
         return ""
@@ -152,6 +184,91 @@ def load_skill_description(skill_dir: Path) -> str:
                 break
             desc_lines.append(line.strip())
     return " ".join(d for d in desc_lines if d).strip()
+
+
+class InvalidSkillMetadata(ValueError):
+    """A SKILL.md exists and its frontmatter cannot be read as a mapping, or its
+    `disable-model-invocation` is not a boolean."""
+
+
+class ProvenanceError(RuntimeError):
+    """The committed state of a payload source could not be established."""
+
+
+def read_no_follow(path: Path) -> bytes:
+    """The bytes of `path`, read without following a symlink anywhere below ROOT.
+
+    Walks from ROOT one component at a time with `O_NOFOLLOW` relative to the
+    parent's descriptor, so the file read is the file checked: a symlink swapped
+    in or out after a separate `is_symlink()` test cannot change what is read.
+    Raises ProvenanceError for a path outside ROOT, a symlink at any component,
+    or something that is not a regular file. Other OSErrors propagate.
+    """
+    if not path.is_relative_to(ROOT):
+        raise ProvenanceError(f"{path} is outside this checkout ({ROOT})")
+    parts = path.relative_to(ROOT).parts
+    if ".." in parts:
+        raise ProvenanceError(f"{path} has a '..' component")
+    fd = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_NONBLOCK if last else os.O_DIRECTORY)
+            try:
+                nfd = os.open(part, flags, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise ProvenanceError(f"{path} is or lies under a symlink") from exc
+                raise
+            os.close(fd)
+            fd = nfd
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ProvenanceError(f"{path} is not a regular file")
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            return fh.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def git_run(*args: str) -> subprocess.CompletedProcess:
+    """`git <args>` run on THIS checkout; a git that cannot start is a
+    ProvenanceError.
+
+    The environment is copied with every `GIT_*` variable removed, so an
+    inherited `GIT_DIR` or `GIT_WORK_TREE` cannot point the check at another
+    repository; `cwd=ROOT` then decides which one git opens.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        return subprocess.run(["git", *args], cwd=str(ROOT), env=env,
+                              capture_output=True, check=False)
+    except OSError as exc:
+        raise ProvenanceError(f"git {args[0]} could not start: {exc}") from exc
+
+
+def git_output(*args: str) -> bytes:
+    """Stdout of `git <args>` via `git_run`, or ProvenanceError when git exits
+    non-zero: an answer that could not be established is not a clean one."""
+    proc = git_run(*args)
+    if proc.returncode != 0:
+        raise ProvenanceError(
+            f"git {' '.join(args[:2])} failed (exit {proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace').strip()[:200]}")
+    return proc.stdout
+
+
+def git_ignored(path: Path) -> bool:
+    """Whether git ignores `path` in this checkout (`git check-ignore -q`, via
+    `git_run`). Exit 0 is ignored, 1 is not; anything else is a
+    ProvenanceError, never a "not ignored"."""
+    proc = git_run("check-ignore", "-q", "--", str(path))
+    if proc.returncode not in (0, 1):
+        raise ProvenanceError(
+            f"git check-ignore failed (exit {proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', 'replace').strip()[:200]}")
+    return proc.returncode == 0
 
 
 def payload_sources() -> list[Path]:
@@ -226,6 +343,157 @@ def outbound_texts() -> Iterator[str]:
         yield system_text(name, load_skill_description(skill_dir), rules)
         for case in cases:
             yield user_text(case["query"], name)
+
+
+@dataclass(frozen=True)
+class CompetitiveSnapshot:
+    """Everything a competitive run sends, read ONCE.
+
+    `captured` maps every engine file whose bytes reached the payload to those
+    exact bytes: the router under test, the SKILL.md of every listed skill, and
+    the triggers.json of every selected skill that contributed cases. The
+    prompt, the vocabulary and the cases are all derived from these bytes, and
+    the provenance check compares these bytes, not the disk after the fact.
+    """
+    router_text: str
+    listing: tuple[tuple[str, str], ...]
+    cases_by_skill: dict[str, list[dict]]
+    captured: dict[Path, bytes] = field(repr=False)
+
+    @property
+    def vocabulary(self) -> set[str]:
+        return {name for name, _desc in self.listing} | {"none"}
+
+    @property
+    def system(self) -> str:
+        return competitive_system_text(self.router_text, self.listing)
+
+
+def competitive_snapshot(router_file: Path, skills: list[str]) -> CompetitiveSnapshot:
+    """Read the router, every SKILL.md and the selected skills' cases once.
+
+    Every source is read through `read_no_follow`, so a symlink anywhere below
+    ROOT raises ProvenanceError at the read itself.
+
+    Raises InvalidSkillMetadata, failing CLOSED, for a SKILL.md whose
+    frontmatter does not parse or whose `disable-model-invocation` is not a
+    boolean: either one would otherwise decide by accident whether a skill's
+    description is sent. Every skill writes the flag as a YAML boolean
+    (MEASURED 2026-10-29: 17 true, 1 false).
+    """
+    captured: dict[Path, bytes] = {}
+    raw = read_no_follow(router_file)
+    captured[router_file] = raw
+    listing: list[tuple[str, str]] = []
+    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_dir.is_dir() or not skill_md.is_file():
+            continue
+        body = read_no_follow(skill_md)
+        text = body.decode("utf-8")
+        data, kind, detail = parse_frontmatter_strict(text)
+        if kind != FM_OK or not isinstance(data, dict):
+            raise InvalidSkillMetadata(f"{skill_md}: frontmatter {kind}"
+                                       + (f": {detail}" if detail else ""))
+        flag = data.get("disable-model-invocation", False)
+        if not isinstance(flag, bool):
+            raise InvalidSkillMetadata(
+                f"{skill_md}: disable-model-invocation is {flag!r}, not a boolean")
+        if flag:
+            continue
+        captured[skill_md] = body
+        listing.append((skill_dir.name, description_from_text(text)))
+    cases_by_skill: dict[str, list[dict]] = {}
+    for name in skills:
+        path = SKILLS_DIR / name / "triggers.json"
+        if not path.is_file():
+            continue
+        body = read_no_follow(path)
+        cases = json.loads(body)
+        if not isinstance(cases, list):
+            raise ValueError(f"{path} must be a JSON array of cases")
+        if cases:
+            captured[path] = body
+            cases_by_skill[name] = cases
+    return CompetitiveSnapshot(raw.decode("utf-8"), tuple(listing),
+                               cases_by_skill, captured)
+
+
+def competitive_system_text(router_text: str,
+                            listing: tuple[tuple[str, str], ...]) -> str:
+    """The system prompt of a competitive run, byte for byte.
+
+    Reproduces what a live session sees: every model-invocable skill's
+    description, one line each in name order, then the router under test. No
+    detail file, because a live session does not load one before choosing.
+    """
+    lines = "\n".join(f"- {name}: {desc}" for name, desc in listing)
+    return (
+        f"{COMPETITIVE_INSTRUCTION}\n\n{lines}\n\n"
+        f"=== WORKSPACE SKILL-ROUTING RULES ===\n{router_text}"
+    )
+
+
+def competitive_user_text(query: str) -> str:
+    """The user message of a competitive run for one case, byte for byte."""
+    return f"User message: {query!r}"
+
+
+def provenance_mismatches(captured: dict[Path, bytes]) -> list[str]:
+    """Captured sources whose bytes are not the bytes committed at HEAD.
+
+    Returns the repository-relative paths that differ from their HEAD blob or
+    are not in HEAD at all (untracked or ignored). RAISES ProvenanceError, which
+    no flag overrides, when the answer cannot be established: a git command
+    that fails, a source outside this checkout, or a symlink (in the tree on
+    disk or as a mode-120000 blob), because a symlink's committed blob says
+    nothing about the bytes behind it.
+
+    Bound to the bytes read, not to the disk: `git status` after the read
+    certified a router that was restored between read and check while the
+    dirty snapshot went out (MEASURED 2026-10-29), and it answered "clean"
+    whenever git itself failed.
+    """
+    rel: dict[Path, str] = {}
+    for path in captured:
+        # A second line behind `read_no_follow`, which already refused a
+        # symlink at the read; this catches one in the tree as it is now.
+        if path.is_symlink() or Path(os.path.realpath(path)) != path.absolute():
+            raise ProvenanceError(f"{path} is or lies under a symlink")
+        if not path.is_relative_to(ROOT):
+            raise ProvenanceError(f"{path} is outside this checkout ({ROOT})")
+        rel[path] = path.relative_to(ROOT).as_posix()
+    # Only git's own newline: a checkout path may end in a space.
+    top = git_output("rev-parse", "--show-toplevel").decode(
+        "utf-8", "surrogateescape").removesuffix("\n")
+    if Path(top).resolve() != ROOT.resolve():
+        raise ProvenanceError(f"git opened {top}, not this checkout ({ROOT})")
+    # Every ancestor directory too: a symlink committed as a PARENT hides the
+    # descendant from ls-tree, which would read as an overridable "not in HEAD".
+    ancestors = {"/".join(n.split("/")[:i]) for n in rel.values()
+                 for i in range(1, n.count("/") + 1)}
+    listed = git_output("ls-tree", "-z", "HEAD", "--", *sorted(ancestors), *rel.values())
+    blobs: dict[str, tuple[str, str]] = {}
+    for record in listed.decode("utf-8", "surrogateescape").split("\0"):
+        if not record:
+            continue
+        meta, name = record.split("\t", 1)
+        mode, _type, sha = meta.split(" ")
+        blobs[name] = (mode, sha)
+    for name in sorted(ancestors):
+        if blobs.get(name, ("",))[0] == "120000":
+            raise ProvenanceError(f"{name} is committed as a symlink")
+    differ: list[str] = []
+    for path, name in rel.items():
+        if name not in blobs:
+            differ.append(name)
+            continue
+        mode, sha = blobs[name]
+        if mode == "120000":
+            raise ProvenanceError(f"{name} is committed as a symlink")
+        if git_output("cat-file", "blob", sha) != captured[path]:
+            differ.append(name)
+    return sorted(differ)
 
 
 def dirty_sources() -> list[str]:

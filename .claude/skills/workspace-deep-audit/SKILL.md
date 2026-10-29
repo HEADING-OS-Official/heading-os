@@ -52,7 +52,6 @@ x-heading-routing:
     - All general "audit" requests without explicit invocation -> /scrutinize
     - single-skill check -> scripts/artifact-evaluator.py
     - specific fix scrutiny -> /scrutinize
-  compound: 'No'
   router: manual
 ---
 

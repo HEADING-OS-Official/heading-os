@@ -46,7 +46,6 @@ x-heading-routing:
     - scan YouTube for
   exclusions:
     - Non-YouTube research -> /osint
-  compound: 'No'
   router: auto
 ---
 

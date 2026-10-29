@@ -37,7 +37,6 @@ x-heading-routing:
   exclusions:
     - Artifact check only -> scripts/artifact-evaluator.py
     - reasoning on a decision -> /deep-think
-  compound: 'No'
   router: manual
 ---
 # Scrutinize

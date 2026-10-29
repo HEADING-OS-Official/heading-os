@@ -3,7 +3,7 @@
 How a drafting skill loads 3-5 real pieces of the operator's writing as few-shot examples at run time.
 
 Last Updated: 2026-09-27
-Consumed by: `/linkedin-post`, `/linkedin-series`, `/email-draft`, `/email-respond`, `/follow-up`, `/ceo-to-ceo`, `/tribe-message`, `/tribe-monday`, `/investor-update`
+Consumed by: `/linkedin` (modes `post` and `series`), `/email-draft`, `/email-respond`, `/follow-up`, `/ceo-to-ceo`, `/tribe-message`, `/tribe-monday`, `/pitch` (mode `update`)
 
 ## Why
 

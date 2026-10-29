@@ -8,6 +8,7 @@ description: >
   "document analysis with citations", "parse with bounding boxes", "extract from this PDF".
   NOT for: plain text extraction without spatial data (use datastore-extract.py),
   email analysis (use /email-intel), web scraping (use /playwright or scripts/firecrawl.py).
+disable-model-invocation: true
 argument-hint: "[file-path or directory] [question]"
 allowed-tools: "Bash(.venv/bin/python:*), Read, Write, Glob"
 model: sonnet
@@ -30,19 +31,12 @@ x-heading-capability:
 x-heading-routing:
   category: Intel
   triggers:
-    - parse this document
-    - extract from this PDF
-    - docparse
-    - document analysis with citations
-    - visual citation report
-    - show me where it says
-    - parse with bounding boxes
+    - NEVER auto-trigger. Explicit `/docparse` only. Parses PDF, DOCX, PPTX and XLSX with bounding boxes and answers with visual citations.
   exclusions:
     - Plain text extraction -> datastore-extract.py
     - email analysis -> /email-intel
     - web scraping -> /playwright
-  compound: 'No'
-  router: auto
+  router: manual
 ---
 # DocParse - Document Parsing with Visual Citations
 

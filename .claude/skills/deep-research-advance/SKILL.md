@@ -38,7 +38,6 @@ x-heading-routing:
     - Private/internal topic -> /recall or /odin
     - quick lookup -> /osint or WebSearch
     - Odin-brain recall -> /odin
-  compound: 'No'
   router: auto
 ---
 

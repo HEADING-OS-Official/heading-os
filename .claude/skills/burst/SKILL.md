@@ -32,7 +32,6 @@ x-heading-routing:
     - 'NEVER auto-trigger. Explicit `/burst [N]` or `/burst [N]: <seed>` only.'
   exclusions:
     - All natural language
-  compound: 'No'
   router: manual
 ---
 

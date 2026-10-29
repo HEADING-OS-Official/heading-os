@@ -29,7 +29,6 @@ x-heading-routing:
     - negotiation playbook
   exclusions:
     - N/A
-  compound: 'No'
   router: auto
 ---
 

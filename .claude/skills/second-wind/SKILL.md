@@ -27,7 +27,6 @@ x-heading-routing:
   exclusions:
     - always clear -> /clear-handover
     - save without freeing context -> /handover
-  compound: 'No'
   router: manual
 ---
 

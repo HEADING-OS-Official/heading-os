@@ -40,7 +40,6 @@ x-heading-routing:
     - edit pptx
   exclusions:
     - Non-slide design -> /design
-  compound: 'No'
   router: auto
 ---
 # PPTX Slide Generator
