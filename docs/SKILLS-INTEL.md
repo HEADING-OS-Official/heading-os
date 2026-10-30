@@ -146,7 +146,7 @@ Reads PDF, DOCX, PPTX and XLSX files with the position of every piece of text on
 
 With no question, it summarises the documents and offers to answer one or build a report. With `--report`, it writes a visual citation report, an HTML file and a PDF, under the registry name `docparse-reports`. Documents over 50 pages prompt it to ask which pages to read, and it never reads more than 100 pages without a `--pages` range.
 
-**How to call it.** `/docparse [file-path or directory] [question]`, with optional `--report` and `--pages 1-10`. Or say it in your own words, for example: "parse this document", "show me where it says the warranty ends", "extract from this PDF".
+**How to call it.** `/docparse [file-path or directory] [question]`, with optional `--report` and `--pages 1-10`. Only the typed command starts it; plain words do not.
 
 **Example.**
 
@@ -224,4 +224,4 @@ Assistant:  Issue 7, threat level HIGH. Confidentiality review removed two
 
 **What it needs.** Your company records, plus `search-domains`, `people` (to know which names must never appear) and, if present, `market-intelligence` and a newsletter guide in your data repository. `PERPLEXITY_API_KEY` and `FIRECRAWL_API_KEY` in `.env`, the `research` extra, and the VPN confirmation before fetching. Optional section images use `REPLICATE_API_TOKEN`.
 
-**When not to use it.** For an internal brief that names your deals and gives action items, use `/ceo-intel`. For a LinkedIn post, use `/linkedin-post`.
+**When not to use it.** For an internal brief that names your deals and gives action items, use `/ceo-intel`. For a LinkedIn post, use `/linkedin post`.

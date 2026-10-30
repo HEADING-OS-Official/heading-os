@@ -4,13 +4,36 @@ All notable changes to HEADING OS Official are recorded in this file, newest fir
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From 3.1.0 on, releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and the tag, the version in `pyproject.toml` and the one the README shows under "Status" are the same number. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`, and those tags stay as they are. The same history, written for users with what to do about each change, is [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
 
-## [Unreleased]
+## [3.1.1] - 2026-10-30
 
-On `main`, not yet in a tagged release; `install.sh` installs the newest tag, `v3.1.0`.
+Mostly a tidy-up of how existing things work, plus three new tools. Every command from 3.1.0 still works. The full explanation, with what to do about each change, is in [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
+
+### Added
+
+- `/teach`: a course over several sessions (goal, sources, short interactive lessons, reference sheets, glossary, learning notes), with every course file in your data repository. Typed only. Adapted from Matt Pocock's `teach` skill ([mattpocock/skills](https://github.com/mattpocock/skills), MIT License); the licence is in `.claude/skills/teach/LICENSE-MIT.txt` and `NOTICE` credits it.
+- `scripts/rules-ab.py`: tests a change to your instructions in real, sealed sessions, old against new, scored by a blind judge; also shows which rules loaded on which tool call.
+- `scripts/context-floor-audit.py sessions`: what fills the context window across your recent sessions, as totals only.
+
+### Changed
+
+- The always-on rules say the same thing in less text: procedures, history and duplicates moved out to the files the rules point at.
+- `/pitch` (investor, update, keynote), `/image` (prompt, generate) and `/linkedin` (post, series, archive) replace eight similar skills. The old names (`/investor-pitch`, `/investor-update`, `/keynote-deck`, `/image-prompt`, `/flux-image`, `/linkedin-post`, `/linkedin-series`, `/linkedin-archive`) remain as typed shortcuts.
+- Eight tools run only on their typed name: `/context7`, `/docparse`, `/google-contacts`, `/memory-hygiene`, `/pencil-export`, `/playwright`, `/radar`, `/setup-browser-cookies`.
+- The skill router is a short policy plus a collision map; the full table moved to `reference/skill-router/<category>.md`. `scripts/skill-trigger-test.py --competitive` tests routing the way a live session chooses.
+- Hindsight recall answers come back compact by default; `verbose` returns the full record.
+- The rule-inventory and secret-baseline checks run in `scripts/push-all.py` before a push, not only in CI afterwards.
+- `scripts/review-branch.py` reviews code first and splits a large change into parts instead of cutting it.
+- `scripts/herdr-brief.py` sends a yard brief only when a `/goldfish ready` review covers its exact text.
+- A commit message carrying a Claude co-author line is refused.
 
 ### Fixed
 
 - `install.sh` acts only on the data repository it creates. A `HEADING_OS_DATA` inherited from another installation on the same machine used to send the hook step to that installation's data repository; the installer now points the variable at its own data repository before any step, warns when an inherited value differs, and checks discovery with the variable unset, as a new shell will find it.
+- `/dream` records its consolidation step again: `scripts/retire-memory.py` writes the trace row itself, which the overlay write guard refused from an inline script.
+- `scripts/hindsight-sync.py blocked list` shows a version-cleanup batch the safety limit blocked, and a confirmed command runs it; before, nothing could release it.
+- Deleting a Telegram message is its own action in the approval gate, released by a delete instruction rather than a send instruction.
+- A request to compare with an unnamed competitor routes to `/competitor-intel`, which asks which competitor first.
+- The status line in a yard names the yard once instead of "branch on branch"; the automatic continuation message is a few lines long.
 
 ## [3.1.0] - 2026-10-27
 

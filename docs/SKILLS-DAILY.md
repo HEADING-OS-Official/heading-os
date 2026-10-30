@@ -1,6 +1,6 @@
 # Skills: Daily operations: sessions, planning and records
 
-These skills run the working day: starting a session, choosing the next step, seeing what is overdue, keeping the records of ongoing matters and notes, saving a session so the next one can pick it up, planning and building a change, and driving a browser. `SKILLS.md` has the full index of skills and explains how a skill is called, by its slash command or in your own words.
+These skills run the working day: starting a session, choosing the next step, seeing what is overdue, keeping the records of ongoing matters and notes, teaching you a new topic over several sessions, saving a session so the next one can pick it up, planning and building a change, and driving a browser. `SKILLS.md` has the full index of skills and explains how a skill is called, by its slash command or in your own words.
 
 ## /prime
 
@@ -69,7 +69,7 @@ Shows which important manual actions are overdue and which background health che
 
 You can silence one known item with `ack`, until its time limit passes or it gets worse. You can switch crunch mode on, which hides every nudge except the critical ones: a backup debt that risks data loss, and repeated self-repair failures.
 
-**How to call it.** `/radar`, `/radar ack <key>`, or `/radar crunch on|off`. Or say it in your own words, for example: "what's overdue", "what am I forgetting to run", "crunch mode on". The script behind it takes `ack <key> [--ttl 24h|7d]`; an unknown key is refused. The script runs in HELM only; in a yard it stops with a message.
+**How to call it.** `/radar`, `/radar ack <key>`, or `/radar crunch on|off`. Only the typed command starts it; plain words do not. The script behind it takes `ack <key> [--ttl 24h|7d]`; an unknown key is refused. The script runs in HELM only; in a yard it stops with a message.
 
 **Example.**
 
@@ -166,6 +166,30 @@ Assistant:  Created 20261104093012-northwind-two-stage-tender.md (signal, seed) 
 **What it needs.** Nothing beyond the core install. `enrich` uses web search for some note types. If Hindsight is connected, its file sync mirrors the notes (`HINDSIGHT.md`).
 
 **When not to use it.** To ask what you already know about something, use `/recall`. For learned principles and advice, use `/odin`. For an ongoing situation, use `/thread`. For a full lint of the brain, use `/odin compile`.
+
+## /teach
+
+Teaches you a new topic or skill over several sessions, as a course that remembers where you are. Each course has one topic and a short written mission: why you are learning it. If the mission is missing or vague, the first thing the skill does is ask you why, then write it down. It finds trusted sources by searching the web and cites them, and lists any point no trustworthy source answers instead of filling it in. Teaching happens in short interactive HTML lessons with quizzes or small tasks and immediate feedback, plus reference sheets for quick lookup, a glossary, and learning records of what you have shown you know. The learning records decide what the next lesson covers.
+
+Every course file lives in your data repository under the registry name `teach-courses`, one folder per course, and never in the engine or the current folder. `scripts/teach.py` is the only way the skill reaches the disk: it creates and finds course folders, and it refuses, with a message, when there is no data repository or when a path would land inside the engine. A lesson is not opened for you; you get its `\\wsl.localhost\...` path to open in your browser. The skill never signs you up to a community, posts, or contacts anyone for you; communities are only listed.
+
+The skill is adapted from Matt Pocock's `teach` skill (`mattpocock/skills`, MIT License). The way of teaching is his; where the course lives, how paths are given and the workspace rules each lesson follows were changed for HEADING OS.
+
+**How to call it.** `/teach <topic or course>`: a topic starts a new course, the name of an existing course continues it. Only the typed command starts it; plain words do not.
+
+**Example.**
+
+```text
+You:        /teach arabic for travel
+Assistant:  No course on this yet. I propose the course name arabic-a1. Create it?
+You:        Yes
+Assistant:  Created arabic-a1 under `teach-courses`. Before the first lesson: why do you want
+            to learn this, and what should you be able to do when you are done?
+```
+
+**What it needs.** A data repository; without one, `scripts/teach.py` refuses and the skill stops. Web search, for finding sources. At the start it asks Hindsight (`HINDSIGHT.md`) what your workspace already holds on the topic.
+
+**When not to use it.** To make Odin learn something, use `/odin learn` or `/odin teach`. To capture a note, use `/zk`. For a one-off researched answer, use `/deep-research-advance` or `/osint`.
 
 ## /census
 
@@ -322,7 +346,7 @@ Assistant:  Trajectory: run_id=2026-11-04_101500_weekly-review-csv-export.
 
 Fetches current, version-specific documentation for a software library or framework from the Context7 service, so code is written against today's API rather than from memory. It runs `scripts/context7.py "<library>" "<query>"` and shows the documentation in the chat. If you give only a library name, the query is "documentation". If the library is not found, it tries other spellings. It saves nothing. The script also takes `--list` (list matching libraries only), `--version <v>` (pin a version), `--json` and `--limit <tokens>`.
 
-**How to call it.** `/context7 <library> [query]`. Or say it in your own words, for example: "look up docs for fastapi", "library documentation for react hooks".
+**How to call it.** `/context7 <library> [query]`. Only the typed command starts it; plain words do not.
 
 **Example.**
 
@@ -341,7 +365,7 @@ Drives a real, hidden browser for a scripted job: a screenshot, text from a page
 
 If you imported cookies with `/setup-browser-cookies`, every command uses them, so logged-in pages work. A form is submitted only with your explicit approval. Before `youtube`, the skill runs the VPN check in `reference/vpn-preflight.md` and waits for your answer, because YouTube blocks transcript requests from datacenter addresses.
 
-**How to call it.** `/playwright [url] [action]`. Or say it in your own words, for example: "screenshot this site", "scrape this page", "headless browser".
+**How to call it.** `/playwright [url] [action]`. Only the typed command starts it; plain words do not.
 
 **Example.**
 
@@ -360,7 +384,7 @@ Copies your logged-in sessions for a website from a real browser on your machine
 
 If no cookies are found, log in to the site in that browser profile first. If some cookies cannot be decrypted (exit code `4`), the store is left untouched on purpose; the printed `cause:` lines say why. On Linux a locked keyring must be unlocked first. The first read may trigger a keychain or keyring prompt.
 
-**How to call it.** `/setup-browser-cookies [domain]`. Without a domain it asks which domains and which browser. Or say it in your own words, for example: "import cookies for example.com".
+**How to call it.** `/setup-browser-cookies [domain]`. Without a domain it asks which domains and which browser. Only the typed command starts it; plain words do not.
 
 **Example.**
 

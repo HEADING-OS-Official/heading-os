@@ -146,12 +146,12 @@ Assistant:  RED (2): Tom Becker, Northwind Logistics - 41 days, cadence 30. Sugg
 
 Searches, adds, edits, lists, shows and deletes contacts in your Google Contacts, through the Google People API. It is a separate connector: it does not read or write the HEADING OS CRM. The assistant searches first, opens the full record to get its resource name (it looks like `people/c1234567890`), and adds a new contact only when none exists. Search matches the start of names, emails and phone numbers and returns up to 30 results by default. Deleting is permanent.
 
-**How to call it.** `/google-contacts <search|add|edit> <name>`. Or say it in your own words, for example: "add to google contacts Dana Whitfield, dana@example.com, Acme Corp", "look up contact number for Tom Becker". Under the hood it runs `scripts/google-contacts.py` with `search`, `add`, `get`, `edit`, `list` or `delete`. `add` takes `--name` (required), `--email`, `--phone`, `--company`, `--title`, `--notes`, `--address` and `--url`; `list --limit N` defaults to 100; every command accepts `--json`.
+**How to call it.** `/google-contacts <search|add|edit> <name>`. Only the typed command starts it; plain words do not. Under the hood it runs `scripts/google-contacts.py` with `search`, `add`, `get`, `edit`, `list` or `delete`. `add` takes `--name` (required), `--email`, `--phone`, `--company`, `--title`, `--notes`, `--address` and `--url`; `list --limit N` defaults to 100; every command accepts `--json`.
 
 **Example.**
 
 ```text
-You:        add to google contacts: Dana Whitfield, COO, Acme Corp, dana@example.com
+You:        /google-contacts add Dana Whitfield, COO, Acme Corp, dana@example.com
 Assistant:  No existing contact matches "Dana Whitfield". Added:
             Dana Whitfield, COO, Acme Corp, dana@example.com (people/c4821...)
 ```

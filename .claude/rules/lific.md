@@ -44,6 +44,6 @@ Nothing else on that line. Read § 7 of `reference/lific-integration-detail.md` 
 
 **9. A module is a theme, never a batch for one yard.** An issue carries one module or none, so a transient allocation costs grouping by subject; the batch is already recorded in the branch name and the merge commit closing each issue. Labels are not used, because supplying labels on an update replaces the complete set.
 
-**10. The `[dossier]` journal.** Four events (prompt saved, handoff saved, brief sent, task closed), posted as the bot through `lific comment add --user` with `LIFIC_BOT_USER`, the one exception to item 7; never a full text. Format and outbox: § 11 of `reference/lific-integration-detail.md`. Operator approval 2026-10-24, HOS-256.
+**10. The `[dossier]` journal.** Four events (prompt saved, handoff saved, brief sent, task closed), posted as the bot through `lific comment add --user` with `LIFIC_BOT_USER`, the one exception to item 7; never a full text. Format and outbox: § 11 of `reference/lific-integration-detail.md`. Operator approval 2026-10-24.
 
 Changes to this rule need the operator's explicit approval.

@@ -1,6 +1,6 @@
 # Skills: Strategy, meetings and decisions
 
-These eight skills help you get ready for a meeting or a hard conversation, think a decision through, ask other models for a second opinion, grow a private advisor that learns from what you read, find what your workspace already knows, and write material for investors. None of them sends a message or an email to anyone. For the full index of skills, and for how a skill is called by command or by plain words, see `SKILLS.md`.
+These seven skills help you get ready for a meeting or a hard conversation, think a decision through, ask other models for a second opinion, grow a private advisor that learns from what you read, find what your workspace already knows, and write material for investors and for a talk. None of them sends a message or an email to anyone. For the full index of skills, and for how a skill is called by command or by plain words, see `SKILLS.md`.
 
 ## /meeting-prep
 
@@ -116,16 +116,22 @@ Assistant:  On 2026-09-14 you agreed a 48-hour window for the northern routes (t
 
 **When not to use it.** For counting or totals across many files, use `/census`. For advice from the Odin brain, use `/odin`. For outside information on a company or person, use `/osint`. To save a new note, use `/zk`.
 
-## /investor-pitch
+## /pitch
+
+Deck and update content built from your own company records, in three modes: `investor` writes a pitch deck for a fundraise with new investors, `update` writes a progress update for people already invested, and `keynote` writes a speaking deck for an event. The result is text for you to review. Nothing is rendered or sent, and no figure is invented.
+
+**How to call it.** `/pitch <investor|update|keynote>`, followed by the investor type, the period, or the event and topic. Without a mode word, the skill picks the mode from your request: raising money or meeting new investors is `investor`; a progress report to people already invested is `update`; a talk at an event, or to a government or VIP audience, is `keynote`. If more than one mode still fits, it asks you one question that names the modes, and waits. The old names `/investor-pitch`, `/investor-update` and `/keynote-deck` still work when you type them, and run the matching mode.
+
+### /pitch investor
 
 Writes the content of an investor pitch deck from your own company records: the story arc (problem, why the moment is now, why you, proof, path to scale, the ask), fifteen slides each with a title, a one-sentence key message, three to five bullets and a speaker note, and a data appendix. You choose the investor type: `strategic`, `venture`, `sovereign_fund`, `angel` or `corporate_vc`. Every fact comes from your records. When a figure is missing it stays as a bracketed placeholder, and any missing record is named at the top of the output with how to fill it. The result is text in the chat for you to adapt; it does not render slides.
 
-**How to call it.** `/investor-pitch [investor_type]`. Or say it in your own words, for example: "help me build the pitch deck for our Series A", "we need a fundraising deck for angel investors".
+**How to call it.** `/pitch investor [investor_type]`. Or say it in your own words, for example: "help me build the pitch deck for our Series A", "we need a fundraising deck for angel investors".
 
 **Example.**
 
 ```text
-You:        /investor-pitch venture
+You:        /pitch investor venture
 Assistant:  Missing record: current-data (run /setup-wizard to fill it). Narrative arc, then 15 slides.
             Slide 7, Traction: key message "[Lead customer] live since [date]"; speaker note: lead
             with the renewal, not the logo.
@@ -133,18 +139,18 @@ Assistant:  Missing record: current-data (run /setup-wizard to fill it). Narrati
 
 **What it needs.** Your company records: business information, strategy, current data, pipeline and voice guide, plus a growth playbook and market notes if you keep them. Fill them with `/setup-wizard`. Nothing else beyond the core install.
 
-**When not to use it.** For an update to investors you already have, use `/investor-update`. To turn the content into a PowerPoint file, use `/pptx-generator`. For a conference or event deck, use `/keynote-deck`.
+**When not to use it.** For an update to investors you already have, use `/pitch update`. To turn the content into a PowerPoint file, use `/pptx-generator`. For a conference or event deck, use `/pitch keynote`.
 
-## /investor-update
+### /pitch update
 
 Drafts a progress update for people who have already invested, for a quarter or after a milestone. The draft has a subject line, an opening personal note, a key metrics table (this period, last period, target), what you said you would do against what you did, two or three wins with evidence, one or two honest challenges, three commitments for the next 90 days, any specific ask, and a short close. It runs one to two pages in your voice. Metrics come only from your records: if your current-data record is missing, the table keeps its rows with empty cells and the draft says so at the top. The skill never sends the update; you send it yourself after review.
 
-**How to call it.** `/investor-update [period]`, for example `/investor-update "Q3 2026"`. Or say it in your own words, for example: "time for the board update", "write a shareholder update covering wins and challenges".
+**How to call it.** `/pitch update [period]`, for example `/pitch update "Q3 2026"`. Or say it in your own words, for example: "time for the board update", "write a shareholder update covering wins and challenges".
 
 **Example.**
 
 ```text
-You:        /investor-update "Q3 2026"
+You:        /pitch update "Q3 2026"
 Assistant:  Subject: Acme Corp Update - Q3 2026 | Second region live. Metrics table filled from
             current-data; one challenge named (hiring lag). Three 90-day commitments. Draft only,
             not sent.
@@ -152,4 +158,25 @@ Assistant:  Subject: Acme Corp Update - Q3 2026 | Second region live. Metrics ta
 
 **What it needs.** Your company records (business information, strategy, current data, pipeline, people, voice guide), filled with `/setup-wizard`. If a cache of your sent mail exists, it uses a few of those emails as voice examples. Nothing else beyond the core install.
 
-**When not to use it.** For a first pitch to new investors, use `/investor-pitch`. For preparing a single meeting with an investor, use `/meeting-prep`.
+**When not to use it.** For a first pitch to new investors, use `/pitch investor`. For preparing a single meeting with an investor, use `/meeting-prep`.
+
+### /pitch keynote
+
+Writes the full script of a talk for an event, a VIP meeting or a government meeting: the slide structure plus what you say. The deck follows six parts: an opening hook, the problem in the audience's own terms, the solution, proof, the future, and a close with one clear ask. For every slide you get a title, a one-sentence key message, the content with a visual suggestion, and speaker notes in your voice. You review it. It does not build the slide file.
+
+**How to call it.** `/pitch keynote <event> <topic>`. Or say it in your own words, for example: "keynote deck for the Acme Corp logistics summit", "conference slides for a 20-minute talk on cold-chain visibility". It also uses the audience, the length in minutes (which sets the slide count) and any goals you give it.
+
+**Example.**
+
+```text
+You:        /pitch keynote Northwind Partner Day, 20 minutes, why route data beats route plans
+Assistant:  Missing records: current-data is empty (proof slides left as placeholders).
+            Slide 1  Title: "Every route plan is wrong by 9am"
+                     Key message: ...  Content: ...  Speaker notes: ...
+            ...
+            Slide 14 Close: ask for a pilot conversation ...
+```
+
+**What it needs.** Your company records: company overview, strategy, current data, pipeline and voice guide, plus market intelligence, geopolitical landscape and the datastore index when present, and an optional per-skill frame under `skill-data`. When a record is missing or empty, the deck names it at the top, tells you to run `/setup-wizard` or write the record, and carries on with a neutral frame. It never invents a deployment, a partner, a customer or a figure; a proof slide with no data stays a marked placeholder.
+
+**When not to use it.** For a fundraising deck, use `/pitch investor`. To turn the script into an editable PowerPoint file, use `/pptx-generator`. For a quick internal deck from Markdown, use `/marp`.

@@ -9,6 +9,8 @@ Licensing: see LICENSE. HEADING OS is source-available under your choice of the 
 
 Third-party material: the review standards of the /goldfish skill (.claude/skills/goldfish/references/standards.md) are adapted, with changes, from Google's Elephant-Goldfish Model (https://github.com/google/elephant-goldfish-model), licensed under the Apache License, Version 2.0. A copy of that licence is in .claude/skills/goldfish/LICENSE-APACHE-2.0.txt. The Elephant-Goldfish Model is not an officially supported Google product.
 
+The /teach skill (.claude/skills/teach/SKILL.md and its references) is adapted, with changes, from Matt Pocock's teach skill in mattpocock/skills (https://github.com/mattpocock/skills), Copyright (c) 2026 Matt Pocock, licensed under the MIT License. A copy of that licence is in .claude/skills/teach/LICENSE-MIT.txt.
+
 This repository carries no personal data and, apart from the authors credited above, no records of any real person or organisation. The `*.example.*` files are empty templates (field names, no values), and the names in the documentation and the test fixtures are invented. If a name or detail in it resembles you or your organisation, write to misha.hanin@headingos.com with the subject line "HEADING OS naming", naming the file and the detail. A confirmed name or detail is changed or removed.
 
 Nothing in this repository is legal, financial, tax, security or other professional advice.

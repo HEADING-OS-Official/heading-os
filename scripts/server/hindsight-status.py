@@ -7,7 +7,9 @@ monitoring user, so the laptop's health check needs no admin access. It changes
 nothing. Standard library only.
 
 Fields: services (systemd state per unit), halt (cliproxy-update HALT text or null),
-proxy_events (cliproxy-update events newer than `--since`, ISO 8601), cert_not_after,
+auth_expired (cliproxy-update AUTH_EXPIRED text, `<provider> <UTC time> <message>`, or
+null: present while a subscription login of the proxy is expired, removed by
+cliproxy-update once its checks pass), proxy_events (cliproxy-update events newer than `--since`, ISO 8601), cert_not_after,
 disk_pct (root filesystem), queue_waiting (pending + processing async operations),
 queue_last_done_min (minutes since the newest operation COMPLETED, null when none ever
 has), queue_oldest_min (oldest pending/processing operation; kept for readers of the
@@ -55,6 +57,7 @@ from pathlib import Path
 
 UNITS = ["postgresql@18-main", "cliproxyapi", "hindsight-api", "hindsight-worker", "hindsight-cp", "nginx"]
 HALT = Path("/var/lib/cliproxy-update/HALT")
+AUTH_EXPIRED = Path("/var/lib/cliproxy-update/AUTH_EXPIRED")
 EVENTS = Path("/var/lib/cliproxy-update/events.jsonl")
 SETTINGS = Path("/etc/default/hindsight-status")  # CERT=<path to the served fullchain.pem>
 
@@ -68,6 +71,19 @@ VERIFY_UNIT = "pgbackrest-verify.service"
 VERIFY_TIMEOUT_S = 3600
 STANZA = "hindsight"
 PULSE_URL_FILE = Path("/etc/hindsight/pulse-url")  # Healthchecks.io ping URL, 0600 root
+# The second copy of this table is in scripts/server/cliproxy-update.py (LOGIN_COMMANDS);
+# the two files are installed separately, so each carries its own.
+LOGIN_COMMANDS = {"claude": "cli-proxy-api -claude-login -no-browser as user cliproxyapi, "
+                            "callback tunnel on port 54545",
+                  "codex": "cli-proxy-api -codex-device-login as user cliproxyapi"}
+
+
+def login_hint(provider: str) -> str:
+    names = provider.split(",")
+    known = [LOGIN_COMMANDS[n] for n in names if n in LOGIN_COMMANDS]
+    if len(known) < len(names):
+        known.append("see the proxy login guide")
+    return " and ".join(known)
 
 
 def problems(snap: dict, now: datetime) -> list[str]:
@@ -80,6 +96,10 @@ def problems(snap: dict, now: datetime) -> list[str]:
             out.append(f"service {unit} is {state}")
     if snap.get("halt"):
         out.append(f"CLIProxyAPI updates halted: {snap['halt']}")
+    if snap.get("auth_expired"):
+        provider = snap["auth_expired"].split()[0]
+        out.append(f"CLIProxyAPI on the memory server: the {provider} login expired; "
+                   f"log in again ({login_hint(provider)})")
     na = snap.get("cert_not_after")
     if na and datetime.fromisoformat(na) - now < timedelta(days=CERT_MIN_DAYS):
         out.append(f"certificate on the server expires {na[:10]} (renewal did not arrive)")
@@ -293,6 +313,11 @@ def self_test() -> int:
                       | {"queue_oldest_min": 45.0}, now)) == 1),
         ("unreadable queue reported once, through errors",
          n(queue_waiting=None, queue_oldest_min=None, queue_last_done_min=None, errors=["queue: x"]) == 1),
+        ("expired proxy login raised with the login command",
+         problems({**good, "auth_expired": "claude 2026-10-30T02:00:00+00:00 Claude ZEBRA test: x"}, now)
+         == ["CLIProxyAPI on the memory server: the claude login expired; log in again "
+             "(cli-proxy-api -claude-login -no-browser as user cliproxyapi, callback tunnel on port 54545)"]),
+        ("no expired proxy login raises nothing", n(auth_expired=None) == 0),
         ("failed weekly verify raised", n(verify_result="exit-code") == 1),
         ("verify unit never run yet raises nothing", n(verify_result=None) == 0),
         ("clean summary verifies", verify_verdict(0, VERIFY_OK)[0] is True),
@@ -332,6 +357,11 @@ def main(argv: list[str]) -> int:
         out["services"][u] = r.stdout.strip() or "unknown"
 
     out["halt"] = HALT.read_text(encoding="utf-8").strip() if HALT.exists() else None
+    try:
+        out["auth_expired"] = AUTH_EXPIRED.read_text(encoding="utf-8").strip() if AUTH_EXPIRED.exists() else None
+    except OSError as exc:
+        out["auth_expired"] = None
+        out["errors"].append(f"auth_expired: {exc}")
     out["proxy_events"] = []
     if EVENTS.exists():
         for line in EVENTS.read_text(encoding="utf-8").splitlines():
@@ -341,7 +371,9 @@ def main(argv: list[str]) -> int:
                 out["errors"].append("unparseable line in events.jsonl")
                 continue
             if ev.get("ts", "") > since and ev.get("event") in ("updated", "update_failed", "rolled_back",
-                                                                  "halt", "blacklisted", "download_refused", "error"):
+                                                                  "halt", "blacklisted", "download_refused", "error",
+                                                                  "auth_expired", "update_deferred",
+                                                                  "preflight_failed"):
                 out["proxy_events"].append(ev)
 
     try:

@@ -46,11 +46,33 @@ computes per asset. So one pass does this, in order, and stops at the first fail
    unanswered. Events keep their kinds (`update_failed`, `rolled_back`) and carry
    `deferred: true` / `verified: false`, so every reader of `events.jsonl` still sees
    them. `check` reports a deferral the same way and exits 75 (EX_TEMPFAIL).
+7b. EXPIRED LOGIN. A model check that answers anything but HTTP 200 with
+   `auth_unavailable` in its message says the proxy holds no usable subscription
+   login for that provider, which no release can fix and a human must. MEASURED
+   2026-10-30 on the memory server: the proxy journal showed `refresh failed with
+   status 400`, `invalid_grant`, `Refresh token expired` every 30 minutes from
+   2026-10-29 15:30 server time, 56 times, and every Claude call answered HTTP 503
+   `auth_unavailable: no auth available (providers=claude, ...`; the nightly pass then
+   blacklisted v8.0.47, which was not at fault, and wrote `HALT` after the rollback
+   re-check got the same 503. So `run` first checks the RUNNING binary (`checks` with
+   `full=False`) before it downloads anything: an expired login writes `AUTH_EXPIRED`,
+   logs `auth_expired` and stops with the login command to run, with no download,
+   swap, blacklist or `HALT` and no `update_start`; a deferred pre-flight logs
+   `update_deferred` and stops the same way; any other pre-flight failure logs
+   `preflight_failed` and the update goes ahead, because a broken running binary must
+   stay replaceable. After the swap an expired login is handled as a deferral (step
+   7a) with `auth_expired: true`, and a rollback re-check that finds it writes
+   `AUTH_EXPIRED`, not `HALT`. `AUTH_EXPIRED` is NOT a halt: `run` keeps running each
+   night, and the file is removed only where the checks passed (the end of `check`, a
+   passing pre-flight, a successful update, a passing rollback re-check). `check`
+   reports an expired login with the login command and exits 77 (EX_NOPERM).
 8. Keep the three newest releases plus the known-good one on disk.
 
 Nothing here sends a notification. Every event is appended to `events.jsonl` in the
-state directory, and the operator's laptop reads that and `HALT` over ssh and
-notifies him through his own sink; this server holds no credential for any channel.
+state directory, and the operator's laptop reads that, `HALT` and `AUTH_EXPIRED` (one
+line: provider, UTC time, the check's message; present while a subscription login is
+expired, step 7b) over ssh and notifies him through his own sink; this server holds
+no credential for any channel.
 
 Outbound requests carry the workspace User-Agent from `/usr/local/etc/user-agent.txt`.
 Settings come from `/etc/default/cliproxy-update` (KEY=VALUE): `KEY_FILE` (the proxy
@@ -87,6 +109,7 @@ STATE_DIR = Path("/var/lib/cliproxy-update")
 STATE = STATE_DIR / "state.json"
 EVENTS = STATE_DIR / "events.jsonl"
 HALT = STATE_DIR / "HALT"
+AUTH_EXPIRED = STATE_DIR / "AUTH_EXPIRED"
 UA_FILE = Path("/usr/local/etc/user-agent.txt")
 SETTINGS_FILE = Path("/etc/default/cliproxy-update")
 KEEP_RELEASES = 3
@@ -102,6 +125,32 @@ class UpdateError(RuntimeError):
 class CheckDeferred(UpdateError):
     """A model check got no usable answer for a reason that says nothing about the
     binary: rate limit, overload, or timeout (contract step 7a)."""
+
+
+class CheckAuthExpired(UpdateError):
+    """A model check found no usable subscription login behind the proxy: a human must
+    log in again, and no release is at fault (contract step 7b)."""
+
+    def __init__(self, check: str, provider: str, message: str):
+        super().__init__(f"{check}: the {provider} login of the proxy expired: {message[:200]}")
+        self.provider = provider
+
+
+# MEASURED 2026-10-30 on the server: 503 with the message "auth_unavailable: no auth
+# available (providers=claude, model=...". No space after a comma inside the list.
+AUTH_PROVIDERS = re.compile(r"providers=([a-z0-9_-]+(?:,[a-z0-9_-]+)*)")
+# The second copy of this table is in scripts/server/hindsight-status.py; the two files
+# are installed separately, so each carries its own.
+LOGIN_COMMANDS = {"claude": "cli-proxy-api -claude-login -no-browser as user cliproxyapi",
+                  "codex": "cli-proxy-api -codex-device-login as user cliproxyapi"}
+
+
+def login_hint(provider: str) -> str:
+    names = provider.split(",")
+    known = [LOGIN_COMMANDS[n] for n in names if n in LOGIN_COMMANDS]
+    if len(known) < len(names):
+        known.append("see the proxy login guide")
+    return " and ".join(known)
 
 
 # MEASURED 2026-10-11 on the server: the Claude route answered 429 with error type
@@ -150,6 +199,17 @@ def event(kind: str, **fields) -> None:
     with EVENTS.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(json.dumps(rec, ensure_ascii=False))
+
+
+def mark_auth_expired(exc: CheckAuthExpired) -> None:
+    tmp = AUTH_EXPIRED.with_name(AUTH_EXPIRED.name + ".tmp")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    tmp.write_text(f"{exc.provider} {stamp} {exc}\n", encoding="utf-8")
+    os.replace(tmp, AUTH_EXPIRED)
+
+
+def clear_auth_expired() -> None:
+    AUTH_EXPIRED.unlink(missing_ok=True)
 
 
 def version_key(tag: str) -> tuple[int, ...]:
@@ -308,7 +368,8 @@ def restore_config(d: Path) -> None:
 # ============================================================
 
 def llm(name: str, path: str, port: str, headers: dict, body: dict) -> tuple[int, dict | str]:
-    """One model call for a check; raises CheckDeferred when the answer is transient."""
+    """One model call for a check; raises CheckAuthExpired when the proxy has no login
+    for the provider, CheckDeferred when the answer is transient."""
     try:
         code, resp = local("POST", path, port, headers=headers, body=body, timeout=LLM_TIMEOUT_S)
     except TimeoutError as exc:
@@ -319,6 +380,11 @@ def llm(name: str, path: str, port: str, headers: dict, body: dict) -> tuple[int
         raise
     err = resp.get("error") if isinstance(resp, dict) else None
     etype = err.get("type") if isinstance(err, dict) else None
+    if code != 200:
+        msg = err["message"] if isinstance(err, dict) and isinstance(err.get("message"), str) else str(resp)
+        if "auth_unavailable" in msg:
+            m = AUTH_PROVIDERS.search(msg)
+            raise CheckAuthExpired(name, m.group(1) if m else "unknown", msg)
     if code in TRANSIENT_HTTP or etype in TRANSIENT_ERROR_TYPES:
         raise CheckDeferred(f"{name}: upstream answered {code} {etype or ''}: {str(resp)[:300]}")
     return code, resp
@@ -441,6 +507,23 @@ def cmd_run() -> int:
     if not rel:
         print(why)
         return 0
+    # Pre-flight against the running binary (step 7b): an expired login or a transient
+    # answer stops here, before anything is downloaded or swapped.
+    try:
+        checks(cfg, full=False)
+    except CheckAuthExpired as exc:
+        mark_auth_expired(exc)
+        event("auth_expired", provider=exc.provider, reason=str(exc)[:500])
+        print(f"the {exc.provider} login of the proxy expired: log in again "
+              f"({login_hint(exc.provider)}); no update attempted")
+        return 1
+    except CheckDeferred as exc:
+        event("update_deferred", reason=str(exc)[:500])
+        return 1
+    except (UpdateError, OSError, subprocess.CalledProcessError, KeyError, TypeError) as exc:
+        event("preflight_failed", reason=str(exc)[:500])
+    else:
+        clear_auth_expired()
     prev, stamp = state["current"], datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     event("update_start", tag=rel["tag"], previous=prev, why=why)
     with tempfile.TemporaryDirectory(dir=STATE_DIR) as tmp:
@@ -462,14 +545,18 @@ def cmd_run() -> int:
         systemctl("start", cfg["SERVICE"])
         checks(cfg)
     except (UpdateError, OSError, subprocess.CalledProcessError, KeyError, TypeError) as exc:
-        deferred = isinstance(exc, CheckDeferred)
+        deferred = isinstance(exc, (CheckDeferred, CheckAuthExpired))
         # A deferred check still rolls back (step 7a). Keeping the new binary because
         # every check that did answer passed would put into service a version that never
         # passed the ZEBRA or the structured-output test, the two checks that exist
         # because a proxy release can mangle the system prompt or a tool call while
         # /healthz and /v1/models stay green. The previous binary is the known-good
         # state; the only cost of rolling back is one more swap on the next pass.
-        if deferred:
+        # An expired login (step 7b) is no more the release's fault than a rate limit.
+        if isinstance(exc, CheckAuthExpired):
+            mark_auth_expired(exc)
+            event("update_failed", tag=rel["tag"], reason=str(exc)[:500], deferred=True, auth_expired=True)
+        elif deferred:
             event("update_failed", tag=rel["tag"], reason=str(exc)[:500], deferred=True)
         else:
             event("update_failed", tag=rel["tag"], reason=str(exc)[:500])
@@ -481,13 +568,18 @@ def cmd_run() -> int:
             restore_config(backup)
             systemctl("start", cfg["SERVICE"])
             checks(cfg, full=False)
+            clear_auth_expired()
             event("rolled_back", tag=prev)
+        except CheckAuthExpired as exc2:
+            mark_auth_expired(exc2)
+            event("rolled_back", tag=prev, verified=False, auth_expired=True, reason=str(exc2)[:500])
         except CheckDeferred as exc2:
             event("rolled_back", tag=prev, verified=False, reason=str(exc2)[:500])
         except (UpdateError, OSError, subprocess.CalledProcessError, KeyError, TypeError) as exc2:
             HALT.write_text(f"rollback to {prev} failed: {exc2}\n", encoding="utf-8")
             event("halt", reason=f"rollback failed: {exc2}"[:500])
         return 1
+    clear_auth_expired()
     state["current"] = state["known_good"] = rel["tag"]
     save_state(state)
     event("updated", tag=rel["tag"], previous=prev)
@@ -508,10 +600,17 @@ def cmd_candidate() -> int:
 def cmd_check() -> int:
     try:
         checks(settings())
+    except CheckAuthExpired as exc:
+        mark_auth_expired(exc)
+        event("error", reason=str(exc)[:500], auth_expired=True)
+        print(f"the {exc.provider} login of the proxy expired: log in again "
+              f"({login_hint(exc.provider)})", file=sys.stderr)
+        return 77
     except CheckDeferred as exc:
         print(f"checks deferred, not failed: {exc}", file=sys.stderr)
         event("error", reason=str(exc)[:500], deferred=True)
         return 75
+    clear_auth_expired()
     print("all checks passed")
     return 0
 

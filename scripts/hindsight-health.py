@@ -14,8 +14,10 @@ but him.
 
 Problems raised: tunnel down or API not ready; web UI not answering over TLS; newest
 verified local backup older than `HINDSIGHT_HEALTH_BACKUP_MAX_H` (default 26); server
-unreachable; any watched service not active; cliproxy-update HALT; any proxy update,
-rollback or refusal since the previous run; certificate on the server with fewer
+unreachable; any watched service not active; cliproxy-update HALT; an expired
+subscription login of the proxy (cliproxy-update AUTH_EXPIRED, with the login command,
+for as long as the file exists); any proxy update, rollback, refusal, deferral or
+expired-login event since the previous run; certificate on the server with fewer
 than 20 days left (the Porkbun renewal did not arrive); root disk above 75 %;
 Hindsight operations waiting while none has completed for 30 minutes; LLM 401/403
 in the last hour (the first sign of an account problem); any Hindsight async
@@ -177,6 +179,10 @@ def cmd_self_test(_args) -> int:
         ("healthy snapshot raises nothing", server_problems(good, now) == []),
         ("inactive service raised", len(server_problems({**good, "services": {"a": "failed"}}, now)) == 1),
         ("HALT raised", len(server_problems({**good, "halt": "rollback failed"}, now)) == 1),
+        ("expired proxy login raised", server_problems({**good, "auth_expired": "claude 2026-10-30T02:00:00+00:00 x"}, now)
+         == ["CLIProxyAPI on the memory server: the claude login expired; log in again "
+             "(cli-proxy-api -claude-login -no-browser as user cliproxyapi, callback tunnel on port 54545)"]),
+        ("no expired proxy login raises nothing", server_problems({**good, "auth_expired": None}, now) == []),
         ("cert under 20 days raised", len(server_problems({**good, "cert_not_after": "2026-10-15T00:00:00+00:00"}, now)) == 1),
         ("disk over 75 % raised", len(server_problems({**good, "disk_pct": 80.0}, now)) == 1),
         ("stalled queue raised", len(server_problems({**good, "queue_waiting": 5, "queue_oldest_min": 50.0,

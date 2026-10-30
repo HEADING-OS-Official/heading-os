@@ -2,23 +2,70 @@
 
 This page lists what the Official distribution gained since its first release, newest first. Each entry says what changed for you and, where it matters, what you do about it.
 
-The current version is HEADING OS 3.1. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.1.0`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
+The current version is HEADING OS 3.1. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.1.1`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
 
 To move an existing installation to a newer release, follow "Update" in `INSTALL.md`.
 
-## Not yet released
+## 3.1.1 (2026-10-30)
 
-These are on `main` and will be in the next tagged release. Until then `install.sh` installs `v3.1.0`.
+Tagged `v3.1.1`; `install.sh` installs it. Mostly a tidy-up of how existing things work, plus three new tools. Every command from 3.1.0 still works.
 
-### The installer touches only your new installation
+What you do: nothing, for most of it. Three habits are worth a look:
 
-If another HEADING OS installation on the same machine had set `HEADING_OS_DATA` in your shell, `install.sh` used to arm that installation's data repository with the new engine's hooks. It now points the variable at the data repository it creates before any step, warns you when an inherited value differs, and checks the result the way a new shell will find it.
+- `/investor-pitch`, `/linkedin-post`, `/flux-image` and their five siblings still work when you type them. The new short forms are `/pitch investor`, `/linkedin post` and `/image generate`.
+- Eight tools such as `/radar` and `/playwright` no longer start on their own when you describe a task. Type their name.
+- If you installed a second copy of HEADING OS on a machine that already had one, run `.venv/bin/python scripts/install-git-hooks.py` once in the first copy's engine folder.
 
-What you do: nothing. If you installed a second copy on a machine that already had one, run `.venv/bin/python scripts/install-git-hooks.py` in the first installation's engine to re-arm its own hooks.
+### New: three tools
+
+- **`/teach`** runs a course over several sessions: a goal, trusted sources, short interactive lessons, reference sheets, a glossary and notes that decide the next lesson. Every course file goes into your data repository, never into the engine folder. Type `/teach <topic>` to start; it never starts on its own. It is adapted from Matt Pocock's `teach` skill ([mattpocock/skills](https://github.com/mattpocock/skills)). Its MIT License travels with it, in `.claude/skills/teach/LICENSE-MIT.txt`, and `NOTICE` credits him.
+- **`scripts/rules-ab.py`** tests a change to your instructions in real sessions before you adopt it. It runs the old and the new version side by side on the same tasks, and a separate judge scores them without knowing which is which. It can also show which rules loaded on which tool call. Test sessions run in a sealed copy and cannot write into your data or your engine.
+- **`scripts/context-floor-audit.py sessions [--days N]`** reads your recent session records and reports where Claude's working memory went: which rules were loaded, how much memory recall added, which tools returned the most text, and how full sessions got (median, 90th percentile, maximum). It prints totals only, never message text or session names.
+
+### Shorter instructions in every conversation
+
+HEADING OS gives Claude a set of rules at the start of every conversation: how to write, what never to send without your approval, where files go. They are read before your first word, every time, and they take room in Claude's working memory (its "context window").
+
+The always-on rules were rewritten shorter, with the same meaning; the rule files in the release went from 195,510 to 173,399 bytes. Every actor, trigger, prohibition, exception, file name and command is still there. Three kinds of text left the always-on set: step-by-step procedures needed only at one moment (they now live in the `reference/` file the rule points to), history about how a rule came about, and duplicates (a rule written in two or three places now has one owner). More room is left for your documents and answers, and two copies of a rule can no longer drift apart.
+
+### One skill with modes instead of three similar skills
+
+- `/pitch` covers `investor` (a new fundraising deck), `update` (a progress report to existing investors) and `keynote` (a conference or meeting deck). It replaces `/investor-pitch`, `/investor-update` and `/keynote-deck`.
+- `/image` covers `prompt` (write a text-to-image prompt) and `generate` (make the picture). It replaces `/image-prompt` and `/flux-image`.
+- `/linkedin` covers `post`, `series` (several connected posts) and `archive` (file a post you have already published). It replaces `/linkedin-post`, `/linkedin-series` and `/linkedin-archive`.
+
+The eight old names stay as typed shortcuts: `/investor-pitch` runs `/pitch` in its investor mode. Each old procedure moved unchanged into the new skill's `references/` folder. Claude reads a short description of every skill it may choose from in every conversation, so fewer, clearer choices mean less reading and fewer wrong picks between near-twins.
+
+### Eight skills start only when you type them
+
+`/context7`, `/docparse`, `/google-contacts`, `/memory-hygiene`, `/pencil-export`, `/playwright`, `/radar` and `/setup-browser-cookies` now run only on their typed name; what each does is unchanged. These are tools you reach for on purpose. Claude's automatic choice list went from 56 skills in 3.1.0 to 43 in 3.1.1.
+
+### Choosing the right skill
+
+The router rule that helps Claude pick a skill from your plain words is now a short policy plus a "collision map" for skills that are easy to confuse; the full table moved to `reference/skill-router/<category>.md`, which Claude opens only when it hesitates. A new test, `scripts/skill-trigger-test.py --competitive`, checks routing the way a real conversation works: Claude sees every skill at once and picks one or none. It checks the exact bytes it sends for private names, and refuses uncommitted files unless you allow them. A request to "compare us with a competitor" with no competitor named now goes to `/competitor-intel`, which asks which one you mean.
+
+### Memory recall answers are about half the size
+
+The Hindsight bridge (`scripts/hindsight-mcp-bridge.py`) now returns compact answers: the facts, without most of the bookkeeping fields, which measured about 62% of a typical answer. The answer also arrived twice inside one reply; both copies are compact now. Add `verbose` to a recall for the full record.
+
+### Safer releases and pushes
+
+- Two checks, the rule inventory and the secret baseline, used to run only on GitHub after a push, so a break showed up as a failure email. Both now run in `scripts/push-all.py` and `scripts/check-push-ratchets.py`, and a push stops on your machine first. The secret check is one script, `scripts/check-secrets-baseline-drift.py`, which CI calls too.
+- `scripts/review-branch.py` used to cut a large change at 120,000 characters; on one measured branch no line of code was reviewed, because documentation came first. It now reviews code first and splits a large change into parts.
+- `scripts/herdr-brief.py` sends a work brief to a yard only when a `/goldfish ready` review covers that exact text; the one escape, `--no-goldfish "<why>"`, is recorded with the brief.
+- A commit message ending in a "Co-Authored-By: Claude" line is refused.
+
+### Fixed
+
+- **The installer touches only your new installation.** If another HEADING OS installation had set `HEADING_OS_DATA` in your shell, `install.sh` used to arm that installation's data repository with the new engine's hooks. It now points the variable at the data repository it creates before any step, warns you when an inherited value differs, and checks the result the way a new shell will find it.
+- **`/dream` records its last step again.** A safety guard refused it, because it wrote through a throwaway script; `scripts/retire-memory.py` now writes that record itself.
+- **Memory sync no longer gets stuck.** When a safety limit blocked a large batch of old-version cleanups, nothing could release it. `scripts/hindsight-sync.py blocked list` shows the blocked set, and a confirmed command runs it.
+- **Deleting a Telegram message is its own action.** The approval gate treated a delete as a send; it now needs a delete instruction.
+- The status line in a yard names the yard once instead of "branch on branch", and the automatic continuation message after a long session is a few lines instead of a page.
 
 ## 3.1.0 (2026-10-27)
 
-Tagged `v3.1.0` on 2026-10-27 and re-cut on 2026-10-28; `install.sh` installs it. The release ships 70 skills.
+Tagged `v3.1.0` on 2026-10-27 and re-cut on 2026-10-28. The release ships 70 skills.
 
 ### New guides for everyday use
 

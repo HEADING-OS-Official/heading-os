@@ -1,17 +1,23 @@
 # Skills: Content, presentations and design
 
-These ten skills turn your thinking into things other people see: LinkedIn posts and series, a speaking deck, image prompts and real images, branded graphics, and slide decks in three formats (Markdown, PowerPoint, and Pencil exports). Nothing here publishes for you. You post, present and send the results yourself. For the full index of skills and how a skill is called, see `SKILLS.md`.
+These six skills turn your thinking into things other people see: LinkedIn posts and series, image prompts and real images, branded graphics, and slide decks in three formats (Markdown, PowerPoint, and Pencil exports). The content of a speaking deck comes from `/pitch keynote`, described in `SKILLS-STRATEGY.md`. Nothing here publishes for you. You post, present and send the results yourself. For the full index of skills and how a skill is called, see `SKILLS.md`.
 
-## /linkedin-post
+## /linkedin
+
+LinkedIn content, in three modes: `post` drafts one post, `series` plans several connected posts, and `archive` files a piece you have already published. Nothing is ever published from here; publishing is your own action.
+
+**How to call it.** `/linkedin <post|series|archive>`, followed by the topic, the theme or the slug. Without a mode word, the skill picks the mode from your request: one post is `post`; several posts, a week, a plan or a post count is `series`; a piece already published or live is `archive`. If more than one mode still fits, it asks you one question that names the modes, and waits. The old names `/linkedin-post`, `/linkedin-series` and `/linkedin-archive` still work when you type them, and run the matching mode.
+
+### /linkedin post
 
 Drafts one LinkedIn post in your own voice. The post opens with a single sentence that works as a hook, moves from an observation to an insight, and ends on a statement rather than a call to action or a request for comments. After the draft you get two alternative opening lines, three to five hashtags, a suggested posting time, and one line on what to cut if you need it shorter. The draft comes back in the conversation. Nothing is saved or published.
 
-**How to call it.** `/linkedin-post <topic>`. Or say it in your own words, for example: "draft a post about our first warehouse pilot", "write a LinkedIn post on why we stopped doing quarterly targets". You can also give an angle, extra context and a length: short (about 150 words), medium (about 300, the default) or long (about 500).
+**How to call it.** `/linkedin post <topic>`. Or say it in your own words, for example: "draft a post about our first warehouse pilot", "write a LinkedIn post on why we stopped doing quarterly targets". You can also give an angle, extra context and a length: short (about 150 words), medium (about 300, the default) or long (about 500).
 
 **Example.**
 
 ```text
-You:        /linkedin-post what three weeks inside a Northwind Logistics depot taught us about night shifts
+You:        /linkedin post what three weeks inside a Northwind Logistics depot taught us about night shifts
 Assistant:  Draft (medium, 287 words):
             "The busiest hour in a depot is the one nobody plans for."
             ...
@@ -22,18 +28,18 @@ Assistant:  Draft (medium, 287 words):
 
 **What it needs.** Your voice guide, three to five of your published posts from the LinkedIn archive (used as style examples), your company overview and strategy records, and the datastore index when the post cites facts or numbers. The posting time uses your time zone from `HEADING_OS_TZ` in `.env`. With no hashtag list in your records, it picks topic hashtags and says so.
 
-**When not to use it.** For several connected posts with one arc, use `/linkedin-series`. To file a post you have already published, use `/linkedin-archive`. For a picture to go with the post, use `/image-prompt` or `/flux-image`.
+**When not to use it.** For several connected posts with one arc, use `/linkedin series`. To file a post you have already published, use `/linkedin archive`. For a picture to go with the post, use `/image prompt` or `/image generate`.
 
-## /linkedin-series
+### /linkedin series
 
 Plans a LinkedIn series of several connected posts around one theme. You get a series overview (the theme, why it matters now, the goal, the audience), then for each post a publish date, a working title, a draft opening line, the core angle, the proof point that anchors it, hashtags, and how it leads into the next post. The arc runs from a hook in post 1, through evidence and story, to a closing post about the future. At the end you get a ready-to-publish draft of post 1.
 
-**How to call it.** `/linkedin-series <theme>`. Or say it in your own words, for example: "plan posts for the week about our move to four-day sprints", "content series on what the Acme Corp trade show taught us". You can also give the number of posts (default 4), a timeframe, and the goal of the series.
+**How to call it.** `/linkedin series <theme>`. Or say it in your own words, for example: "plan posts for the week about our move to four-day sprints", "content series on what the Acme Corp trade show taught us". You can also give the number of posts (default 4), a timeframe, and the goal of the series.
 
 **Example.**
 
 ```text
-You:        /linkedin-series speed versus compliance, 4 posts over the month before the Acme Corp summit
+You:        /linkedin series speed versus compliance, 4 posts over the month before the Acme Corp summit
 Assistant:  Series overview: ...
             Post 1 (Tue 3rd): "Compliance is not the brake. Paperwork is."  Angle: ...
             Post 2 (Tue 10th): ...
@@ -43,13 +49,13 @@ Assistant:  Series overview: ...
 
 **What it needs.** Your voice guide, three to five of your published posts from the LinkedIn archive, your strategy, and your current data for proof points. Because a series is planned over several turns, the skill keeps a small working log, `<theme-slug>/.memlog.md` under the registry name `linkedin-drafts`, so a later session can pick the plan up where you left it. That log is ignored by git. The plan itself, with the Post 1 draft, is saved beside it as `<theme-slug>/series-plan.md`, and the skill gives you its full path. Running the skill again on the same theme updates that plan and keeps the posts already marked as published. Nothing is posted.
 
-**When not to use it.** For a single post, use `/linkedin-post`. To file a post after publishing it, use `/linkedin-archive`.
+**When not to use it.** For a single post, use `/linkedin post`. To file a post after publishing it, use `/linkedin archive`.
 
-## /linkedin-archive
+### /linkedin archive
 
 Files a piece you have just published on LinkedIn. It takes the newest draft from your LinkedIn staging area (registry name `linkedin-drafts`), together with any images, and moves it into the archive (registry name `linkedin-archive`), into a folder for its type: articles, posts or comments. It handles exactly one piece per run, always shows you a dry-run plan first, and moves nothing until you approve.
 
-**How to call it.** `/linkedin-archive [slug]`. Or say it in your own words, in English or Russian, for example: "I published this on LinkedIn", "the LinkedIn post is live". Every trigger phrase contains the word LinkedIn. Without a slug, the script takes the newest draft by modification time.
+**How to call it.** `/linkedin archive [slug]`. Or say it in your own words, in English or Russian, for example: "I published this on LinkedIn", "the LinkedIn post is live". Every phrase that starts this mode contains the word LinkedIn. Without a slug, the script takes the newest draft by modification time.
 
 **Example.**
 
@@ -64,39 +70,24 @@ Assistant:  Done. 2 files moved to posts/depot-night-shifts/.
 
 **What it needs.** Nothing beyond the core install. The skill runs `scripts/linkedin-archive.py`: dry run by default, `--execute` to apply, and optionally `--commit` to commit the move in your data repository. Other flags are `--slug`, `--type article|post|comment` and `--image <path>` (repeatable). If the type cannot be read from the file name (`_linkedin-post_`, `_linkedin-article_`, `_linkedin-comment_`) or a `type:` field in the frontmatter, it asks you. A draft inside a dated task folder brings the files in its `media/` folder with it. The draft must be tracked by git; if it is not, the skill tells you to `git add` it first. There is no undo flag.
 
-**When not to use it.** To write a post, use `/linkedin-post` or `/linkedin-series`. For a question about LinkedIn analytics or your profile, just ask; no skill is needed.
+**When not to use it.** To write a post, use `/linkedin post` or `/linkedin series`. For a question about LinkedIn analytics or your profile, just ask; no skill is needed.
 
-## /keynote-deck
+## /image
 
-Writes the full script of a talk for an event, a VIP meeting or a government meeting: the slide structure plus what you say. The deck follows six parts: an opening hook, the problem in the audience's own terms, the solution, proof, the future, and a close with one clear ask. For every slide you get a title, a one-sentence key message, the content with a visual suggestion, and speaker notes in your voice. You review it. It does not build the slide file.
+Images to go with your content, in two modes: `prompt` writes a text prompt for an AI image tool, and `generate` produces a real image file. The two chain: prompt first, then generate.
 
-**How to call it.** `/keynote-deck <event> <topic>`. Or say it in your own words, for example: "keynote deck for the Acme Corp logistics summit", "conference slides for a 20-minute talk on cold-chain visibility". It also uses the audience, the length in minutes (which sets the slide count) and any goals you give it.
+**How to call it.** `/image <prompt|generate>`, followed by the content to picture or the image prompt. Without a mode word, the skill picks the mode from your request: a text prompt, or a visual idea for written content, is `prompt`; an actual picture or image file is `generate`. If both modes still fit, it asks you one question that names them, and waits. The old names `/image-prompt` and `/flux-image` still work when you type them, and run the matching mode.
 
-**Example.**
-
-```text
-You:        /keynote-deck Northwind Partner Day, 20 minutes, why route data beats route plans
-Assistant:  Missing records: current-data is empty (proof slides left as placeholders).
-            Slide 1  Title: "Every route plan is wrong by 9am"
-                     Key message: ...  Content: ...  Speaker notes: ...
-            ...
-            Slide 14 Close: ask for a pilot conversation ...
-```
-
-**What it needs.** Your company records: company overview, strategy, current data, pipeline and voice guide, plus market intelligence, geopolitical landscape and the datastore index when present, and an optional per-skill frame under `skill-data`. When a record is missing or empty, the deck names it at the top, tells you to run `/setup-wizard` or write the record, and carries on with a neutral frame. It never invents a deployment, a partner, a customer or a figure; a proof slide with no data stays a marked placeholder.
-
-**When not to use it.** For a fundraising deck, use `/investor-pitch`. To turn the script into an editable PowerPoint file, use `/pptx-generator`. For a quick internal deck from Markdown, use `/marp`.
-
-## /image-prompt
+### /image prompt
 
 Reads the text you just produced (a post, an article, an email, slide copy) and writes a prompt for an AI image tool to go with it. You get the core theme in one sentence, a 50 to 150 word photorealistic prompt (subject, composition, lighting, colour, atmosphere), the parameters (16:9, photorealistic, no text in the image), and a Midjourney suffix. It returns text only and creates no image file.
 
-**How to call it.** `/image-prompt [content or description]`, usually straight after another piece of content. Or say it in your own words, for example: "visualize this", "generate an image prompt for that post".
+**How to call it.** `/image prompt [content or description]`, usually straight after another piece of content. Or say it in your own words, for example: "visualize this", "generate an image prompt for that post".
 
 **Example.**
 
 ```text
-You:        /image-prompt
+You:        /image prompt
 Assistant:  Core Theme Identified: night shifts carry the whole depot.
             Image Prompt: a loading bay at 3am, a single forklift under sodium light,
             wet concrete reflecting ...
@@ -106,25 +97,25 @@ Assistant:  Core Theme Identified: night shifts carry the whole depot.
 
 **What it needs.** Nothing beyond the core install. Its reference file also gives the adjustments for DALL-E, Stable Diffusion, Ideogram and Flux when you are not using Midjourney. The prompt never asks for text, logos, stock-photo cliches, military or fear-based imagery, or a crowded scene with several competing subjects.
 
-**When not to use it.** To produce the actual image, use `/flux-image` (you can pass it this prompt). For layouts, infographics, logos or mockups, use `/design`.
+**When not to use it.** To produce the actual image, use `/image generate` (you can pass it this prompt). For layouts, infographics, logos or mockups, use `/design`.
 
-## /flux-image
+### /image generate
 
 Generates real image files from a text prompt through the Replicate API. Two models are available: Nano Banana 2 from Google DeepMind (`banana`, the default) and FLUX.2 max from Black Forest Labs (`flux-max`), which the skill recommends for maximum photorealism or complex scenes. The images are saved under the registry name `generated-images` in your data repository. You see each one inline.
 
-**How to call it.** `/flux-image <prompt>`. Or say it in your own words, for example: "generate an image of a container port at dawn", "make a picture for this post". It also works as the second step after `/image-prompt`: it takes the Image Prompt text, without the parameters or the Midjourney suffix.
+**How to call it.** `/image generate <prompt>`. Or say it in your own words, for example: "generate an image of a container port at dawn", "make a picture for this post". It also works as the second step after `/image prompt`: it takes the Image Prompt text, without the parameters or the Midjourney suffix.
 
 **Example.**
 
 ```text
-You:        /flux-image a quiet warehouse aisle at dawn, long shadows, no people, 16:9
+You:        /image generate a quiet warehouse aisle at dawn, long shadows, no people, 16:9
 Assistant:  Generated with banana: <generated-images>/warehouse-aisle-dawn.png
             [shows the image]
 ```
 
 **What it needs.** `REPLICATE_API_TOKEN` in `.env` (get one from your Replicate account). The skill file gives a rough price of about $0.05 per image for either model. The script, `generate_image.py`, accepts `--prompt` (required), `--output`, `--aspect-ratio` (`1:1`, `16:9` default, `21:9`, `2:3`, `3:2`, `4:5`, `5:4`, `9:16`, `9:21`), `--model banana|flux-max`, `--num-outputs 1-4`, `--format png|jpg|webp` and `--seed`. Only the prompt leaves your machine. Before sending it, the skill checks whether the session is marked sensitive; unless sensitivity has been explicitly cleared, it strips names, codenames, deal terms and other identifying detail from the prompt first.
 
-**When not to use it.** For the text prompt alone, use `/image-prompt`. For branded layouts, infographics, logos, image editing, upscaling or background removal, use `/design`.
+**When not to use it.** For the text prompt alone, use `/image prompt`. For branded layouts, infographics, logos, image editing, upscaling or background removal, use `/design`.
 
 ## /design
 
@@ -142,9 +133,9 @@ Assistant:  Rendered: <design-output>/returns-process.png  [shows it]
             Want changes? I edit the HTML and re-render.
 ```
 
-**What it needs.** For the HTML route, the `browser` extra (`uv sync --extra browser`) and Playwright's Chromium; the renderer asks for `playwright install chromium` when it is missing. For the AI routes, `REPLICATE_API_TOKEN` in `.env`. Your brand kit lives in the data repository (registry name `skill-brand-assets`, for `design` and `pptx-generator`); with none, renders come out unbranded and the skill says so. It confirms the brief before generating, starts with one variant, and runs the same sensitivity check as `/flux-image` before any prompt leaves the machine.
+**What it needs.** For the HTML route, the `browser` extra (`uv sync --extra browser`) and Playwright's Chromium; the renderer asks for `playwright install chromium` when it is missing. For the AI routes, `REPLICATE_API_TOKEN` in `.env`. Your brand kit lives in the data repository (registry name `skill-brand-assets`, for `design` and `pptx-generator`); with none, renders come out unbranded and the skill says so. It confirms the brief before generating, starts with one variant, and runs the same sensitivity check as `/image generate` before any prompt leaves the machine.
 
-**When not to use it.** For one image from a prompt, use `/flux-image`. For slides or a LinkedIn carousel, use `/pptx-generator`. For a Markdown deck, use `/marp`.
+**When not to use it.** For one image from a prompt, use `/image generate`. For slides or a LinkedIn carousel, use `/pptx-generator`. For a Markdown deck, use `/marp`.
 
 ## /marp
 
@@ -190,15 +181,15 @@ Assistant:  Batch 1 (5 slides) checked. Batch 2 (4 slides) checked.
             Saved: <deck-outputs>/northwind/q4-depot-results.pptx
 ```
 
-**What it needs.** The `documents` extra (`uv sync --extra documents`, which brings python-pptx). At least one brand in your data repository: the skill resolves the brands folder with `scripts/data-path.py path skill-brand-assets skill=pptx-generator`, and if only the empty `template` brand exists, it stops and walks you through creating one (colours, fonts, optionally a logo and tone of voice). Carousel PDFs need LibreOffice installed. The skill calls no outside API itself; before any of its text goes to an image tool or a web lookup, it runs the same sensitivity check as `/flux-image`.
+**What it needs.** The `documents` extra (`uv sync --extra documents`, which brings python-pptx). At least one brand in your data repository: the skill resolves the brands folder with `scripts/data-path.py path skill-brand-assets skill=pptx-generator`, and if only the empty `template` brand exists, it stops and walks you through creating one (colours, fonts, optionally a logo and tone of voice). Carousel PDFs need LibreOffice installed. The skill calls no outside API itself; before any of its text goes to an image tool or a web lookup, it runs the same sensitivity check as `/image generate`.
 
-**When not to use it.** For non-slide visuals, use `/design`. For a quick internal deck from Markdown, use `/marp`. To export a deck designed in Pencil, use `/pencil-export`. For the talk content itself, start with `/keynote-deck` or `/investor-pitch`.
+**When not to use it.** For non-slide visuals, use `/design`. For a quick internal deck from Markdown, use `/marp`. To export a deck designed in Pencil, use `/pencil-export`. For the talk content itself, start with `/pitch keynote` or `/pitch investor`.
 
 ## /pencil-export
 
 Exports a deck designed in the Pencil desktop app (a `.pen` file) to per-slide PNG, a PDF, a PowerPoint file and a self-contained HTML file. Pencil renders PNG and PDF natively. The PowerPoint file is editable by default: each slide is the exact Pencil render as a background, with native text boxes laid on top and your brand fonts embedded. A locked-look, image-per-slide PowerPoint is available on request. Everything lands in an `export/` folder next to the deck. The skill is written for Pencil on Windows with the engine in WSL.
 
-**How to call it.** `/pencil-export <path-to.pen> [--formats png,pdf,html,pptx,pptx-flat]`. Or say it in your own words, for example: "export the pencil deck to pdf", "make an editable version of the Acme pitch pencil deck".
+**How to call it.** `/pencil-export <path-to.pen> [--formats png,pdf,html,pptx,pptx-flat]`. Only the typed command starts it; plain words do not.
 
 **Example.**
 

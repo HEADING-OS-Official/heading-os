@@ -1,6 +1,6 @@
 # Skills
 
-A skill is a ready-made procedure HEADING OS follows for one kind of job: preparing a meeting, drafting a reply, researching a company, writing a weekly review. HEADING OS Official ships 70. This page explains how to call them and lists every one, grouped by what it is for. Each group has its own page with the full description of each skill: what it does, how to call it, an example, what it needs, and when to use another skill instead.
+A skill is a ready-made procedure HEADING OS follows for one kind of job: preparing a meeting, drafting a reply, researching a company, writing a weekly review. HEADING OS Official ships 66 skills, plus 8 older names kept as typed shortcuts into three of them (see the content and strategy tables below). This page explains how to call them and lists every one, grouped by what it is for. Each group has its own page with the full description of each skill: what it does, how to call it, an example, what it needs, and when to use another skill instead.
 
 ## How to call a skill
 
@@ -15,7 +15,9 @@ There are two ways.
 
 **Ask in your own words.** "Prepare me for my call with Dana at Northwind" reaches `/meeting-prep` without the command. No syntax to learn. HEADING OS matches your message against the phrases each skill lists, announces the skill it picked ("Using /meeting-prep for this"), and runs it. When two or three skills fit equally well, it shows a short numbered menu with one line about each skill and waits for you to choose, rather than guessing which one you meant. The matching table is `.claude/rules/skill-router.md` in the engine; it is generated from each skill's own file by `scripts/generate-skill-router.py`, so do not edit it by hand.
 
-**Some skills start only from the typed command.** Plain words never reach them, because each one commits, pushes, clears the session, or runs a long and costly job that you should decide to start yourself, on purpose, every single time. That is deliberate. They are marked "typed only" in the tables below. At the time of writing they are `/backup`, `/brain-audit`, `/burst`, `/calibrate`, `/canopus`, `/clear-handover`, `/devil`, `/dream`, `/handover`, `/osint-advanced`, `/prime`, `/scrutinize`, `/second-wind`, `/sentinel`, `/setup-wizard`, `/sync` and `/workspace-deep-audit`.
+**Some skills start only from the typed command.** Plain words never reach them. Many of them commit, push, clear the session, or run a long and costly job that you should decide to start yourself, on purpose, every single time; the others simply run when you type their name. That is deliberate. They are marked "typed only" in the tables below. At the time of writing they are `/backup`, `/brain-audit`, `/burst`, `/calibrate`, `/canopus`, `/clear-handover`, `/context7`, `/devil`, `/docparse`, `/dream`, `/google-contacts`, `/handover`, `/memory-hygiene`, `/osint-advanced`, `/pencil-export`, `/playwright`, `/prime`, `/radar`, `/scrutinize`, `/second-wind`, `/sentinel`, `/setup-browser-cookies`, `/setup-wizard`, `/sync`, `/teach` and `/workspace-deep-audit`.
+
+**Some skills have modes.** `/pitch`, `/image` and `/linkedin` each take a mode word after the command, such as `/pitch investor` or `/linkedin post`. Without one, the skill picks the mode from your request, or asks you when more than one fits. The eight older names these three replaced (`/investor-pitch`, `/investor-update`, `/keynote-deck`, `/image-prompt`, `/flux-image`, `/linkedin-post`, `/linkedin-series` and `/linkedin-archive`) still work when you type them, and run the matching mode; plain words do not reach them.
 
 ## What skills need
 
@@ -40,7 +42,7 @@ Full descriptions: [SKILLS-INTEL.md](SKILLS-INTEL.md)
 | `/osint` | The base investigation skill: a dossier on a company, person, market or technology, with sources and confidence. |
 | `/osint-advanced` | Specialised databases `/osint` does not reach: sanctions lists, registries, breach data, threat intelligence. Typed only. |
 | `/deep-research-advance` | A deep, fact-checked report on a public question. |
-| `/docparse` | Answers questions about a PDF, DOCX, PPTX or XLSX with citations to the exact place on the page. |
+| `/docparse` | Answers questions about a PDF, DOCX, PPTX or XLSX with citations to the exact place on the page. Typed only. |
 | `/notebooklm` | Controls Google NotebookLM from the terminal: notebooks, sources, audio overviews. |
 | `/yt-pulse` | What YouTube creators are saying about a topic right now. |
 | `/intel-briefing-newsletter` | A branded intelligence newsletter for readers outside the company. |
@@ -58,7 +60,7 @@ Full descriptions: [SKILLS-COMMUNICATION.md](SKILLS-COMMUNICATION.md)
 | `/telegram` | Reads and writes Telegram as your own account. Sends only on your order. |
 | `/mattermost` | Reads and writes Mattermost as your own account. Sends only on your order. |
 | `/crm` | Your personal CRM: one card per person, open commitments, an interaction log, and who is due a call. |
-| `/google-contacts` | Searches and edits your Google Contacts. |
+| `/google-contacts` | Searches and edits your Google Contacts. Typed only. |
 
 ## Content, presentations and design
 
@@ -66,16 +68,12 @@ Full descriptions: [SKILLS-CONTENT.md](SKILLS-CONTENT.md)
 
 | Skill | What it does |
 |---|---|
-| `/linkedin-post` | One LinkedIn post in your voice. |
-| `/linkedin-series` | A plan for several connected LinkedIn posts. |
-| `/linkedin-archive` | Files a piece you have just published on LinkedIn. |
-| `/keynote-deck` | The slide structure and script of a talk. |
-| `/image-prompt` | A prompt for an AI image tool, to go with text you just wrote. |
-| `/flux-image` | Real image files from a prompt, through Replicate. |
+| `/linkedin` | LinkedIn in three modes: `post` (one post in your voice), `series` (a plan for several connected posts), `archive` (files a piece you have just published). The old names `/linkedin-post`, `/linkedin-series` and `/linkedin-archive` still work when typed. |
+| `/image` | Images in two modes: `prompt` (a prompt for an AI image tool, to go with text you just wrote), `generate` (real image files from a prompt, through Replicate). The old names `/image-prompt` and `/flux-image` still work when typed. |
 | `/design` | Branded visuals: social graphics, infographics, mockups, logos. |
 | `/marp` | Slides from Markdown, rendered to PDF and HTML. |
 | `/pptx-generator` | PowerPoint decks and LinkedIn carousels in your brand. |
-| `/pencil-export` | Exports a Pencil `.pen` deck to PNG, PDF, PowerPoint and HTML. |
+| `/pencil-export` | Exports a Pencil `.pen` deck to PNG, PDF, PowerPoint and HTML. Typed only. |
 
 ## Strategy, meetings and decisions
 
@@ -89,8 +87,7 @@ Full descriptions: [SKILLS-STRATEGY.md](SKILLS-STRATEGY.md)
 | `/council` | Independent opinions from other AI models, beside Claude's own. |
 | `/odin` | A private advisor with his own knowledge base, built from what you give him to learn. |
 | `/recall` | What your workspace already knows about something, with the file each answer came from. |
-| `/investor-pitch` | The content of an investor pitch deck, from your records. |
-| `/investor-update` | A progress update for your current investors. |
+| `/pitch` | Deck and update content from your records, in three modes: `investor` (an investor pitch deck), `update` (a progress update for your current investors), `keynote` (the slide structure and script of a talk). The old names `/investor-pitch`, `/investor-update` and `/keynote-deck` still work when typed. |
 
 ## Daily operations: sessions, planning and records
 
@@ -101,11 +98,12 @@ Full descriptions: [SKILLS-DAILY.md](SKILLS-DAILY.md)
 | `/prime` | Starts a working session with your context loaded. Typed only. |
 | `/next` | The logical next step and the command to type. |
 | `/dashboard` | The morning one-page dashboard. |
-| `/radar` | Which important manual actions are overdue, and which health checks have degraded. |
+| `/radar` | Which important manual actions are overdue, and which health checks have degraded. Typed only. |
 | `/weekly-review` | The weekly review, compared with last week. |
 | `/event-debrief` | A structured debrief from your notes after an event. |
 | `/thread` | The running record of a matter that spans weeks. |
 | `/zk` | Your knowledge base of small linked notes. |
+| `/teach` | Teaches you a new topic over several sessions, as a course kept in your data repository. Adapted from Matt Pocock's `teach` skill (MIT License). Typed only. |
 | `/census` | Counting questions across many files, such as "how many threads have not moved in 30 days". |
 | `/dossier` | Everything about one Lific issue in one place. |
 | `/pin` | Keeps one item word for word through compaction and `/clear`. |
@@ -114,9 +112,9 @@ Full descriptions: [SKILLS-DAILY.md](SKILLS-DAILY.md)
 | `/second-wind` | Saves a handoff and frees the context the safe way. Typed only. |
 | `/create-plan` | An implementation plan for a non-trivial change, before any change. |
 | `/implement` | Carries out a plan from `/create-plan`, step by step. |
-| `/context7` | Current documentation for a software library. |
-| `/playwright` | A scripted job in a hidden browser: a screenshot, a page's text, a form, a PDF. |
-| `/setup-browser-cookies` | Copies your logged-in browser sessions so `/playwright` can open pages that need a login. |
+| `/context7` | Current documentation for a software library. Typed only. |
+| `/playwright` | A scripted job in a hidden browser: a screenshot, a page's text, a form, a PDF. Typed only. |
+| `/setup-browser-cookies` | Copies your logged-in browser sessions so `/playwright` can open pages that need a login. Typed only. |
 
 ## System, quality and maintenance
 
@@ -136,7 +134,7 @@ Full descriptions: [SKILLS-SYSTEM.md](SKILLS-SYSTEM.md)
 | `/canopus` | The seven-step method for a change worth a plan. Typed only. |
 | `/sentinel` | Starts, stops and checks Sentinel, which watches your mail and Telegram for urgent messages. Typed only. |
 | `/brain-audit` | A short check under an answer built from several sources: how fresh, what is missing, where they disagree. Typed only. |
-| `/memory-hygiene` | Finds provable defects in the memory store and fixes none of them. |
+| `/memory-hygiene` | Finds provable defects in the memory store and fixes none of them. Typed only. |
 | `/dream` | A careful tidy-up of the memory store, with your approval. Typed only. |
 | `/workspace-deep-audit` | A full audit of your installation in an eight-section report. Typed only. |
 

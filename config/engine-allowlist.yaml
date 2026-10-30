@@ -193,6 +193,9 @@ files:
 - path: .claude/skills/goldfish/LICENSE-APACHE-2.0.txt
   class: third-party-license
   reason: "the Apache License 2.0 of Google's Elephant-Goldfish Model, from which references/standards.md is adapted; Apache-2.0 section 4(a) requires a copy with any redistribution of a derivative work."
+- path: .claude/skills/teach/LICENSE-MIT.txt
+  class: third-party-license
+  reason: "the MIT License of Matt Pocock's mattpocock/skills, from which SKILL.md and its references are adapted; MIT requires the copyright and permission notice in all copies or substantial portions."
 - path: .claude/skills/handover/references/handoff-template.md
   class: skill-reference-instruction
   reason: .claude/skills/handover/SKILL.md § Step 2 - Write the handoff with one command, and .claude/skills/clear-handover/SKILL.md § Step 2 - Write the handoff with one command, tell the model to read it before writing; bundled by build-plugins.

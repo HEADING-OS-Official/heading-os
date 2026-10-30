@@ -129,7 +129,7 @@ Assistant:  Varying: "a one-line customer result for a post"
 
 **What it needs.** Nothing beyond the core install.
 
-**When not to use it.** To attack a position instead of rewording it, use `/devil`. For a fresh single post, use `/linkedin-post`. To fix the structure of a long document, use `/editorial-review`.
+**When not to use it.** To attack a position instead of rewording it, use `/devil`. For a fresh single post, use `/linkedin post`. To fix the structure of a long document, use `/editorial-review`.
 
 ## /editorial-review
 
@@ -264,12 +264,12 @@ Assistant:  ## Brain audit
 
 Checks the memory store for defects that can be proved mechanically and fixes none of them. The defects it counts are: `superseded_by` links that point nowhere or in a circle, orphan memory files that neither `MEMORY.md` nor Hindsight knows about, and a `MEMORY.md` over its budget of 200 lines or 25,000 UTF-16 units. It also lists softer signals that do not count as failures: files older than 45 days, near-duplicates, dead `[[wikilinks]]`, and stale items in the Odin brain. It writes a dated report under the registry name `memory-hygiene-reports` and ends with "clean" or the number of defects.
 
-**How to call it.** `/memory-hygiene`. Or say it in your own words, for example: "check memory health", "scan memory for defects", "memory rot". From a terminal, `scripts/memory-hygiene.py` takes `--json`, `--quiet` and `--no-report`.
+**How to call it.** `/memory-hygiene`. Only the typed command starts it; plain words do not. From a terminal, `scripts/memory-hygiene.py` takes `--json`, `--quiet` and `--no-report`.
 
 **Example.**
 
 ```text
-You:        check memory health
+You:        /memory-hygiene
 Assistant:  2 objective defects:
             - dangling superseded_by in northwind-billing-terms.md
             - 1 orphan: acme-contact-preferences.md

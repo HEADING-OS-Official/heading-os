@@ -130,7 +130,7 @@ One rule governs all three: a recalled snippet is a pointer, not a fact. Before 
 
 HEADING OS drafts. You send.
 
-Every skill that writes to another person (`/email-draft`, `/email-respond`, `/follow-up`, `/ceo-to-ceo`, `/telegram`, `/mattermost`, `/linkedin-post` and the rest) produces a draft and stops. Nothing goes to another person until you approve it.
+Every skill that writes to another person (`/email-draft`, `/email-respond`, `/follow-up`, `/ceo-to-ceo`, `/telegram`, `/mattermost`, `/linkedin` and the rest) produces a draft and stops. Nothing goes to another person until you approve it.
 
 How approval works:
 

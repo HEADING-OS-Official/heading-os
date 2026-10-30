@@ -268,7 +268,7 @@ It drafts, you decide. Nothing goes out without your approval, and research arri
 ## Status
 
 <!-- version: set from pyproject.toml by the official build; checked by scripts/check-version-sync.py -->
-`v3.1.0`, HEADING OS 3.1. The engine and data separation and the security model are stable. Versions follow Semantic Versioning: an incompatible change raises the major number.
+`v3.1.1`, HEADING OS 3.1. The engine and data separation and the security model are stable. Versions follow Semantic Versioning: an incompatible change raises the major number.
 
 ## Support, contributing and contact
 
