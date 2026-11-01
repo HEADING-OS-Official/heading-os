@@ -122,9 +122,11 @@ fi
 cd "$ENGINE"
 
 step "4. Python environment"
-uv sync --quiet
+uv sync --quiet --extra email
 ok "dependencies installed into $ENGINE/.venv"
 PY="$ENGINE/.venv/bin/python"
+"$PY" -c 'import exchangelib' 2>/dev/null || die "exchangelib did not install; run: cd \"$ENGINE\" && uv sync --extra email"
+ok "Exchange support installed (exchangelib)"
 
 step "5. Your private data repository"
 if [ -d "$DATA" ] && [ -f "$DATA/.schema-version" ]; then
@@ -158,6 +160,8 @@ HEADING OS is installed.
 Next:
   1. cd "$ENGINE"
   2. Put the keys you have into .env (see docs/INSTALL.md).
+     For Exchange mail and calendar: EXCHANGE_EMAIL, EXCHANGE_PASSWORD,
+     EXCHANGE_SERVER.
   3. Run: claude
   4. Trust this folder when Claude asks.
   5. In Claude, run: /setup-wizard
