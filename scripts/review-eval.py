@@ -33,9 +33,10 @@ added code has no such line and is excluded, as are several other shapes; each
 exclusion is counted under its reason in the harvest summary.
 
 Cases and runs are records and live in the data repository, under the registry
-names `review-eval-cases` and `review-eval-runs`. Every model call goes through
-the proxy, to the named trust list only. Nothing here is scheduled: it runs
-when typed.
+names `review-eval-cases` and `review-eval-runs`. Every model call goes to the
+named trust list only, a Claude model directly through `claude -p` and any other
+through the proxy (`diff_review.call`). Nothing here is scheduled: it runs when
+typed.
 
 Usage:
   .venv/bin/python scripts/review-eval.py harvest
@@ -65,7 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.colors import BOLD, CYAN, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.data_path import data_path, data_write_dir  # noqa: E402
 from scripts.utils.diff_review import (  # noqa: E402
-    BLOCKING, CONFIGS, Config, est_tokens, git, is_trusted, numbered, raw_diff, review,
+    CONFIGS, Config, blocks, call, est_tokens, git, is_trusted, numbered, raw_diff, review,
 )
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
 
@@ -421,11 +422,9 @@ Finding: {title}. Failure: {failure}"""
 
 
 def judge(note: str, f: dict) -> bool | None:
-    from scripts.utils.proxy_transport import call_model
-
     try:
-        ans = call_model(JUDGE_MODEL, JUDGE_PROMPT.format(note=note, title=f["title"], failure=f["failure"]),
-                         temperature=0.0, max_tokens=4096, timeout=300.0)
+        ans = call(JUDGE_MODEL, JUDGE_PROMPT.format(note=note, title=f["title"], failure=f["failure"]),
+                   max_tokens=4096, timeout=300.0)
     except RuntimeError as e:
         print(f"{YELLOW}judge failed: {e}{RESET}", file=sys.stderr)
         return None
@@ -456,7 +455,7 @@ def cmd_run(args) -> int:
     if not cfg:
         print(f"{RED}Unknown config {args.config!r}; see `configs`.{RESET}", file=sys.stderr)
         return 2
-    if not is_trusted(cfg.model) or not is_trusted(JUDGE_MODEL):
+    if not all(is_trusted(m) for m in cfg.models) or not is_trusted(JUDGE_MODEL):
         print(f"{RED}Model outside the named trust list.{RESET}", file=sys.stderr)
         return 2
     data = load_cases()
@@ -484,7 +483,7 @@ def cmd_run(args) -> int:
         for row in pool.map(lambda u: run_unit(cfg, u, args.judge), units):
             fh.write(json.dumps(row) + "\n")
             fh.flush()
-            mark = RED + "error" + RESET if row["error"] else f"{len([f for f in row['findings'] if f['severity'] in BLOCKING])} blocking"
+            mark = RED + "error" + RESET if row["error"] else f"{len([f for f in row['findings'] if blocks(f)])} blocking"
             extra = ""
             if row["kind"] == "defect":
                 extra = " found " + ",".join("Y" if d["located"] else "n" for d in row["defects"])
@@ -503,7 +502,7 @@ def summarise(rows: list[dict]) -> dict:
     clean = [r for r in rows if r["kind"] == "clean" and not r["error"]]
     reviews = [r for r in rows if r["kind"] in ("defect", "clean")]
     judged = [d for d in defects if d["judged"] is not None]
-    false = sum(1 for r in clean for f in r["findings"] if f["severity"] in BLOCKING)
+    false = sum(1 for r in clean for f in r["findings"] if blocks(f))
     return {
         "reviews": len(reviews),
         "errors": sum(1 for r in reviews if r["error"]),
@@ -513,10 +512,10 @@ def summarise(rows: list[dict]) -> dict:
         "judge_ran": any(r.get("defects") and any(d["judged"] is not None for d in r["defects"]) for r in rows),
         "defect_reviews": sum(1 for r in rows if r["kind"] == "defect" and not r["error"]),
         "blocking_on_defect_diffs": sum(1 for r in rows if r["kind"] == "defect" and not r["error"]
-                                        for f in r["findings"] if f["severity"] in BLOCKING),
+                                        for f in r["findings"] if blocks(f)),
         "clean": len(clean),
         "false_reports": false,
-        "clean_flagged": sum(1 for r in clean if any(f["severity"] in BLOCKING for f in r["findings"])),
+        "clean_flagged": sum(1 for r in clean if any(blocks(f) for f in r["findings"])),
         "seconds": sum(r["seconds"] for r in reviews),
         "tokens_in": sum(est_tokens(r["prompt_chars"]) for r in reviews),
         "tokens_out": sum(est_tokens(r["answer_chars"]) for r in reviews),
@@ -571,7 +570,9 @@ def cmd_report(args) -> int:
 
 def cmd_configs(_args) -> int:
     for c in CONFIGS.values():
-        print(f"  {c.name:<14} {c.model:<20} rules={'yes' if c.rules else 'no'}")
+        how = f"hunters {'+'.join(c.hunters)}, verifiers {'+'.join(c.verifiers)}, quorum {c.quorum}" \
+            if c.hunters else f"rules={'yes' if c.rules else 'no'}"
+        print(f"  {c.name:<14} {c.model:<20} {how}")
     return 0
 
 

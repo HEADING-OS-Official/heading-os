@@ -13,7 +13,7 @@ Use `read <name>` for a source that may legitimately be absent, and
 refuses; it never resolves to a plausible directory, and a path written out
 here goes stale the day the directory moves.
 
-Last Updated: 2026-06-06
+Last Updated: 2026-10-31
 
 ---
 
@@ -492,14 +492,13 @@ On-demand only (`/odin collect [--since DATE]`). Where `log` waits for the opera
 
 ### Scope boundary (runs in code, BEFORE any text reaches this LLM)
 
-What bounds `collect` is the ALLOWLIST, the frontmatter guard and the counterpart gate below.
+What bounds `collect` is the ALLOWLIST and the frontmatter guard below.
 
 The detection pass is allowlist-first and completes before any candidate text enters Odin's context. Never ask the model "is this personal?" - by then it is already in context.
 
-1. **Allowlist (the ONLY sources):** `*.md` under `threads-business` and under every account's `account-threads` (the registry group `business-threads`, `.venv/bin/python scripts/data-path.py group business-threads`), `*.md` under `crm-contacts` (excluding everything under `crm-migration-backup` and `crm-aggregated`), `assistant-inbox-state`. Nothing else is read. email-intel and sentinel are NOT sources (see Rules). This is the boundary: a path outside it is not filtered out, it is never opened.
+1. **Allowlist (the ONLY sources):** `*.md` under `threads-business` and under every account's `account-threads` (the registry group `business-threads`, `.venv/bin/python scripts/data-path.py group business-threads`), `*.md` under `crm-contacts` (excluding everything under `crm-migration-backup` and `crm-aggregated`). Nothing else is read. email-intel and sentinel are NOT sources (see Rules). This is the boundary: a path outside it is not filtered out, it is never opened.
 2. **Traversal check on every resolved path:** `from scripts.utils.air_gap import is_denied`; skip any path where `is_denied(rel)` is True. It only refuses a path escaping its root; it is not a personal-content filter.
 3. **Thread frontmatter guard (belt + braces):** skip any thread whose frontmatter `type != business` OR `classification != ceo-only`, regardless of path - catches a mis-filed personal thread the glob would pass.
-4. **Comms content-class gate (load-bearing):** runs in `scripts/utils/assistant_inbox.py` - never hand-built inline. An assistant-inbox message is admitted ONLY when `disposition in {task, crm}` AND it resolves to at least one **external** business counterpart (a named person or company in `crm-contacts` / `people` whose `relationship_type` is not `tribe-*` and `pipeline_company` is not the operator's own company, `company_short` in operator.yaml). Two rules the resolver enforces, both forced by first-live-run failures: (a) the counterpart vocabulary is built ONLY from structured name fields (CRM frontmatter `name`/`entity_ref`/`pipeline_company`, aliases.md companies, people.md headers + lead names) plus a stoplist - never from free-text bodies, so generic words like `channel`/`document`/`from` can never resolve a counterpart; (b) a message resolving only to tribe members (e.g. "check with Alex re Morgan' case") is DROPPED as internal-personal, not admitted. A message with no external resolution is DROPPED, counted, and never shown (the assistant inbox channel is free-text with no path boundary - counterpart resolution is the only real boundary). Surface the dropped COUNT by reason, never the dropped content.
 
 ### Detection (deterministic, per surface, over deltas since `--since`)
 
@@ -513,7 +512,6 @@ The detection pass is allowlist-first and completes before any candidate text en
 
    Keep dates `>= since`. Entities = frontmatter `counterparties[]` + resolved `links.crm` slugs; keywords seed = `tags[]`. A status transition (active -> closed/reopened) is a strong keep.
 2. **CRM interaction logs** - match `^### (?P<date>\d{4}-\d{2}-\d{2})( \d{2}:\d{2})? \| (?P<type>[^|]+) \| (?P<summary>.+)$`, date `>= since`. Entity = contact frontmatter `name`/`entity_ref`; capture body to the next `###` plus the `**Next:**` line as the residue seed. Weight Type in {Decision, Meeting, Note-with-Next}; drop near-identical follow-up rows and plain calendar-accepts.
-3. **Assistant inbox** - run `.venv/bin/python scripts/utils/assistant_inbox.py --since <DATE>` to apply the content-class gate (Scope boundary §4) over the `messages` dict in `state.json` and print admitted messages + dropped counts by reason. Do NOT re-implement the resolver inline - the script is the single source of truth (vocab build, external-counterpart rule, stoplist). For drafting, only the admitted messages it reports enter Odin's context.
 
 **Episode-worthiness:** keep entries naming >=1 counterpart AND recording a concrete dated happening/decision/outcome with a plausible residue. Drop tooling-housekeeping ("Backfill...", "logged from dashboard", "(N/N)"), routine "follow-up email sent" boilerplate, empty/deleted messages, calendar-accept rows. Rank: Decision/status-transition > Meeting-with-outcome > Note-with-residue. Only surviving candidates enter Odin's context for draft synthesis.
 
@@ -531,8 +529,8 @@ Present a ranked list. WRITE NOTHING to `odin-brain` until the operator selects.
 
 ```
 /odin collect --since 2026-05-19
-Scanned: N threads, M CRM contacts, assistant inbox (K msgs).
-Boundary: P threads refused by the frontmatter guard, Q assistant-inbox messages dropped (no business-counterpart). email-intel: not scanned.
+Scanned: N threads, M CRM contacts.
+Boundary: P threads refused by the frontmatter guard. email-intel: not scanned.
 Found R candidates after dedup:
 
 [1] high (Decision)  2026-05-11  Person A, Company A, Company B
@@ -563,4 +561,4 @@ After the operator finishes a complete filtering pass, advance `.last-collect` u
 - Sentinel is not a source (only a test fixture exists).
 - Live Exchange/Telegram fetch is out of scope - collect reads only already-captured residue files.
 - Never auto-write. Per-candidate CEO approval is the only path to a brain write.
-- A new data surface stays out of `collect` by being absent from the allowlist, which is the only way in. Adding any allowlist source requires CEO approval and a scope review that names, per source, what the frontmatter guard or the counterpart gate will do with it.
+- A new data surface stays out of `collect` by being absent from the allowlist, which is the only way in. Adding any allowlist source requires CEO approval and a scope review that names, per source, what the frontmatter guard will do with it.

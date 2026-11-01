@@ -4,7 +4,7 @@ The exact Phase 3 approval-block layout and the strict approval-command semantic
 
 Consumed by: `.claude/skills/scrutinize/SKILL.md`
 
-Last Updated: 2026-07-08
+Last Updated: 2026-10-31
 
 ## Format
 
@@ -13,7 +13,7 @@ Produce the approval block inline. Do NOT apply any change before user approval.
 ```text
 ## /scrutinize - <target-label>
 Grade: <PASS | PASS-WITH-NOTES | NEEDS-REWORK | BLOCKED>
-Target: <plan | execution | file:path | dir:path | workspace | trajectory:<run_id>>
+Target: <execution | file:path | dir:path | workspace | trajectory:<run_id>>
 Findings: N BLOCKER, N HIGH, N MEDIUM, N LOW, N NIT (above threshold)
 Refutation: <2.5a-only | 2.5a+2.5b | skipped:<reason>>
 Judge rotation: <rotate | fixed-claude | overridden>
@@ -44,7 +44,15 @@ If Grade is `BLOCKED`: also print exactly one line after the approval block: `"F
 
 If there are no findings, print the header, the Grade line, and `No findings. No approval required.` - skip the Findings section and the Approval section entirely.
 
-**Confidence threshold:** by default, only findings with confidence >= 75 appear in the approval block. Findings below threshold are logged in the saved report under a `## Findings Below Threshold` section. Pass `--include-low-confidence` to show all.
+**Confidence threshold:** only findings with confidence >= 75 appear in the approval block. Findings below threshold, and findings the 2.5b debate judged AMBIGUOUS, are listed in a `Not proposed` section printed right after the approval block, one line each, never inside it:
+
+```
+Not proposed:
+- [M4] (conf: 60) <one-line statement>
+- [H2] (conf: 68, AMBIGUOUS) <one-line statement>
+```
+
+The saved report carries the same section (`references/report-format.md`). No approval command acts on a `Not proposed` id.
 
 ## Approval semantics (strict)
 

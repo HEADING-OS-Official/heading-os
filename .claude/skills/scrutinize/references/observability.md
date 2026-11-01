@@ -1,7 +1,7 @@
 # Observability Layer - /scrutinize Telemetry
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md` (Phase 0, all subsequent phases)
-**Last Updated:** 2026-10-16
+**Last Updated:** 2026-10-31
 
 Langfuse Cloud telemetry contract for /scrutinize. Closes R9 from the 2026-05-27 meta-review. Uses the existing `scripts/utils/observability.py` `@observe` decorator and is fail-closed on sensitivity: telemetry flows only when `SENSITIVE_MODE` is deliberately cleared, so an unset or garbage value keeps tracing off. See `SECURITY-MODEL.md` in the data repository (registry name `spec-docs`).
 
@@ -12,8 +12,8 @@ What is traced today, and only this: every subcommand of `scripts/scrutinize-dis
 | Tag | Value | Source |
 |---|---|---|
 | `skill` | `scrutinize` | static |
-| `target_type` | `plan` / `execution` / `file` / `dir` / `workspace` | resolved in Phase 0 |
-| `target_path` | path or `<conversation-plan>` for plan target | resolved in Phase 0 |
+| `target_type` | `execution` / `file` / `dir` / `workspace` / `trajectory` | resolved in Phase 0 |
+| `target_path` | path, or the target word for `execution` and `workspace` | resolved in Phase 0 |
 | `relentless` | bool | resolved in Phase 0 (`--relentless` flag present) |
 | `iteration` | int (only during --relentless loop) | Phase 4 closure per iteration |
 | `judge_family_rotation` | `split` / `fixed-claude` | resolved per `bias-mitigation.md`, over the three-family roster; the tag name predates the split and is kept so older traces stay comparable |
@@ -50,12 +50,12 @@ Each phase emits a span with structured metadata. The metadata is the same data 
 - `judge_families_used`: list (e.g. `['claude', 'k3', 'chatgpt']`)
 - `debate_runs`: count of Phase 2.5b debates dispatched
 - `position_swap_count`: int (number of Meta-Judge calls where Skeptic appeared first)
-- `skip_reason`: string (only when skipped: `plan-target` / `no-refute-flag` / `no-findings` / `family-unavailable` / `sensitive-mode`)
+- `skip_reason`: string (only when skipped: `no-refute-flag` / `no-findings` / `family-unavailable` / `sensitive-mode`)
 
 ### Phase 3 span
 
 - `findings_above_threshold`: count surfaced to CEO
-- `findings_below_threshold`: count hidden by default (require `--include-low-confidence`)
+- `findings_below_threshold`: count listed under `Not proposed`
 - `grade`: `PASS` / `PASS-WITH-NOTES` / `NEEDS-REWORK` / `BLOCKED`
 
 ### Phase 4 span (per approval action)

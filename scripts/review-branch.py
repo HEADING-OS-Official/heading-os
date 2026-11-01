@@ -15,8 +15,16 @@ finding is not raised twice; a finding that repeats one from an earlier round
 anyway is dropped and counted. `--full` reviews the whole branch again.
 
 The target is a branch name or, to review work already merged, the merge
-commit: its first parent is the base and its second the branch head. A branch
-name is always a branch, even when its tip is a merge of `main` into it.
+commit: its second parent is the branch head and the fork point of its two
+parents the base. A branch name is always a branch, even when its tip is a
+merge of `main` into it.
+
+A finding the reviewer marks pre-existing (there before the branch, neither
+introduced nor made reachable by it) is reported and never blocks. After
+`ROUND_CAP` reviewed rounds with blocking findings still open, the yard is told
+to reconsider its approach rather than patch finding by finding, and a further
+round runs only with `--past-cap`, on HELM's decision (Anthropic's Code Review
+caps rounds the same way, claude.dev blog 2026-10-15).
 
 A blocking finding stays open until a later round's reviewer names it fixed in
 the diff it saw, or a `--full` round, which reviews the whole branch afresh, no
@@ -30,8 +38,9 @@ yard executed) followed by the branch's own commit messages; without the file,
 the commit messages alone.
 
 Rounds are records, kept in the data repository under the registry name
-`branch-reviews`, one JSON per branch. Every model call goes through the proxy
-to a model of the named trust list. Nothing here is scheduled and nothing
+`branch-reviews`, one JSON per branch. Every model call goes to a model of the
+named trust list, a Claude model directly and any other through the proxy
+(`diff_review.call`). Nothing here is scheduled and nothing
 merges: it runs when HELM types it and only reports.
 
 Usage:
@@ -60,7 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.colors import BOLD, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.data_path import data_path, data_write_dir  # noqa: E402
 from scripts.utils.diff_review import (  # noqa: E402
-    BLOCKING, CONFIGS, Review, git, numbered_parts, raw_diff, review, summary_lines,
+    CONFIGS, Review, blocks, git, numbered_parts, raw_diff, review, summary_lines,
 )
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
 
@@ -69,8 +78,14 @@ ROOT = get_workspace_root()
 # (MEASURED 2026-10-18, 23 defects and 20 clean ranges: astra-rules 5/23 located
 # and 22 false reports, sonnet-plain 4/23 and 12, opus-rules 4/23 and 14,
 # sonnet-rules 1/23 and 13). At that size the gaps are inside the noise, so the
-# choice is provisional; re-run review-eval before changing it.
+# choice is provisional; re-run review-eval before changing it. The voting
+# panels did not lower the noise and so did not replace it (MEASURED
+# 2026-10-31: panel-vote 6/23 located and 24 false reports on 19 clean ranges,
+# panel-astra-k3 6/23 and 28 on 20); `--config panel-vote` stays available.
 DEFAULT_CONFIG = "astra-rules"
+ROUND_CAP = 3
+RECONSIDER = ("{n} reviewed rounds and blocking findings are still open. Reconsider the approach instead of "
+              "patching finding by finding; another round runs only with --past-cap, on HELM's decision.")
 
 
 def rev(ref: str) -> str | None:
@@ -92,7 +107,12 @@ def resolve(target: str, base: str) -> tuple[str, str, str]:
     is_branch = ref.startswith(("refs/heads/", "refs/remotes/"))
     second = None if is_branch else rev(f"{head}^2")
     if second:
-        return rev(f"{head}^1"), second, f"merge-{head[:12]}"
+        # The branch's own change is second parent against the fork point, never
+        # against the first parent: main moved on after the yard forked, and the
+        # first-parent diff shows that later work as reverted by the branch.
+        # MEASURED 2026-10-31 on cf1938ea: 24 files from ^1, 12 from the merge-base.
+        mb = git(ROOT, "merge-base", f"{head}^1", second).strip()
+        return mb, second, f"merge-{head[:12]}"
     base_sha = rev(base)
     if not base_sha:
         raise SystemExit(f"{RED}No base {base!r}.{RESET}")
@@ -130,7 +150,7 @@ def open_blockers(rounds: list[dict]) -> list[dict]:
             found = []
         gone = set(r.get("resolved", []))
         found = [f for f in found if fkey(f) not in gone]
-        found += [f for f in r.get("findings", []) if f["severity"] in BLOCKING]
+        found += [f for f in r.get("findings", []) if blocks(f)]
     return found
 
 
@@ -173,6 +193,8 @@ def main() -> int:
     ap.add_argument("--intent-file", type=Path, help="the brief or master instruction the work executed")
     ap.add_argument("--config", default=DEFAULT_CONFIG, choices=sorted(CONFIGS))
     ap.add_argument("--full", action="store_true", help="review the whole branch even if a round exists")
+    ap.add_argument("--past-cap", action="store_true",
+                    help=f"run a round after {ROUND_CAP} reviewed rounds with blocking findings still open")
     args = ap.parse_args()
 
     base, head, key = resolve(args.target, args.base)
@@ -190,6 +212,12 @@ def main() -> int:
         carried = [f for f in open_blockers(rounds) if f not in last["findings"]]
         print_open(carried)
         return 1 if open_blockers(rounds) else 0
+
+    reviewed = sum(1 for r in rounds if not r.get("error"))
+    if reviewed >= ROUND_CAP and open_blockers(rounds) and not args.past_cap:
+        print(f"{RED}{RECONSIDER.format(n=reviewed)}{RESET}")
+        print_open(open_blockers(rounds))
+        return 1
 
     since = None
     if complete and not args.full and last.get("head"):
@@ -210,7 +238,9 @@ def main() -> int:
     cfg = CONFIGS[args.config]
     # "Already reported" is what is still open plus the earlier nits; a finding
     # resolved since is left out, so the same defect brought back is raised again.
-    already = open_blockers(rounds) + [f for f in earlier if f["severity"] not in BLOCKING] if since else None
+    # A pre-existing bug or security finding is left out too: a later change can
+    # make it reachable, and then it must be raised again and block.
+    already = open_blockers(rounds) + [f for f in earlier if f["severity"] == "nit"] if since else None
     done: list[Review] = []
     for part in parts:
         done.append(review(cfg, part, intent, already=already))
@@ -221,7 +251,7 @@ def main() -> int:
     resolved: list[str] = []
     if since and not r.error:
         ids = set(r.extra.get("resolved", []))
-        resolved = [fkey(f) for i, f in enumerate(already, 1) if f"R{i}" in ids and f["severity"] in BLOCKING]
+        resolved = [fkey(f) for i, f in enumerate(already, 1) if f"R{i}" in ids and blocks(f)]
         kept = [f for f in r.findings if not repeats(f, already)]
         dropped_repeats = len(r.findings) - len(kept)
         r.findings = kept
@@ -263,6 +293,8 @@ def main() -> int:
         print("Triage for the yard: FIX / CONTEST / ESCALATE, "
               ".claude/skills/goldfish/references/triage.md")
     if r.blocking or carried:
+        if len(rounds) - sum(1 for x in rounds if x.get("error")) >= ROUND_CAP:
+            print(f"{YELLOW}{RECONSIDER.format(n=ROUND_CAP)}{RESET}")
         return 1
     return 3 if truncated else 0
 

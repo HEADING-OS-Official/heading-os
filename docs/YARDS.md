@@ -47,7 +47,7 @@ Nothing else is installed for this guide. Yards are a way of working, built from
 2. **Brief** the yard: send it its task from HELM.
 3. **Work**: the yard's Claude does the task.
 4. **Stage**: the yard ends with its changes staged and the commit message in a file.
-5. **Commit**, in the yard, when you type the word there yourself.
+5. **Commit**, in the yard, when you type the word there yourself, or when HELM relays it after the yard's checks pass (see "Closing a yard without you" below).
 6. **Review** the branch from HELM.
 7. **Merge** the branch into `main` in HELM.
 8. **Delete** the yard.
@@ -182,6 +182,12 @@ Rules that keep this safe:
 - Never remove the marker line from a brief to get past the check.
 - Never use `git commit --no-verify` or `-n`. It skips every commit check.
 - Plan briefed work to end at a staged tree with the message in a file. The commit is your decision, in the yard.
+
+### Closing a yard without you
+
+A yard that passed its checks can be closed without waiting for you. The yard ends at a staged tree with the message in a file, after `pre-commit run --files` over the staged set, `scripts/check-push-ratchets.py` and `/security-review`. HELM then sends the bare word `commit` into the yard's pane with `herdr agent prompt`, runs `scripts/review-branch.py`, and, when the review finds no bug and no security issue, sends `commit, merge and delete <yard workspace id>` into its own pane. A failed check stops the relay and the finding goes back to the yard. Push always stays yours.
+
+The relay sends only the bare word, never a brief, so the marker rule above still holds: a brief never authorises anything. The release check sometimes refuses the first `git commit` after a relayed word, because Claude Code writes its record of the prompt a little later than the prompt itself; HELM then sends the word again, at most three times.
 
 ### Step 6: review the branch from HELM
 

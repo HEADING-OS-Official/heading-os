@@ -1,7 +1,7 @@
 # Bias Mitigation - /scrutinize Judge Layer
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md` (Phase 2, 2.5)
-**Last Updated:** 2026-09-11
+**Last Updated:** 2026-10-31
 **Last Verified:** 2026-09-11
 
 Mechanical mitigations for documented LLM-as-judge biases. Closes R7 from the 2026-05-27 meta-review of /scrutinize.
@@ -44,8 +44,6 @@ Three families, and that is the whole roster. The CEO cut the other families fro
 
 | Env var or flag | Effect |
 |---|---|
-| `SCRUTINIZE_JUDGE_SPLIT=fixed-claude` | Collapse the split, use Claude for every judge call. Prose-only knob; no code reads it. |
-| `SCRUTINIZE_JUDGE_SPLIT=split` (default) | Adversarial split per the table above: the run's assignment seats the Advocate and the Skeptic in one family and the Meta-Judge in another. |
 | `scripts/scrutinize-dispatch.py --family {claude\|kimi\|chatgpt}` | Pin the family for ONE judge call, overriding the run's assignment. It is a dispatcher argument, not a `/scrutinize` flag; nothing pins a family for a whole pass. The roster is those three families, and there is nothing else to reach. |
 | `.venv/bin/python scripts/council-models.py --set kimi_reasoning=<id>` | Bump the Kimi judge pin. Distinct from the `kimi` fast pin other callers get; the judge layer must not run a coding pin. There is deliberately NO Claude equivalent - see slot 1. |
 | `.venv/bin/python scripts/council-models.py --set chatgpt_reasoning=<id>` | Bump the ChatGPT judge pin, the same way and for the same reason. It is registered as its own key even while it matches the `chatgpt` council pin, so the judge tier can move without dragging the council's with it. |
@@ -124,7 +122,7 @@ The split defends itself on BLOCKER/HIGH findings, where a confidently wrong ver
 When a session is DECLARED sensitive, neither external side is dispatched: an
 external judge call would carry finding text, file paths and evidence to a
 third-party model, which is precisely what the flag exists to prevent. The pass falls back to
-Phase 2.5a on Claude alone (`SCRUTINIZE_JUDGE_SPLIT=fixed-claude`) and announces
+Phase 2.5a on Claude alone and announces
 the degradation in the approval block header.
 
 **Declared, not defaulted, and the distinction is load-bearing.** The gate lives

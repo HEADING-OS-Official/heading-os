@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confidence-before", type=int)
     parser.add_argument("--confidence-after", type=int)
     parser.add_argument("--role", choices=["ops", "scheduler", "boundary"])
+    parser.add_argument("--side", choices=["advocate", "skeptic", "meta"],
+                        help="Debate side, stored in payload (required for --kind argument).")
     parser.add_argument("--degraded")
     parser.add_argument("--writer", default="dispatch")
     parser.add_argument("--report", help="Saved report path (required with --validate).")
@@ -89,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             confidence_before=args.confidence_before,
             confidence_after=args.confidence_after,
             role=args.role, degraded=args.degraded, writer=args.writer,
+            payload={"side": args.side} if args.side else None,
         )
     except ValueError as exc:
         print(f"{RED}ERROR: row refused: {exc}{RESET}", file=sys.stderr)

@@ -1,7 +1,7 @@
 <!-- version: 1.1.0 | last-updated: 2026-10-29 -->
 # Lific: the issue tracker, and who writes to it
 
-Last Updated: 2026-10-29
+Last Updated: 2026-11-01
 Last Verified: 2026-09-18
 
 Always-active rule. Lific holds the projects and issues this workspace tracks across sessions: one SQLite file in the private data overlay, a CLI, an MCP server registered in every session, and a browser view of the same data. Operator decision, 2026-09-18: **projects and issues only.** Plans, brainstorming and design records stay where they live; no Lific plan, page or folder is created here.
@@ -24,7 +24,7 @@ Upstream describes `todo` and `active` with identical words ("An open workflow s
 
 **1. Never run `lific connect`, in any form, including `--dry-run`.** It rewrites the whole of `~/.claude.json` and by default registers an HTTP transport carrying a live API key in plaintext (measured 2026-09-18). `--stdio` writes a smaller stanza and the prohibition still stands: the blast radius is the file it edits, not the transport.
 
-**2. The operator creates projects and issues; Claude creates an issue when the operator says so in passing** ("don't forget to do this", "we will do this after such-and-such", anything of that shape), on top of whatever is done with it in the workspace. Operator instruction, 2026-09-18. All three parts are required: search first (`lific search "<the gist>" -p <project>`), because the same thought arrives twice across sessions; file it in its project if known, else in the operator's default project; leave it at `backlog`, the default: **never create an issue at `todo`.** Deciding a task is real is the operator's; `backlog` is his inbox.
+**2. The operator creates projects and issues; Claude creates an issue when the operator says so in passing** ("don't forget to do this", "we will do this after such-and-such", anything of that shape), on top of whatever is done with it in the workspace. Operator instruction, 2026-09-18. All three parts are required: search first (`lific search "<the gist>" -p <project>`), because the same thought arrives twice across sessions; file it in its project if known, else in the operator's default project; leave it at `backlog`, the default: **never create an issue at `todo`**. Deciding a task is real is the operator's; `backlog` is his inbox.
 
 **3. "After such-and-such a task" is a `blocks` link, and HELM records it.** Operator decision 2026-09-18; HELM rather than a yard was proposed by HELM and approved by the operator 2026-09-18: a yard states the dependency in words in its closing comment, and HELM creates the link. Only that phrasing earns a link. A blocker is unresolved until its status is `done`, and **a `cancelled` blocker still blocks:** close a dead blocker as `done` or unlink it.
 

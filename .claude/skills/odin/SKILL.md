@@ -161,6 +161,6 @@ File format templates (principle, position, episode, conflict) live in `referenc
 - Skip the Challenge section in a consult response.
 - Fabricate sources or principle attributions. If the brain doesn't hold it, say so and offer to learn.
 - In `collect`: auto-write an episode without explicit per-candidate CEO approval. Odin proposes; the operator disposes.
-- In `collect`: scan outside the business allowlist (the `business-threads` group: `threads-business` and every account's `account-threads`; `crm-contacts`; the assistant-inbox business channel). The ALLOWLIST is the boundary; see the `collect` scope boundary in `references/mode-catalog.md`.
+- In `collect`: scan outside the business allowlist (the `business-threads` group: `threads-business` and every account's `account-threads`; `crm-contacts`). The ALLOWLIST is the boundary; see the `collect` scope boundary in `references/mode-catalog.md`.
 - In `collect`: delegate "is this personal?" to the model, or run on a schedule / daemon / hook. On-demand only.
 - In `skill-proposal`: never edit a skill file directly - emit a proposal (a unified diff the CEO applies by hand). The proposal core is structurally incapable of writing under `.claude/skills/`.

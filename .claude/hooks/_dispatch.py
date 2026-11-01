@@ -5,12 +5,16 @@ One process runs every check in-process: first block wins, advisories are
 aggregated. There are no per-check shims (deleted in ba1affd); a
 settings.local.json that still names one needs `scripts/setup-platform.sh` re-run.
 
-Matcher scope: settings.local.json registers this dispatcher under seven
+Matcher scope: settings.local.json registers this dispatcher under eight
 matchers — `Write|Edit|MultiEdit|NotebookEdit`, `Bash`, `Read|Grep|Glob`,
 `mcp__codegraph__.*`, `Agent|Task|Workflow`, `SendMessage` (2026-09-27, so
 continuing an agent resets the fan-out count as dispatching one does), and
 `mcp__.*hindsight.*` (2026-10-04, HOS-198, so a Hindsight MCP query can open
-`check_hindsight_first`).
+`check_hindsight_first`), and
+`mcp__.*__.*(send|reply|forward|share|delete|trash|invalidate|clear).*`, each
+word spelled case-insensitively as `[Ss][Ee][Nn][Dd]` and so on so a camelCase
+`batchShareDocument` matches too (2026-10-31, HOS-272, so an MCP tool that sends,
+shares or deletes reaches `check_release_gate`).
 Every payload shape reaches every check, so a new check has to answer what it
 does with each of them rather than inherit a three-matcher assumption. The
 codegraph and agent matchers arrived on 2026-08-29 with the walls that need them: a matcher is the only
@@ -4210,6 +4214,16 @@ def _git_tag_writes(rest: list[str]) -> bool:
     return False
 
 
+_GIT_HELP_FLAGS = frozenset({"-h", "--help"})
+_GIT_COMMITLESS_FLAGS: dict[str, frozenset[str]] = {
+    "merge": _GIT_HELP_FLAGS | {"--no-commit", "--abort", "--quit"},
+    "cherry-pick": _GIT_HELP_FLAGS | {"-n", "--no-commit", "--abort", "--quit"},
+    "revert": _GIT_HELP_FLAGS | {"-n", "--no-commit", "--abort", "--quit"},
+    "am": _GIT_HELP_FLAGS | {"--abort", "--quit"},
+    "pull": _GIT_HELP_FLAGS,
+}
+
+
 def _segment_commits(seg: str) -> bool:
     if "git" not in _program_candidates(seg):
         return False
@@ -4236,6 +4250,13 @@ def _segment_commits(seg: str) -> bool:
         return True
     if sub == "tag":
         return _tag_writes_after(words.index("tag"))
+    # Subcommands that write a commit of their own (HOS-272) unless a flag
+    # stops them; `--continue` finishes the commit, so it counts.
+    inert = _GIT_COMMITLESS_FLAGS.get(sub)
+    if inert is not None:
+        flags = {w.split("=", 1)[0] for w in words[words.index(sub) + 1:]
+                 if w.startswith("-")}
+        return not flags & inert
     return False
 
 
@@ -4282,6 +4303,13 @@ _SEND_CLIENT_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("Telegram", re.compile(
         r"telegram_client\.py(?:\s+--?[\w-]+)*\s+(?:send|send-file|reply|forward)\b")),
     ("Gmail", re.compile(r"gmail-send\.py(?:\s+--?[\w-]+)*\s+send\b")),
+    # A meeting with `--send-invites` mails every attendee (HOS-272); without it
+    # the meeting is saved as a hold and reaches nobody, so it stays ungated.
+    # Flag order is free, and argparse accepts any unique prefix of a long
+    # option, so the shortest unambiguous one is matched as well (`--cr`, `--se`).
+    ("Exchange", re.compile(
+        r"sync-exchange\.py(?=.*\s--cr(?:e(?:a(?:t(?:e(?:-(?:m(?:e(?:e(?:t(?:i(?:n(?:g)?)?)?)?)?)?)?)?)?)?)?)?(?:[\s=]|$))"
+        r"(?=.*\s--se(?:n(?:d(?:-(?:i(?:n(?:v(?:i(?:t(?:e(?:s)?)?)?)?)?)?)?)?)?)?(?:\s|$))")),
 )
 # A Telegram `delete` is its own gated action, released by delete words and never
 # by send words (HOS-266). Until 2026-10-28 it sat in the send pattern above, so
@@ -4292,10 +4320,14 @@ _SEND_CLIENT_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 _DELETE_CLIENT_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("Telegram", re.compile(
         r"telegram_client\.py(?:\s+--?[\w-]+)*\s+delete\b")),
+    # Exchange mail deletion (HOS-272); `--de` is the shortest prefix argparse
+    # resolves to `--delete`.
+    ("Exchange", re.compile(
+        r"sync-exchange\.py(?=.*\s--de(?:l(?:e(?:t(?:e)?)?)?)?(?:[\s=]|$))")),
 )
 _SEND_EMAIL_INERT_RE = re.compile(r"(?:^|\s)(?:--dry-run|-h|--help)(?=\s|$)")
 _SEND_CLIENT_NAMES = ("mattermost_client.py", "telegram_client.py",
-                      "gmail-send.py", "send-email.py")
+                      "gmail-send.py", "send-email.py", "sync-exchange.py")
 # A client counts only where it is the program a segment RUNS: the first word,
 # or the script an interpreter (`python3 -u`, `uv run`, `exec`) is handed. A
 # client path given as an argument (`git add`, `pre-commit run --files`,
@@ -4371,6 +4403,38 @@ def message_delete_action(command: str) -> str | None:
     return "delete" if message_delete_target(command) else None
 
 
+# An MCP tool that reaches outside (HOS-272): Gmail, Drive, Lific, Hindsight and
+# whatever server is added next. Read from the tool part of the name by WHOLE
+# words, split at underscores and at camelCase humps, so `untrash_message`,
+# `untrashMessage` and `listDrafts` carry none.
+_MCP_SEND_WORDS = frozenset({"send", "reply", "forward", "share"})
+_MCP_DELETE_WORDS = frozenset({"delete", "trash", "invalidate", "clear"})
+_MCP_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def mcp_outbound_action(tool_name: str) -> str | None:
+    """`"send"`, `"delete"` or None for an `mcp__<server>__<tool>` name. Pure.
+
+    A Hindsight query in `_HINDSIGHT_MCP_QUERIES` is None whatever it is called.
+    """
+    if not tool_name.startswith("mcp__"):
+        return None
+    server, sep, tool = tool_name[len("mcp__"):].partition("__")
+    if not sep:
+        return None
+    words = {w.lower() for w in _MCP_WORD_RE.findall(tool)}
+    tool = tool.lower()
+    if "hindsight" in server.lower():
+        bare = tool[len("hindsight_"):] if tool.startswith("hindsight_") else tool
+        if bare in _HINDSIGHT_MCP_QUERIES:
+            return None
+    if words & _MCP_SEND_WORDS:
+        return "send"
+    if words & _MCP_DELETE_WORDS:
+        return "delete"
+    return None
+
+
 # A send needs an IMPERATIVE ask, never a stem found anywhere. Until 2026-10-12
 # this was a substring list ("send", "отправ", ...), and MEASURED that day in
 # HELM `prompt_authorises("что отправили?", "send")` returned True: a question
@@ -4386,7 +4450,11 @@ def message_delete_action(command: str) -> str | None:
 # typing the order.
 _SEND_IMPERATIVES = re.compile(
     r"\b(?:отправь|отправьте|отправляй|отправляйте|отошли|отошлите"
-    r"|посылай|посылайте|запости|запостите|запость)\b"
+    r"|посылай|посылайте|запости|запостите|запость"
+    # A share is a send (HOS-272): it hands a file to someone outside. Only
+    # `расшарь`: "поделись мнением" and "share your thoughts" are everyday
+    # asks of the assistant and would release every send in the turn.
+    r"|расшарь)\b"
     r"|(?:^|[,;:]|\b(?:please|pls|ok|okay|now|then|and|just|go ahead and|yes|да|ок))"
     r"\s*(?:send|post)(?:\s+(?:it|this|that|them|these|those|the|a|an|my|our"
     r"|now|to|back|here|there|in|out|over)\b|\s*[.!]*$)"
@@ -4395,6 +4463,9 @@ _SENTENCE_RE = re.compile(r"[^.!?\n]+[.!?]*")
 _SEND_NEGATIONS = (
     "не отправ", "не посылай", "не отсылай", "без отправки", "не надо", "не нужно",
     "don't send", "dont send", "do not send", "no send", "not send",
+    # The negated share imperatives (HOS-272), or "не расшарь" releases a send.
+    "не поделись", "не расшарь",
+    "don't share", "dont share", "do not share", "not share",
 )
 # A Telegram delete (HOS-266), written exactly like a send: Russian imperative
 # word forms, the English verb only at the head of a clause, nothing in a
@@ -5000,13 +5071,26 @@ def _quoted_evidence(prompt: str) -> str:
 
 
 def check_release_gate(payload: dict) -> dict | None:
-    """Refuse a commit or a push the operator did not ask for in this turn."""
-    if payload.get("tool_name") != "Bash":
+    """Refuse a commit, push, send or delete the operator did not ask for."""
+    tool_name = payload.get("tool_name") or ""
+    if tool_name == "Bash":
+        action = None
+    elif tool_name.startswith("mcp__"):
+        # An MCP call is one action by construction, so the two cross-checks
+        # below have nothing to separate; everything from the prompt read on
+        # applies unchanged, with the tool name standing in for the command.
+        action = mcp_outbound_action(tool_name)
+        if action is None:
+            return None
+    else:
         return None
-    command = (payload.get("tool_input") or {}).get("command") or ""
-    release = release_action(command)
-    send = mattermost_send_action(command)
-    delete = message_delete_action(command)
+    command = (tool_name if action is not None
+               else (payload.get("tool_input") or {}).get("command") or "")
+    release = send = delete = None
+    if action is None:
+        release = release_action(command)
+        send = mattermost_send_action(command)
+        delete = message_delete_action(command)
     if send and release:
         # One prompt word would otherwise authorise both: "отправь" is a push
         # word too. Two commands, two separate checks.
@@ -5027,7 +5111,7 @@ def check_release_gate(payload: dict) -> dict | None:
                        f"({message_delete_target(command)}) and does a "
                        f"{send or release}. Run them as separate commands."),
         }
-    action = send or delete or release
+    action = action or send or delete or release
     if action is None:
         return None
 
@@ -6157,10 +6241,44 @@ def _yard_homes() -> list[Path]:
     return homes
 
 
-def _yard_machine_places() -> tuple[list[Path], list[Path]]:
-    """(guarded, exempt): every spelling of the places above, raw and resolved."""
+# Data registry names of live daemon state a yard may read but never write,
+# resolved under every data root at check time. The official tree ships no
+# daemon whose state needs this, so the list is empty.
+_YARD_HELM_ONLY_DATA: tuple[str, ...] = ()
+# Every spelling of the places above, filled by `_yard_machine_places(helm)`, so
+# that `_yard_machine_reason` can say which refusal it is giving.
+_YARD_HELM_ONLY_PLACES: set[Path] = set()
+
+
+def _yard_machine_places(helm: Path | None = None) -> tuple[list[Path], list[Path]]:
+    """(guarded, exempt): every spelling of the places above, raw and resolved.
+
+    With `helm`, the live daemon state of `_YARD_HELM_ONLY_DATA` under each data
+    root is guarded too (HOS-281).
+    """
     guarded: list[Path] = [Path("/etc")]      # root-owned; reached through `sudo`
     exempt: list[Path] = []
+    if helm is not None:
+        from scripts.utils.data_path import DataPathError
+        for root in _yard_data_roots(helm):
+            for name in _YARD_HELM_ONLY_DATA:
+                try:
+                    raise ValueError(f"no resolver for {name}")
+                except (DataPathError, OSError, ValueError) as exc:
+                    # Fails open for this one root, on purpose: a root whose
+                    # registry has no row for the name holds no daemon state
+                    # to protect, and refusing every write under it would close
+                    # the whole overlay to yards.
+                    print(f"[_dispatch:yard] HOS-281: {name} did not resolve "
+                          f"under {root} ({type(exc).__name__}); not guarded "
+                          f"there", file=sys.stderr)
+                    continue
+                guarded.append(place)
+                _YARD_HELM_ONLY_PLACES.add(place)
+                with contextlib.suppress(OSError):
+                    real = place.resolve()
+                    guarded.append(real)
+                    _YARD_HELM_ONLY_PLACES.add(real)
     for env_name in ("CLAUDE_CONFIG_DIR", "XDG_RUNTIME_DIR"):
         raw = os.environ.get(env_name, "")
         if raw and os.path.isabs(raw):
@@ -6281,6 +6399,14 @@ def _yard_segment_machine_place(segment: str, current: Path,
 
 
 def _yard_machine_reason(where: str, place: Path) -> str:
+    if place in _YARD_HELM_ONLY_PLACES:
+        return (
+            f"YARD write guard — intentional policy block, not an error. This "
+            f"writes a live daemon's state:\n\n  {where}\n\n(under "
+            f"{place})\n\nHELM's daemon trusts what is there, so a yard may read "
+            f"it but never write it. A yard testing the daemon points its "
+            f"state directories at its own scratch."
+        )
     return (
         f"YARD write guard — intentional policy block, not an error. This "
         f"writes a place outside every checkout whose content decides what "
@@ -6845,7 +6971,7 @@ def check_yard_write_guard(payload: dict) -> dict | None:
         expanded = os.path.expanduser(raw)
         spelled = Path(os.path.normpath(
             expanded if os.path.isabs(expanded) else cwd / expanded))
-        places = _yard_machine_places()
+        places = _yard_machine_places(helm)
         place = _yard_machine_place(target, places) or _yard_machine_place(spelled, places)
         if place is not None:
             return _yard_deny(_yard_machine_reason(str(target), place))
@@ -6860,7 +6986,7 @@ def check_yard_write_guard(payload: dict) -> dict | None:
     own_branch = _yard_own_branch()
     data_roots = _yard_data_roots(helm)
     data_git_dirs = _yard_data_git_dirs(data_roots)
-    machine_places = _yard_machine_places()
+    machine_places = _yard_machine_places(helm)
 
     # `cd` is followed across the chain, and that is not a refinement. Splitting
     # on `&&` and asking each link about the paths IT spells lets
@@ -7760,6 +7886,41 @@ def check_yard_agent_start_guard(payload: dict) -> dict | None:
     return None
 
 
+def check_herdr_wait_wrapper(payload: dict) -> dict | None:
+    """Refuse a raw `herdr agent wait`, in HELM and in yards alike (HOS-269).
+
+    Without `--timeout` it waits indefinitely and does not exit when its pane
+    is removed: one started in the background was still running about 20 hours
+    after its pane went away with its yard (MEASURED 2026-10-30).
+    `scripts/herdr-wait.py` polls instead and exits when the pane is gone.
+    Usage only (`--help`/`-h` as the sole flags) passes.
+    """
+    if payload.get("tool_name") != "Bash":
+        return None
+    command = (payload.get("tool_input", {}) or {}).get("command", "") or ""
+    if not command or not _YARD_AGENT_START_HINT_RE.search(command):
+        return None
+    for segment in _yard_segments(command):
+        words = _yard_words(segment)
+        if not words or words[0].rsplit("/", 1)[-1] != "herdr":
+            continue
+        if _yard_deletion_operands(words)[:2] != ["agent", "wait"]:
+            continue
+        flags = [word.split("=", 1)[0] for word in words if word.startswith("-")]
+        if flags and all(flag in _YARD_HELP_FLAGS for flag in flags):
+            continue          # usage only
+        return _yard_deny(
+            "herdr-wait wrapper: intentional policy block, not an error. "
+            "`herdr agent wait` waits indefinitely and does not exit when its "
+            "pane is removed, so a background waiter outlives its yard. Use "
+            "the wrapper, which exits when the pane is gone and is stopped "
+            "when its workspace is removed:\n\n"
+            "  .venv/bin/python scripts/herdr-wait.py <pane> --until <status>\n\n"
+            "Repeat --until for several statuses; --ceiling SECONDS caps the "
+            "wait (default 12 hours).")
+    return None
+
+
 # ============================================================
 # A crashed wall
 # ============================================================
@@ -7888,6 +8049,7 @@ CHECKS = [
     check_yard_write_guard,
     check_yard_deletion_guard,
     check_yard_agent_start_guard,
+    check_herdr_wait_wrapper,
     check_cwd_anchor,
     check_slow_shell,
     check_rate_limit,

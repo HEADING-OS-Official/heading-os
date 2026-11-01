@@ -1,7 +1,7 @@
 # Target Detection Protocol - /scrutinize
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md`
-**Last Updated:** 2026-05-27
+**Last Updated:** 2026-10-31
 
 Hybrid auto-detect with user confirmation. The skill reads recent conversation and git state, picks the most likely target, announces it in one line, and waits for confirmation or redirect.
 
@@ -9,36 +9,36 @@ Hybrid auto-detect with user confirmation. The skill reads recent conversation a
 
 | # | Condition | Target |
 |---|---|---|
-| 1 | Explicit argument (`plan` / `execution` / `workspace` / `file:<path>` / `dir:<path>` / `trajectory:<run_id>`) | Use argument; skip confirmation |
+| 1 | Explicit argument (`execution` / `workspace` / `file:<path>` / `dir:<path>` / `trajectory:<run_id>`) | Use argument; skip confirmation |
 | 1b | A `/implement` run completed in the current session AND `_trajectory_*.jsonl` exists under `runtime:implement/logs` from this session | `trajectory:<latest run_id>` (single-turn detection only — does not persist across sessions) |
-| 2 | A plan was presented in the last 10 conversation turns but not yet approved | `plan` |
-| 3 | `git status` shows uncommitted changes AND edits occurred this session | `execution` (scope from git) |
-| 4 | None of the above | Ask (see Menu) |
+| 2 | `git status` shows uncommitted changes AND edits occurred this session | `execution` (scope from git) |
+| 3 | None of the above | Ask (see Menu) |
+
+The `plan` target is retired. A typed `/scrutinize plan` prints exactly `The plan target is retired. Run /scrutinize file:<path of the plan>.` and stops. A plan is reviewed as `file:<path>`.
 
 
 ## Confirmation Line Format
 
-After auto-detection at priorities 2-3, print exactly one line:
+After auto-detection at priorities 1b-2, print exactly one line:
 
 ```
-Target detected: <label>. Proceeding with VIIA pass. Redirect with: plan | execution | file:<path> | dir:<path> | workspace.
+Target detected: <label>. Proceeding with VIIA pass. Redirect with: execution | file:<path> | dir:<path> | workspace.
 ```
 
 Wait for user response. Any redirect supersedes auto-detection. A silence followed by a correction ("wait, I meant workspace") also supersedes.
 
-## Menu (priority 4)
+## Menu (priority 3)
 
 If nothing obvious:
 
 ```
 No obvious target in context. What should I scrutinize?
 
-1. plan
-2. execution
-3. file:<path>
-4. dir:<path>
-5. workspace
-6. trajectory:<run_id>
+1. execution
+2. file:<path>
+3. dir:<path>
+4. workspace
+5. trajectory:<run_id>
 
 Reply with the number, the name, or an explicit argument like `file:path/to/thing.md`.
 ```
@@ -46,10 +46,6 @@ Reply with the number, the name, or an explicit argument like `file:path/to/thin
 Wait for response.
 
 ## Scope Resolution per Target
-
-### plan
-Source: the most recent plan presented in the conversation (search the last 10 turns for a block that looks like a plan - numbered steps, success criteria section, or a plan file created by `/create-plan`).
-If no plan is in the last 10 turns, fall through to priority 5 menu.
 
 ### execution (hybrid)
 
@@ -70,6 +66,7 @@ Default: 1
 
 ### file:<path>
 Source: read the file at `<path>`. If path does not exist, stop and report the missing path.
+It is a **plan file** when its path resolves under registry name `plans` (`.venv/bin/python scripts/data-path.py path plans`) or its first line starts with `# Plan:`. A plan file gets refutation and the goldfish `plan` lens, no external code voice, no Phase 4.5 promotion, and refuses `--relentless`.
 
 ### dir:<path>
 Source: glob `<path>/**/*` with these exclusions: `.git/`, `node_modules/`, `outputs`, `.sessions/`, `*.pen`, binary files. Review each file per its type.
@@ -92,17 +89,17 @@ Source: read `_trajectory_{run_id}.jsonl` under the directory `.venv/bin/python 
 
 Run-id slug equals the part after the final `_` in the run_id (matches `scripts/implement-trajectory-log.py` minting rule).
 
+## Slug and run id
+
+Phase 0 step 5 and the Phase 5 report name use one slug:
+
+- `execution` and `workspace`: that word.
+- `trajectory:<run_id>`: `trajectory-` and the part after the final `_`.
+- every other target: the last path segment, with a leading `\d{4}-\d{2}-\d{2}-` and the extension removed, lowercased, every run of characters outside `[a-z0-9-]` replaced by `-`, cut to 40 characters.
+
+The slug carries no date, so the report name `<YYYY-MM-DD>-<slug>.md` holds exactly one. The run id is `<YYYY-MM-DD>_<HHMMSS>_<slug>`, so two runs never share one, and neither do their scratch directories (`<scratch>/scrutinize/<run_id>/`).
+
 ## Worked Examples
-
-**Example 1 - plan detected:**
-
-```
-User: /scrutinize
-[Recent turn includes a plan in numbered steps. No /implement manifest. Clean git status.]
-Skill output: "Target detected: plan. Proceeding with VIIA pass. Redirect with: plan | execution | file:<path> | dir:<path> | workspace."
-User: ok
-Skill: proceeds with plan-target VIIA pass.
-```
 
 **Example 2 - explicit argument bypasses confirmation:**
 
@@ -115,8 +112,8 @@ Skill: no confirmation needed; immediately dispatches the 5 specialist agents.
 
 ```
 User: /scrutinize
-[No plan, clean git.]
-Skill: prints the 6-option menu and waits.
+[Clean git.]
+Skill: prints the 5-option menu and waits.
 ```
 
 **Example 4 - trajectory auto-detection right after /implement:**
@@ -125,7 +122,7 @@ Skill: prints the 6-option menu and waits.
 User: /implement <plans>/<plan>.md
 [/implement runs to completion, writes _trajectory_<run_id>.jsonl under runtime:implement/logs]
 User: /scrutinize
-Skill: "Target detected: trajectory:<run_id>. Proceeding with VIIA pass. Redirect with: plan | execution | file:<path> | dir:<path> | workspace | trajectory:<run_id>."
+Skill: "Target detected: trajectory:<run_id>. Proceeding with VIIA pass. Redirect with: execution | file:<path> | dir:<path> | workspace | trajectory:<run_id>."
 User: ok
 Skill: proceeds with trajectory-target VIIA pass per references/trajectory-evaluation.md.
 ```

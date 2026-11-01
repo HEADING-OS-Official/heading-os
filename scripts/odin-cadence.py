@@ -374,7 +374,7 @@ def _fm_list(block: str, key: str):
 def count_threads(root: Path, since: str, skipped: list) -> int:
     """Count dated entries (date >= since) in allowed sections of business threads.
 
-    `skipped` is required, the same list `count_assistant_inbox` takes: the zeros that
+    `skipped` is required, the same list `count_crm` takes: the zeros that
     are NOT counts (no address, no directory, no `.md` in it) are named there
     instead of being rendered as a quiet 0 that reads as "nothing to harvest".
     """
@@ -442,10 +442,8 @@ def count_crm(root: Path, since: str, skipped: list) -> int:
     0 over the whole CRM.
 
     The address comes from `scripts.utils.assistant_inbox.contacts_home`
-    rather than being joined here, because `count_assistant_inbox` below already builds
-    its vocabulary from that same directory through that same helper, and two
-    counters on one run disagreeing about where the CRM is would be worse than
-    either being wrong.
+    rather than being joined here, so every reader of the CRM resolves it
+    through one helper.
     """
     n = 0
     base = assistant_inbox.contacts_home(root)
@@ -474,93 +472,6 @@ def count_crm(root: Path, since: str, skipped: list) -> int:
             if m and m.group("date") >= since:
                 n += 1
     return n
-
-
-def count_assistant_inbox(root: Path, since: str, skipped: list) -> int:
-    """Count assistant inbox messages admitted by the SAME counterpart gate (date >= since).
-
-    The address comes from `assistant_inbox.state_path`, which owns it, so
-    the gate module and this counter cannot end up reading two different files.
-    """
-    state_path = assistant_inbox.state_path(root)
-    if not state_path.exists():
-        skipped.append("assistant inbox: state.json absent")
-        return 0
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        # `ValueError`, not `json.JSONDecodeError`. `read_text(encoding="utf-8")`
-        # raises `UnicodeDecodeError` on non-UTF-8 bytes, a SIBLING of
-        # JSONDecodeError under ValueError rather than a subclass, so a state
-        # file that had been torn mid-write escaped this handler entirely.
-        # MEASURED 2026-09-01: `compute()` died rather than appending the
-        # "state.json unreadable" line to `skipped`, which is the whole point of
-        # the `skipped` list - the JSON must never assert a complete pass it did
-        # not make.
-        skipped.append(f"assistant inbox: state.json unreadable ({type(exc).__name__})")
-        return 0
-    # A gate that cannot classify anything is not a count of zero. `build_vocab`
-    # refuses since 2026-09-18 rather than returning an empty dict, and the
-    # refusal is reported here rather than crashing the cadence: this function's
-    # contract with `compute` is a number plus an honest `skipped`, and a nudge
-    # that dies takes the thread and CRM counts down with it.
-    try:
-        vocab = assistant_inbox.build_vocab(root, skipped)
-    except assistant_inbox.VocabularyEmpty as exc:
-        skipped.append(f"assistant inbox: counterpart vocabulary refused ({exc})")
-        return 0
-    n = 0
-    for _mid, msg in data.get("messages", {}).items():
-        admit, _reason, _r = assistant_inbox.gate_message(msg, vocab, since)
-        if admit:
-            n += 1
-    return n
-
-
-def assistant_inbox_source_state(root: Path) -> dict:
-    """What the assistant inbox store HOLDS, so that an `assistant inbox: 0` can be read.
-
-    `count_assistant_inbox` answers one question: how many messages are admissible since
-    the marker. It returns a bare 0 for three different worlds. Every newer
-    message was gated out; no message is newer than the marker; and the source
-    has produced nothing at all for weeks. The first two are the cadence's
-    business and the third is an outage in a feed nobody watches, and all three
-    looked identical, because `skipped` only records a store this code could not
-    READ.
-
-    MEASURED 2026-09-06 against the live overlay: 77 messages in the store, the
-    newest dated 2026-07-11, a month BEFORE the 2026-08-11 collect marker.
-    Reported as `assistant inbox: 0` with an empty `skipped`, which is arithmetically
-    correct and says the opposite of what the operator would conclude from it.
-
-    Returns ``{"messages": int|None, "newest": str|None}``. None means the store
-    could not be read or parsed; `count_assistant_inbox` already names that in `skipped`,
-    and this function deliberately does not add a second copy of the complaint.
-    An empty store is ``{"messages": 0, "newest": None}``, which is not the same
-    answer and must not be collapsed into it.
-    """
-    state_path = assistant_inbox.state_path(root)
-    if not state_path.exists():
-        return {"messages": None, "newest": None}
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        # Same two-clause shape, and the same reason, as `count_assistant_inbox` above:
-        # a torn write surfaces as UnicodeDecodeError, a ValueError sibling of
-        # JSONDecodeError rather than a subclass. Swallowed rather than logged
-        # because the caller records it once already.
-        return {"messages": None, "newest": None}
-    messages = data.get("messages") if isinstance(data, dict) else None
-    if not isinstance(messages, dict):
-        # Valid JSON of the wrong shape. `count_assistant_inbox` reaches the same state
-        # through `data.get("messages", {})` returning a non-dict and dying on
-        # `.items()`; this one refuses to guess instead.
-        return {"messages": None, "newest": None}
-    dates = sorted(
-        d for d in ((m.get("date") or "")[:10] for m in messages.values()
-                    if isinstance(m, dict)) if d
-    )
-    return {"messages": len(messages), "newest": dates[-1] if dates else None}
 
 
 # ============================================================
@@ -765,8 +676,7 @@ def compute(root: Path, min_entries: int, today: date | None = None) -> dict[str
 
     thread_n = count_threads(root, since, skipped)
     crm_n = count_crm(root, since, skipped)
-    inbox_n = count_assistant_inbox(root, since, skipped)
-    total = thread_n + crm_n + inbox_n
+    total = thread_n + crm_n
     ca = analyze_reflect_clusters(root, today=today)
     clusters = ca["count"]
 
@@ -797,8 +707,7 @@ def compute(root: Path, min_entries: int, today: date | None = None) -> dict[str
         "last_reflect": read_reflect_marker(root),
         "days_since": days_since,
         "unharvested_total": total,
-        "by_source": {"thread": thread_n, "crm": crm_n, "assistant_inbox": inbox_n},
-        "assistant_inbox_source": assistant_inbox_source_state(root),
+        "by_source": {"thread": thread_n, "crm": crm_n},
         "reflect_clusters": clusters,
         "reviewed_clusters": ca["reviewed_count"],
         "stale_clusters": ca["stale_count"],
@@ -878,7 +787,7 @@ def suggestion_line(r: dict[str, Any], report_rel: str | None = None) -> str:
         entry_word = "entry" if total == 1 else "entries"
         parts.append(
             f"{total} un-harvested {entry_word} "
-            f"({bs['thread']} threads / {bs['crm']} CRM / {bs['assistant_inbox']} assistant inbox)"
+            f"({bs['thread']} threads / {bs['crm']} CRM)"
         )
     clusters = r["reflect_clusters"]
     if clusters:
@@ -887,21 +796,6 @@ def suggestion_line(r: dict[str, Any], report_rel: str | None = None) -> str:
         if r.get("stale_clusters"):
             seg += f" ({r['stale_clusters']} stale, oldest {r['oldest_cluster_age_days']}d)"
         parts.append(seg)
-
-    # A zero assistant-inbox count beside a store whose newest message predates the marker is not
-    # "nothing new since the collect", it is a feed that stopped. The count alone
-    # cannot say which, so the store's own newest date is put beside it and the
-    # reader decides. Said only when the count IS zero and the store was readable
-    # and holds something: a zero explained by an empty store needs no sentence,
-    # and an unreadable one is already in `skipped`.
-    src = r.get("assistant_inbox_source") or {}
-    marker = (r.get("last_collect") or "")[:10]
-    if (not bs.get("assistant_inbox") and src.get("messages") and src.get("newest")
-            and marker and src["newest"] < marker):
-        parts.append(
-            f"assistant inbox quiet since {src['newest']} "
-            f"({src['messages']} messages held, none after the marker)"
-        )
 
     tail = []
     if total:

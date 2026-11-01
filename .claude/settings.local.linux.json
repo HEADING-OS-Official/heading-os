@@ -238,6 +238,16 @@
         ]
       },
       {
+        "matcher": "mcp__.*__.*([Ss][Ee][Nn][Dd]|[Rr][Ee][Pp][Ll][Yy]|[Ff][Oo][Rr][Ww][Aa][Rr][Dd]|[Ss][Hh][Aa][Rr][Ee]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Tt][Rr][Aa][Ss][Hh]|[Ii][Nn][Vv][Aa][Ll][Ii][Dd][Aa][Tt][Ee]|[Cc][Ll][Ee][Aa][Rr]).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import os,runpy;from pathlib import Path;p=next((str(d/'.claude'/'hooks'/'_dispatch.py') for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/'_dispatch.py').is_file()),None);p and runpy.run_path(p,run_name='__main__')\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task|Workflow",
         "hooks": [
           {
@@ -286,6 +296,16 @@
             "type": "command",
             "command": "python3 -c \"import sys,runpy;from pathlib import Path;n='dossier-bind.py';p=next((str(d/'.claude'/'hooks'/n) for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/n).is_file()),None)\nif p: sys.argv=[p]+sys.argv[1:]; runpy.run_path(p,run_name='__main__')\"",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import sys,runpy;from pathlib import Path;n='herdr-waiter-reap.py';p=next((str(d/'.claude'/'hooks'/n) for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/n).is_file()),None)\nif p: sys.argv=[p]+sys.argv[1:]; runpy.run_path(p,run_name='__main__')\"",
+            "timeout": 30
           }
         ]
       }

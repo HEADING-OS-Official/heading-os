@@ -64,7 +64,11 @@ Environment=TZ={{TZ}}
 # config/nightly-skip-baseline.json, which scripts/nightly-refresh.py refuses to
 # mark green above. Re-run the installer after changing a toolchain; it merges
 # and keeps every other local value.
-Environment=PATH={{TOOLPATH}}
+#
+# The quotes are load-bearing (HOS-283): unquoted, systemd splits the value at
+# the first space, so `/mnt/c/Program Files/...` and every directory after it
+# were dropped with an "Invalid environment assignment" warning.
+Environment="PATH={{TOOLPATH}}"
 Environment=PYTHONUNBUFFERED=1
 # The runner exits non-zero on a failing suite and on a post-run step that did
 # not complete, so a non-zero exit correctly surfaces as `failed`. No

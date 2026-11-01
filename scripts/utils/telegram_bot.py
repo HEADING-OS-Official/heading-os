@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -234,6 +235,19 @@ class TelegramBot:
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
         return self._call("sendMessage", **params)
+
+    def send_document(self, chat_id, path: Path, caption: Optional[str] = None,
+                      _timeout: int = 120) -> dict:
+        """Upload one file to a chat as a document. Caption is plain text.
+
+        Goes through `call_multipart`, so a transport failure is redacted like
+        every other call: the upload URL embeds the token.
+        """
+        data = {"chat_id": chat_id, **({"caption": caption} if caption else {})}
+        with open(path, "rb") as fh:
+            return self.call_multipart("sendDocument", data=data,
+                                       files={"document": (path.name, fh)},
+                                       _timeout=_timeout)
 
     def send_dm(self, user_id: int, text: str, parse_mode: str = "Markdown") -> dict:
         """Send a private message to a user.

@@ -52,7 +52,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 # The checkout this module runs from, the tree the env fallback below compares a
@@ -291,3 +294,233 @@ def clear_label(pane_id: str) -> dict:
     if not pane_id:
         raise HerdrUnavailable("clear_label needs a pane id")
     return _run(["agent", "rename", pane_id, "--clear"], LABEL_TIMEOUT)
+
+
+# ============================================================
+# Waiting on a pane without outliving it (HOS-269)
+# ============================================================
+#
+# `herdr agent wait <pane> --until <status>` does not exit when its pane goes
+# away: its own help says "Without --timeout, waits indefinitely", and a waiter
+# started from a HELM session was still running about 20 hours after its pane
+# was removed with its yard (MEASURED 2026-10-30). The replacement below polls
+# `herdr pane get` instead, so no long-lived herdr child exists and the wait
+# ends on its own when the pane disappears. `scripts/herdr-wait.py` is the CLI;
+# `.claude/hooks/herdr-waiter-reap.py` stops the waiters of a removed workspace.
+
+#: The `agent_status` values `herdr pane get` reports (MEASURED 2026-10-30).
+PANE_STATUSES = frozenset({"idle", "working", "blocked", "done", "unknown"})
+
+PANE_GET_TIMEOUT = 10
+
+
+class PaneGone(Exception):
+    """herdr answered that the pane does not exist (`pane_not_found`)."""
+
+
+def pane_status(pane: str, timeout: float = PANE_GET_TIMEOUT) -> str | None:
+    """The pane's `agent_status`, None when herdr answered without a usable one.
+
+    Not through `_run`: `_run` raises the same HerdrUnavailable for every
+    non-zero exit and drops stdout, and the one answer that matters here, "this
+    pane does not exist", arrives as exit 1 with a JSON error on stderr:
+    `{"error":{"code":"pane_not_found",...}}` (MEASURED 2026-10-30). That code
+    raises PaneGone; every other failure raises HerdrUnavailable, so an
+    unreachable herdr is never reported as a gone pane.
+
+    `herdr pane get` and not `herdr agent get`: on a missing pane the latter
+    answers `agent_not_found` (MEASURED 2026-10-30), which a live pane with no
+    agent would answer too.
+
+    `timeout` lets a caller with a deadline cap the call at the time it has
+    left; it never exceeds PANE_GET_TIMEOUT in practice because the caller
+    passes the smaller of the two.
+    """
+    args = [HERDR_BIN, "pane", "get", pane]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise HerdrUnavailable(
+            f"{' '.join(args)} timed out after {timeout:g}s") from exc
+    except OSError as exc:
+        raise HerdrUnavailable(f"{HERDR_BIN} could not be executed: {exc}") from exc
+    if proc.returncode != 0:
+        # The error JSON arrives on STDERR, stdout empty (MEASURED 2026-10-30:
+        # 0 bytes on stdout, 90 on stderr for a missing pane). Both streams are
+        # read so a herdr that moves it to stdout still reads as gone.
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                payload = json.loads(stream)
+            except ValueError:
+                continue
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict) and error.get("code") == "pane_not_found":
+                raise PaneGone(pane)
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        first = detail[0] if detail else "no output"
+        raise HerdrUnavailable(f"{' '.join(args)} exited {proc.returncode}: {first}")
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise HerdrUnavailable(f"{' '.join(args)} returned unparseable output") from exc
+    result = payload.get("result") if isinstance(payload, dict) else None
+    record = result.get("pane") if isinstance(result, dict) else None
+    if not isinstance(record, dict):
+        raise HerdrUnavailable(f"{' '.join(args)} carried no pane object")
+    status = record.get("agent_status")
+    # A list or object here made the membership test raise TypeError and the
+    # waiter died with a traceback (reproduced 2026-10-30); any non-string or
+    # unknown value is "herdr answered, no usable status".
+    return status if isinstance(status, str) and status in PANE_STATUSES else None
+
+
+def wait_for_pane(pane: str, states, ceiling_s: float, poll_s: float = 5,
+                  unavailable_limit_s: float = 600) -> tuple[int, str]:
+    """Poll `pane` until it reaches one of `states`. Returns (exit code, line).
+
+    0 reached, 3 pane gone, 4 ceiling hit, 5 herdr unavailable for
+    `unavailable_limit_s` seconds in a row without one good answer. An answer
+    with no usable status counts as good: herdr answered, the status is simply
+    not one of `states` yet.
+
+    The deadline is checked BEFORE each poll and each poll's subprocess timeout
+    is capped at the time left, so no poll starts after the ceiling and none
+    runs past it. Checked after the poll, `--ceiling 10` let a poll at 10 s
+    report `reached`, and a hanging poll overran a 3 s ceiling to 9 s
+    (reproduced 2026-10-30 against a stand-in herdr).
+    """
+    wanted = set(states)
+    start = time.monotonic()
+    deadline = start + ceiling_s
+    last_good = start
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return 4, f"ceiling hit: {pane} after {int(time.monotonic() - start)}s"
+        try:
+            status = pane_status(pane, timeout=min(PANE_GET_TIMEOUT, remaining))
+        except PaneGone:
+            return 3, f"target gone: {pane}"
+        except HerdrUnavailable as exc:
+            # Kept polling, by design: a herdr hiccup is not a verdict. The
+            # error is carried into the exit line if it persists.
+            if time.monotonic() - last_good >= unavailable_limit_s:
+                return 5, (f"herdr unavailable: {pane} for "
+                           f"{int(unavailable_limit_s)}s: {exc}")
+        else:
+            last_good = time.monotonic()
+            if status in wanted:
+                return 0, f"reached: {pane} {status}"
+        time.sleep(max(0.0, min(poll_s, deadline - time.monotonic())))
+
+
+def _proc_identity(pid: int) -> tuple[str, str] | None:
+    """(start_ticks, cmdline) of a live PID, None when it is gone.
+
+    `start_ticks` is field 22 of `/proc/<pid>/stat`; it is read after the last
+    `)` because field 2, the command name, may itself hold spaces or parens.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    fields = stat.rsplit(")", 1)[-1].split()
+    # fields[0] is field 3 (state), so field 22 is fields[19].
+    if len(fields) < 20:
+        return None
+    return fields[19], raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+
+
+def _waiter_dir_for_write() -> Path:
+    from scripts.utils.data_path import data_write_dir
+    return data_write_dir("runtime:herdr-waiters/state")
+
+
+def _waiter_dir_for_read() -> Path:
+    from scripts.utils.data_path import data_path
+    return data_path("runtime:herdr-waiters/state")
+
+
+def register_waiter(pane: str) -> Path:
+    """Write this process's record, atomically, and return its path."""
+    pid = os.getpid()
+    identity = _proc_identity(pid)
+    if identity is None:
+        raise RuntimeError(f"cannot read /proc/{pid} for this process")
+    record = {
+        "pid": pid,
+        "start_ticks": identity[0],
+        "cmdline": identity[1],
+        "pane": pane,
+        "workspace": pane.split(":", 1)[0],
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    target = _waiter_dir_for_write() / f"{pid}.json"
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, target)
+    return target
+
+
+def unregister_waiter(path: Path) -> None:
+    """Remove a record; an already-absent one is the ordinary outcome."""
+    path.unlink(missing_ok=True)
+
+
+def _record_is_live(record: dict) -> bool:
+    pid = record.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    identity = _proc_identity(pid)
+    # The command line must also be a herdr-wait.py one, so a record naming
+    # some other process of this user can never get it signalled.
+    return (identity is not None
+            and identity == (record.get("start_ticks"), record.get("cmdline"))
+            and "herdr-wait.py" in identity[1])
+
+
+def waiter_records() -> list[dict]:
+    """Every live waiter's record; a stale or unreadable one is deleted.
+
+    Stale means the PID is dead or its start time or command line no longer
+    match: the waiter was SIGKILLed and skipped its cleanup, or the PID was
+    reused. Each returned dict carries `_path`, its record file.
+    """
+    store = _waiter_dir_for_read()
+    if not store.is_dir():
+        return []
+    live = []
+    for path in sorted(store.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[herdr_agent] dropping unreadable waiter record {path.name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            unregister_waiter(path)
+            continue
+        if not isinstance(record, dict) or not _record_is_live(record):
+            unregister_waiter(path)
+            continue
+        record["_path"] = str(path)
+        live.append(record)
+    return live
+
+
+def stop_waiter(record: dict) -> bool:
+    """SIGTERM the one PID a record names, only if it is still that waiter.
+
+    Returns True when the signal was sent. A record that no longer matches its
+    process is stale: it is deleted and nothing is killed. Never a process
+    group, never a name pattern.
+    """
+    if not _record_is_live(record):
+        unregister_waiter(Path(record["_path"]))
+        return False
+    try:
+        os.kill(record["pid"], signal.SIGTERM)
+    except ProcessLookupError:
+        unregister_waiter(Path(record["_path"]))
+        return False
+    return True

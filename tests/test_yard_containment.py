@@ -116,8 +116,8 @@ CHILD_REFUSED_EXIT = 3    # the overlay child's own code for OverlayWriteRefused
 
 # Floors, asserted OUTSIDE every loop. A loop over a case table that came back
 # short passes while checking less than it claims.
-BLOCKED_CASE_FLOOR = 52   # MEASURED 2026-10-07 (HOS-211): 52 payloads the write guard blocks
-ALLOWED_CASE_FLOOR = 33   # and 33 it must let through
+BLOCKED_CASE_FLOOR = 52   # MEASURED 2026-10-31: 52 payloads the write guard blocks
+ALLOWED_CASE_FLOOR = 33   # MEASURED 2026-10-31: and 33 it must let through
 
 # The release gate's own two directions, counted 2026-09-22 when the mid-turn
 # source was written. Same reason as the two floors above: a case table that
@@ -352,7 +352,7 @@ def test_a_yard_is_refused_the_writes_that_reach_helm_or_the_shared_index(
     substitution (HOS-196), eight into the data repository's git directory
     (HOS-199), thirty-three into a place outside every checkout that decides what
     runs, or a command that changes it without naming a file (HOS-211), one deletion of HELM spelled through a variable put to the
-    deletion guard (HOS-199), and one hook planted through a `gitdir:` pointer
+    deletion guard (HOS-199), one hook planted through a `gitdir:` pointer
     file (HOS-199). The observable
     consequence is the decision object the hook returns, never the wording of
     the reason."""

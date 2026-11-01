@@ -1,7 +1,7 @@
 # Adaptive --relentless - /scrutinize Loop Mechanics
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md` (Relentless Mode section)
-**Last Updated:** 2026-05-27
+**Last Updated:** 2026-10-31
 
 Adaptive termination + verbal-memory ledger for `--relentless` runs. Closes R8 from the 2026-05-27 meta-review of /scrutinize.
 
@@ -102,11 +102,11 @@ Updated termination messages per reason code:
 
 - Pre-approval of fixes (no per-finding approval block during the loop)
 - Sequential apply per iteration with post-apply checks (sanitize-text, py_compile, frontmatter)
-- Incompatibility with `target=plan` (plans are conversational, not file-editable)
+- Incompatibility with a plan file
 - Per-iteration close line printing `applied / deferred / remaining` counts
 - One consolidated report saved at the standard path with cumulative applied-fix log
 
 ## What is incompatible with `--relentless` (unchanged)
 
-- `target=plan` - hard incompatibility, skill refuses with the v1.2 error message
+- a plan file - hard incompatibility, the skill refuses
 - Phase 4.5 eval-case promotion - relentless pre-approves fixes but promotion is a separate CEO decision per case

@@ -1,7 +1,7 @@
 # Code-Review Voices - /scrutinize external code specialists
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md` (Phase 1, code targets)
-**Last Updated:** 2026-07-18
+**Last Updated:** 2026-10-31
 
 Extra, non-Claude finding source for `/scrutinize` when the target is code. One
 independent code specialist runs in parallel with Claude's Identify pass, and
@@ -11,19 +11,19 @@ finding (false positives filtered, not trusted blindly):
 - **Kimi** (k3 at high reasoning effort, via the proxy) - the default
   focused-diff code reviewer; the same voice added to `/council`.
 
-It is code-scoped: it never fires on `plan`, `workspace`, or `trajectory`
+It is code-scoped: it never fires on a plan file, `workspace`, or `trajectory`
 targets.
 
 ## When it fires
 
-Auto-on for a **code target**, suppressible by `--no-code-review`:
+Always on for a **code target**:
 
 - `file:<path>` whose extension is code (`.py .js .ts .tsx .jsx .go .rs .java .kt
   .c .h .cpp .cc .rb .php .sh .bash .sql .swift .scala .lua .pl .r`), OR
 - `dir:<path>` that contains such files, OR
 - `execution` whose git diff touches such files.
 
-Do NOT fire for `plan` (no code), `workspace` (the code-surface specialist
+Do NOT fire for a plan file (no code), `workspace` (the code-surface specialist
 agent already covers code), or `trajectory` targets.
 
 Availability: the voice needs its pin present in the proxy catalog (`cliproxy
@@ -95,5 +95,5 @@ review` section when Phase 2.5 was skipped):
 - Code voice (Kimi): k3 (proxy, reasoning-effort high) - N candidates, M survived refutation, K corroborated Claude
 ```
 
-When the voice is skipped, log the reason, e.g. `- Code voice (Kimi): skipped
-(--no-code-review)` or `- Code voice (Kimi): unavailable (proxy unreachable)`.
+When the voice is skipped, log the reason, e.g. `- Code voice (Kimi): unavailable
+(proxy unreachable)`.

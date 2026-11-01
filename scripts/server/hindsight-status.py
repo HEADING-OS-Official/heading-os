@@ -10,12 +10,13 @@ Fields: services (systemd state per unit), halt (cliproxy-update HALT text or nu
 auth_expired (cliproxy-update AUTH_EXPIRED text, `<provider> <UTC time> <message>`, or
 null: present while a subscription login of the proxy is expired, removed by
 cliproxy-update once its checks pass), proxy_events (cliproxy-update events newer than `--since`, ISO 8601), cert_not_after,
-disk_pct (root filesystem), queue_waiting (pending + processing async operations),
+disk_pct (root filesystem), queue_waiting (pending async operations that are due, plus processing ones),
 queue_last_done_min (minutes since the newest operation COMPLETED, null when none ever
 has), queue_oldest_min (oldest pending/processing operation; kept for readers of the
 old field, no longer judged on its own), llm_auth_errors (LLM trace rows in the last
-hour whose error mentions 401/403), ops_failed (async operations now in status
-`failed`, per operation type: count and the newest failure's time; {} when none),
+hour whose error mentions 401/403), ops_failed (async operations in status `failed`
+that failed in the last FAILED_WINDOW_HOURS hours, per operation type: count and the
+newest failure's time; {} when none),
 backup_newest (newest pgBackRest backup label and stop time), backup_status,
 verify_result (systemd Result of the weekly verify unit).
 
@@ -35,7 +36,9 @@ The queue is judged by MOVEMENT, not by the age of its oldest item (HOS-179). ME
 2026-09-30: judging the oldest pending item sent `/fail` 101 of 139 pulses in 12 h
 during a bulk load; MEASURED 2026-10-01 on the server: 2593 completed (the newest 0 min
 before), 81 pending, 25 processing. A long queue that is being worked is healthy; the
-problem is work waiting while nothing completes.
+problem is work waiting while nothing completes. A pending row the server has deferred
+(next_retry_at in the future) is not waiting work (HOS-288, MEASURED 2026-11-01: five
+deferred refresh_mental_model rows raised a false stall at 23:01 UTC).
 
 `--verify-backup` exists because `pgbackrest verify` exits 0 on a corrupted repository
 (MEASURED 2026-09-29 with pgBackRest 2.58: one corrupted file gave `status: error` in
@@ -67,6 +70,8 @@ DISK_MAX_PCT = 75
 # Work waiting and nothing completed for this long is a stall. 30 is HELM's starting
 # proposal of 2026-10-01 (the old oldest-item limit carried over), not a measurement.
 QUEUE_STALL_MIN = 30
+# A failed operation is reported for this long after it failed, then no longer (HOS-288).
+FAILED_WINDOW_HOURS = 24
 VERIFY_UNIT = "pgbackrest-verify.service"
 VERIFY_TIMEOUT_S = 3600
 STANZA = "hindsight"
@@ -146,15 +151,19 @@ def ops_failed(snap: dict) -> str | None:
     threshold, as any LLM 401/403 is: nothing in Hindsight retries one by itself, so it
     stays failed until someone retries or deletes it (HOS-253; MEASURED 2026-10-23: five
     `refresh_mental_model` operations failed 2026-10-14/15 and sat unseen for nine days).
-    A snapshot without the field comes from a status script older than HOS-253 and is
-    not judged on it."""
+    Only failures of the last FAILED_WINDOW_HOURS hours are counted (HOS-288), so an old
+    failure stops repeating in every alert. A failure that a later completed operation of
+    the same type on the same target has superseded is not counted (HOS-289, MEASURED
+    2026-11-01: a mental model page failed at 18:26 UTC and refreshed at 19:05 UTC, and
+    the alert repeated the failure all day). A snapshot without the field comes from a
+    status script older than HOS-253 and is not judged on it."""
     failed = snap.get("ops_failed") or {}
     total = sum(v["count"] for v in failed.values())
     if not total:
         return None
     parts = [f"{t} {v['count']}" + (f", newest {v['newest']}" if v.get("newest") else "")
              for t, v in sorted(failed.items())]
-    return f"Hindsight operations failed: {total} ({'; '.join(parts)})"
+    return f"Hindsight operations failed: {total} in the last {FAILED_WINDOW_HOURS} h ({'; '.join(parts)})"
 
 
 # The verify summary's status tokens, read 2026-10-20 in pgBackRest's own source,
@@ -304,6 +313,14 @@ def self_test() -> int:
          n(queue_waiting=5, queue_oldest_min=50.0, queue_last_done_min=45.0) == 1),
         ("empty queue raises nothing however long since the last completion",
          n(queue_waiting=0, queue_oldest_min=0.0, queue_last_done_min=900.0) == 0),
+        ("waiting work with nothing completed for 45 min raised, oldest unknown",
+         n(queue_waiting=5, queue_last_done_min=45.0) == 1),
+        ("failed operations reported with their window",
+         problems({**good, "ops_failed": {"refresh_mental_model": {"count": 2, "newest": "2026-09-30T20:00:00+00:00"}}},
+                  now)
+         == ["Hindsight operations failed: 2 in the last 24 h "
+             "(refresh_mental_model 2, newest 2026-09-30T20:00:00+00:00)"]),
+        ("no failed operations in the window raises nothing", n(ops_failed={}) == 0),
         ("waiting work and nothing ever completed, oldest 45 min, raised",
          n(queue_waiting=2, queue_oldest_min=45.0, queue_last_done_min=None) == 1),
         ("waiting work and nothing ever completed, oldest 10 min, raises nothing",
@@ -393,9 +410,18 @@ def main(argv: list[str]) -> int:
         # completed_at is set on every completion path (read 2026-10-01 in the Hindsight
         # source, memory_engine.py and worker/poller.py at f2f24887c); updated_at is the
         # fallback for a completed row written by a version that did not set it.
-        v = psql("select count(*) filter (where status in ('pending','processing')), "
+        # A pending row counts as waiting only when it is due. Contract as observed
+        # 2026-11-01 through the MCP list_operations/get_operation of hindsight-main: the
+        # operation listing exposes next_retry_at, and the server defers
+        # refresh_mental_model rows by setting it in the future (each equal to its page's
+        # last_refreshed_at plus 6 hours); the deferral is the server's own schedule, not
+        # a stall. processing rows count as before.
+        # ASSUMED 2026-11-01: the async_operations column is next_retry_at, as the API field is named; HELM confirms on the first snapshot after deploy
+        v = psql("select count(*) filter (where status = 'processing' or (status = 'pending' "
+                 "and (next_retry_at is null or next_retry_at <= now()))), "
                  "coalesce(extract(epoch from now() - min(created_at) filter "
-                 "(where status in ('pending','processing')))/60, 0), "
+                 "(where status = 'processing' or (status = 'pending' "
+                 "and (next_retry_at is null or next_retry_at <= now()))))/60, 0), "
                  "extract(epoch from now() - max(coalesce(completed_at, updated_at)) filter "
                  "(where status = 'completed'))/60 from async_operations")
         waiting, oldest, done = v.split("|")
@@ -418,10 +444,33 @@ def main(argv: list[str]) -> int:
         # status='failed' and updated_at = NOW(), and completed_at only on some paths
         # (engine/memory_engine.py, the UPDATEs near lines 5599 and 5657), so the time of
         # a failure is coalesce(completed_at, updated_at). retry_operation sets the same
-        # row back to 'pending', so a retried failure leaves this count. Read-only.
-        v = psql("select operation_type, count(*), to_char(max(coalesce(completed_at, updated_at)) "
+        # row back to 'pending', so a retried failure leaves this count. Only failures of
+        # the last FAILED_WINDOW_HOURS hours are counted (HOS-288). Read-only. The only
+        # value built into the SQL is int(FAILED_WINDOW_HOURS), a constant: no input.
+        # A failure a later completed operation of the same type on the same target has
+        # superseded is not counted (HOS-289). Contract read 2026-11-01 in the same
+        # Hindsight 1.1.0 source: the target is not a column. async_operations.result_metadata
+        # is JSONB NOT NULL default '{}' (alembic/versions/5a366d414dce_initial_schema.py,
+        # line 230); refresh_mental_model is submitted with result_metadata
+        # {"mental_model_id": ..., "name": ...} (engine/memory_engine.py, line 24196), and
+        # list_operations reads the API fields mental_model_id and document_id as
+        # result_metadata->'mental_model_id' and ->'document_id' (engine/memory_engine.py,
+        # lines 22018 and 22022). The target is the mental model when the row names one,
+        # else the document; a row naming neither keeps counting. bank_id is matched too,
+        # because a document id is only unique inside its bank.
+        v = psql("select f.operation_type, count(*), to_char(max(coalesce(f.completed_at, f.updated_at)) "  # noqa: S608  # nosec B608 - constants only
                  "at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') "
-                 "from async_operations where status = 'failed' group by operation_type")
+                 "from async_operations f where f.status = 'failed' and coalesce(f.completed_at, f.updated_at) "
+                 f"> now() - interval '{int(FAILED_WINDOW_HOURS)} hours' "
+                 "and not exists (select 1 from async_operations c where c.status = 'completed' "
+                 "and c.operation_type = f.operation_type and c.bank_id = f.bank_id "
+                 "and coalesce(c.completed_at, c.updated_at) > coalesce(f.completed_at, f.updated_at) "
+                 "and ((f.result_metadata->>'mental_model_id' is not null "
+                 "and c.result_metadata->>'mental_model_id' = f.result_metadata->>'mental_model_id') "
+                 "or (f.result_metadata->>'mental_model_id' is null "
+                 "and f.result_metadata->>'document_id' is not null "
+                 "and c.result_metadata->>'document_id' = f.result_metadata->>'document_id'))) "
+                 "group by f.operation_type")
         failed = {}
         for line in v.splitlines():
             op_type, count, newest = line.rsplit("|", 2)

@@ -1,7 +1,7 @@
 # Workspace Areas - /scrutinize Parallel Dispatch
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md`
-**Last Updated:** 2026-04-17
+**Last Updated:** 2026-10-31
 
 **Data addresses.** Resources in the data repository are named here by their
 logical name, never by a path. Resolve the name before the file operation and
@@ -82,9 +82,9 @@ Return findings when complete. Do not wait for further instruction.
 
 ## Dispatch Mechanics
 
-Main session uses the Agent tool with `run_in_background: true` for all 5 agents in a single message (parallel execution). Each agent's prompt is the template above with its area-specific substitutions.
+The session that runs /scrutinize dispatches all 5 agents with the Agent tool in one message. Each agent's prompt is the template above with its area-specific substitutions.
 
-After dispatching, wait for all 5 to complete. Then run the synthesis phase.
+When an agent's result has not arrived, say which areas are outstanding and continue the phase when each result arrives. Run the synthesis phase only after all 5 results are in; never write the final report while a dispatched agent is outstanding.
 
 ### Fallback when Agent tool is unavailable
 

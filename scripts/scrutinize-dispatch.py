@@ -82,6 +82,7 @@ from scripts.utils.proxy_transport import call_model  # noqa: E402
 from scripts.utils.user_agent import user_agent  # noqa: E402
 from scripts.utils.venv_guard import venv_python  # noqa: E402
 from scripts.utils.scrutinize_record import (  # noqa: E402
+    ARGUMENT_SIDES,
     JUDGE_FAMILIES,
     append_row,
     last_reproduction,
@@ -387,17 +388,31 @@ def assign_families(*, assignment: int) -> dict[str, str]:
 # ============================================================
 # Judge
 # ============================================================
+# The two-agent debate pass, whose Advocate and Skeptic write argument rows.
+DEBATE_ROUND = "2.5b"
+
 @observe(name="scrutinize-judge")
 def judge(
     *, run_id: str, target: str, finding_id: str, pass_: str, brief: str,
-    family: str, verdict: str | None = None,
+    family: str, verdict: str | None = None, side: str | None = None,
 ) -> int:
     """Dispatch one judge call and record its verdict. Returns an exit code.
 
     `family="claude"` records a verdict the running session produced, without a
     proxy call - the Claude judge IS this session. Every other family in
     `EXTERNAL_JUDGE_MODEL` makes the call over the proxy.
+
+    A 2.5b Advocate or Skeptic answers with an argument, not a ruling, so its
+    call writes an `argument` row and no verdict is looked for. For a Claude
+    side, `chars` is the length of the `--brief-file` text, which the session
+    fills with its argument.
     """
+    is_argument = pass_ == DEBATE_ROUND and side in ARGUMENT_SIDES
+    if family == "claude" and is_argument:
+        append_row(run_id=run_id, kind="argument", target=target,
+                   finding_id=finding_id, pass_=pass_, judge_family="claude",
+                   payload={"side": side, "chars": len(brief)})
+        return 0
     if family == "claude":
         # An omitted `--verdict` wrote a kind="verdict" row carrying None and
         # returned 0. `scrutinize_record.validate()` counts verdict rows by kind
@@ -478,6 +493,12 @@ def judge(
         return 1
 
     text = response if isinstance(response, str) else str(response)
+    if is_argument:
+        append_row(run_id=run_id, kind="argument", target=target,
+                   finding_id=finding_id, pass_=pass_, judge_family=family,
+                   payload={"side": side, "chars": len(text)})
+        print(text)
+        return 0
     found = _verdict_in(text)
     if found is None:
         # The SAME defect the claude branch above documents and refuses, on the
@@ -984,6 +1005,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{RED}ERROR: --finding and --pass are required{RESET}", file=sys.stderr)
         return 2
     family = args.family
+    # A 2.5b call must say which side it is: an Advocate or Skeptic answer is an
+    # argument row and a Meta-Judge answer is a verdict, and a pinned family
+    # alone cannot tell the two apart.
+    if args.pass_ == DEBATE_ROUND and family is not None and not args.side:
+        print(f"{RED}ERROR: --pass 2.5b with --family requires --side{RESET}",
+              file=sys.stderr)
+        return 2
     if family is None:
         if not args.side:
             print(f"{RED}ERROR: --family or --side is required{RESET}", file=sys.stderr)
@@ -1014,7 +1042,8 @@ def main(argv: list[str] | None = None) -> int:
               f"for the {family} judge{RESET}", file=sys.stderr)
         return 2
     return judge(run_id=args.run_id, target=args.target, finding_id=args.finding,
-                 pass_=args.pass_, brief=brief, family=family, verdict=args.verdict)
+                 pass_=args.pass_, brief=brief, family=family, verdict=args.verdict,
+                 side=args.side)
 
 
 if __name__ == "__main__":

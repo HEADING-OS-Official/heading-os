@@ -3,7 +3,7 @@ name: scrutinize
 disable-model-invocation: true
 description: >
   Principal-engineer review gate. Runs a Validate-Identify-Improve-Adjust
-  (VIIA) pass over a target - a plan awaiting approval, just-executed work, a specific
+  (VIIA) pass over a target - a plan file awaiting approval, just-executed work, a specific
   file or directory, or the entire workspace - then runs an adversarial refutation
   layer (Phase 2.5) with cross-family judge rotation (Claude, Kimi k3, ChatGPT) and
   optional two-agent debate on BLOCKER + HIGH findings before presenting findings
@@ -13,25 +13,22 @@ description: >
   improve", "review the plan before I approve", "audit what you just did".
   Do NOT trigger for a single artifact check alone (run scripts/artifact-evaluator.py)
   or strategic reasoning (use /deep-think).
-argument-hint: "[plan | execution | file:<path> | dir:<path> | workspace | trajectory:<run_id>] [--relentless] [--no-refute] [--include-low-confidence] [--include-ambiguous] [--no-code-review]"
+argument-hint: "[execution | file:<path> | dir:<path> | workspace | trajectory:<run_id>] [--relentless] [--no-refute]"
 allowed-tools: "Read, Glob, Grep, Bash(.venv/bin/python:*), Bash(git:*), Edit, Write, Agent"
-context: fork
-# Backgrounded forks lack the Agent tool; this skill dispatches specialists.
-background: false
 metadata:
   author: Misha Hanin
   email: misha.hanin@headingos.com
-  version: "2.4"
+  version: "2.5"
 x-heading-capability:
   what: >
-    Maximum-effort review gate over a plan, executed work, a file or dir, the workspace, or a past /implement trajectory. Produces evidence-backed findings with confidence scores and proposed fixes, after an adversarial layer drops false positives. Blocks progress until approved.
+    Maximum-effort review gate over a plan file, executed work, a file or dir, the workspace, or a past /implement trajectory. Produces evidence-backed findings with confidence scores and proposed fixes, after an adversarial layer drops false positives. Blocks progress until approved.
   how: >
-    Explicit-invocation only (disable-model-invocation). Run /scrutinize [plan | execution | file:<path> | dir:<path> | workspace | trajectory:<run_id>] [--relentless] [--no-refute] [--include-low-confidence] [--include-ambiguous] [--no-code-review]. Reports save under scrutiny-sheets.
+    Explicit-invocation only (disable-model-invocation). Run /scrutinize [execution | file:<path> | dir:<path> | workspace | trajectory:<run_id>] [--relentless] [--no-refute]. Reports save under scrutiny-sheets.
   when: >
-    Use to stress-test a plan before approval or audit changes after /implement. For a deterministic check of one artifact run scripts/artifact-evaluator.py; for decision reasoning use /deep-think.
+    Use to stress-test a plan file before approval or audit changes after /implement. For a deterministic check of one artifact run scripts/artifact-evaluator.py; for decision reasoning use /deep-think.
 x-heading-routing:
   category: Operations
-  label: /scrutinize [target] [--relentless] [--no-refute] [--include-low-confidence] [--include-ambiguous] [--no-code-review]
+  label: /scrutinize [target] [--relentless] [--no-refute]
   triggers:
     - NEVER auto-trigger. Explicit `/scrutinize [target] ...` only.
   exclusions:
@@ -62,7 +59,7 @@ Check all three by hand whenever the catalog changes.
 
 Manual invocation only.
 
-**Use** it before approving a high-stakes plan, or after `/implement` to audit the changes against that plan. Use it on a file or a dir when something feels off, and periodically on the workspace to catch drift.
+**Use** it on a high-stakes plan file before approving it, or after `/implement` to audit the changes against that plan. Use it on a file or a dir when something feels off, and periodically on the workspace to catch drift.
 
 **Do NOT use** it for a single artifact check (`scripts/artifact-evaluator.py`), decision reasoning (`/deep-think`), or content-quality review of a post or an email.
 
@@ -74,26 +71,27 @@ Manual invocation only.
 
 2. **Load applicable rules:** `.claude/rules/{development-standards,hidden-chars,security,classification,voice}.md`.
 
-3. **Resolve target** per `references/target-detection.md`. Parse an explicit argument from the invocation when one is present. Otherwise apply the priority order plan > execution (git) > menu. Print a confirmation line for priorities 2 to 4 and wait for the user. Use the new target when they redirect you.
+3. **Resolve target** per `references/target-detection.md`. Parse an explicit argument from the invocation when one is present. Otherwise apply the priority order execution (git) > menu. Print a confirmation line for priorities 2 and 3 and wait for the user. Use the new target when they redirect you. A plan is reviewed as `file:<path>`. When the user asks to review a plan without a file, ask for its path. A typed `/scrutinize plan` prints exactly `The plan target is retired. Run /scrutinize file:<path of the plan>.` and stops.
 
 4. **Resolve scope** per target:
-   - Plan: extract the most recent plan text from conversation.
    - Execution: git status + session commits (see references/target-detection.md for the full resolver).
-   - File: read the file.
+   - File: read the file. It is a **plan file** when its path resolves under registry name `plans` (`.venv/bin/python scripts/data-path.py path plans`) or its first line starts with `# Plan:`.
    - Dir: glob the dir with standard exclusions.
    - Workspace: no scope loading here - Phase 2 dispatches specialists.
 
-5. **Open the run record:** `.venv/bin/python scripts/scrutinize-dispatch.py --pass-start --run-id <id> --target <t>`. A pass with no `pass_start` row fails `--validate`.
+5. **Mint the run id and the scratch directory.** Derive the slug per `references/target-detection.md` § Slug and run id. The run id is `<YYYY-MM-DD>_<HHMMSS>_<slug>`. The scratch directory is `<.venv/bin/python scripts/data-path.py scratch>/scrutinize/<run_id>/`. Every later temporary file goes there.
 
-6. **Tracing needs no step.** Every `scripts/scrutinize-dispatch.py` subcommand runs in its own Langfuse span (`scrutinize-judge`, `-role-scan`, `-currency`, `-reproduce`, `-promote`). Spans flow only when `SENSITIVE_MODE` is explicitly cleared and `LANGFUSE_ENABLED` is not false; tags and the report footer per `references/observability.md`.
+6. **Open the run record:** `.venv/bin/python scripts/scrutinize-dispatch.py --pass-start --run-id <id> --target <t>`. A pass with no `pass_start` row fails `--validate`.
 
-7. **Optional - prime the Identify pass with named methods.** On a hard target, pull 2 to 5 critique methods from `reference/elicitation-methods.md`. Examples: Pre-mortem Analysis, Inversion Analysis, Assumption Audit. Run `.venv/bin/python scripts/elicit.py list --category risk|core`, then `show "<Method>"`. Use them to structure the VIIA Identify stage. This composes with Phase 2.5 and never replaces it. Skip it when the viia-framework subchecks already cover the target.
+7. **Tracing needs no step.** Every `scripts/scrutinize-dispatch.py` subcommand runs in its own Langfuse span (`scrutinize-judge`, `-role-scan`, `-currency`, `-reproduce`, `-promote`). Spans flow only when `SENSITIVE_MODE` is explicitly cleared and `LANGFUSE_ENABLED` is not false; tags and the report footer per `references/observability.md`.
+
+8. **Optional - prime the Identify pass with named methods.** On a hard target, pull 2 to 5 critique methods from `reference/elicitation-methods.md`. Examples: Pre-mortem Analysis, Inversion Analysis, Assumption Audit. Run `.venv/bin/python scripts/elicit.py list --category risk|core`, then `show "<Method>"`. Use them to structure the VIIA Identify stage. This composes with Phase 2.5 and never replaces it. Skip it when the viia-framework subchecks already cover the target.
 
 ---
 
 ## Phase 1 - VIIA Pass (non-workspace targets)
 
-For targets `plan`, `execution`, `file`, `dir`:
+For targets `execution`, `file`, `dir`:
 
 Apply the four phases from `references/viia-framework.md`:
 
@@ -106,9 +104,9 @@ Apply the four phases from `references/viia-framework.md`:
 
 For any `SKILL.md`, `scripts/*.py`, rule, or reference file in scope: call `.venv/bin/python scripts/artifact-evaluator.py --path <file> --json` first to pick up deterministic findings, then add qualitative VIIA layer on top.
 
-**Code targets - external code voice (auto-on unless `--no-code-review`):** dispatch the external code voice in parallel with Identify. It fires on a code `file:` or `dir:`, and on an `execution` whose diff touches code. Its candidates merge into the Identify set, de-duped, then face Phase 2.5 like any other. Skip silently for `plan`/`workspace`/`trajectory` and when the proxy is unavailable (note it, never fail the pass). Firing rules, dispatch, merge and logging: `references/code-review-voice.md`.
+**Code targets - external code voice (always on):** dispatch the external code voice in parallel with Identify. It fires on a code `file:` or `dir:`, and on an `execution` whose diff touches code. Its candidates merge into the Identify set, de-duped, then face Phase 2.5 like any other. Skip silently for a plan file, `workspace` and `trajectory`, and when the proxy is unavailable (note it, never fail the pass). Firing rules, dispatch, merge and logging: `references/code-review-voice.md`.
 
-**Plan targets - goldfish read (auto):** write the plan to a file and dispatch the `goldfish` agent in mode `plan`, per `.claude/skills/goldfish/SKILL.md` Phases 0-1. Its findings join Identify as lens `goldfish`. Phase 2.5 skips plans, so this is the plan's one independent read.
+**Plan files - goldfish read (auto):** dispatch the `goldfish` agent in mode `plan` on the plan file, per `.claude/skills/goldfish/SKILL.md` Phases 0-1. Its findings join Identify as lens `goldfish` and face Phase 2.5 like any other.
 
 **Role lenses (auto, by path trigger):** `.venv/bin/python scripts/scrutinize-dispatch.py --role-scan --run-id <id> --target <t> --paths <scope>` fires the ops, scheduler and boundary checklists whose globs match; each writes a `role` row. A lens finding citing neither its commands nor its artifacts is not a lens finding. Full taxonomies: `references/role-lenses.md`.
 
@@ -118,7 +116,7 @@ For any `SKILL.md`, `scripts/*.py`, rule, or reference file in scope: call `.ven
 
 ## Phase 2 - Parallel Dispatch (workspace target only)
 
-For `target = workspace`: dispatch the 5 area specialists in one background message using the brief in `references/workspace-areas.md`; announce it; wait for all 5. A failed area is flagged partial, not fatal; with no Agent tool, run them sequentially and say so in the header. Then synthesise across areas and consolidate for Phase 2.5. Brief, areas, degradation rules and how the role lenses compose with them: `references/workspace-areas.md`.
+For `target = workspace`: dispatch the 5 area specialists in one message per `references/workspace-areas.md`, and announce it. When a result has not arrived, say which areas are outstanding. Continue the phase when each result arrives. Never write the final report while a dispatched agent is outstanding. A failed area is flagged partial, not fatal; with no Agent tool, run them sequentially and say so in the header. Then synthesise across areas and consolidate for Phase 2.5. Brief, areas, degradation rules and how the role lenses compose with them: `references/workspace-areas.md`.
 
 ---
 
@@ -129,10 +127,10 @@ Inserted in v2.0. Full protocol in `references/refutation-protocol.md`. Bias mit
 **Skip entirely when:**
 
 - `--no-refute` flag is set
-- `target = plan` (refutation has poor grip on conversational text)
 - Phase 1/2 emitted zero BLOCKER/HIGH/MEDIUM findings
 - `SENSITIVE_MODE` active AND cross-family rotation not available
-- The user just typed `--include-low-confidence` and only LOW/NIT findings exist
+
+Below-threshold findings are not refuted.
 
 Announce the skip explicitly in the approval block header.
 
@@ -159,7 +157,7 @@ Produce the approval block inline per the exact layout in `references/approval-b
 
 - **Grade** is one of `PASS | PASS-WITH-NOTES | NEEDS-REWORK | BLOCKED`. The header MUST carry the `Refutation:` line: it is the one signal `--validate` reconciles the record against.
 - **Only explicit commands act.** Silence, ambiguity, or "looks good" means WAIT.
-- **Confidence threshold 75** by default; `--include-low-confidence` shows the rest.
+- **Confidence threshold 75.** Below-threshold and AMBIGUOUS findings are listed in a `Not proposed` section (id, one line, score) right after the approval block, never inside it.
 - Block layout, every per-command semantic, the no-findings and BLOCKED lines: `references/approval-block.md`.
 
 ---
@@ -185,7 +183,7 @@ For `workspace` target: apply per area, with one-line confirmation per area comp
 
 `references/eval-case-template.md` carries the eligibility rules, the draft-case generation, the auto-scaffold workflow, the per-target artefact shapes, and the approval-block format. Read it before you propose a promotion.
 
-**Skip entirely when:** `--relentless` is active, `target = plan`, or no applied finding qualifies.
+**Skip entirely when:** `--relentless` is active, the target is a plan file, or no applied finding qualifies.
 
 **Flow:**
 
@@ -202,14 +200,7 @@ With one or more candidates, announce before the block: `"Phase 4.5: <N> finding
 
 ## Phase 5 - Report Persistence (tiered)
 
-`plan` gives inline output only. Save nothing.
-
-Every other target saves to `YYYY-MM-DD-<slug>.md` under `scrutiny-sheets`, which already exists. The slug is:
-
-- `execution` and `workspace`, literally
-- for `file:<path>`, the last path segment without its extension
-- for `dir:<path>`, the last dir segment
-- for `trajectory:<run_id>`, `trajectory-<run_id-slug>`, taking the part after the final `_`
+Every target saves to `<YYYY-MM-DD>-<slug>.md` under `scrutiny-sheets`, with the Phase 0 slug. A plan file saves like any `file:` report.
 
 After saving, run `.venv/bin/python scripts/scrutinize-record.py --validate --run-id <id> --report <path>` and surface any defect verbatim. It sees omission, not intent: the Claude-side verdict is still session-supplied.
 
@@ -238,7 +229,8 @@ After saving, run `.venv/bin/python scripts/scrutinize-record.py --validate --ru
 - Never exceed 10 iterations in `--relentless` mode (raised from 5 with adaptive termination)
 - Never roll back applied fixes in `--relentless` mode on post-apply check failure - halt and surface
 - Never skip post-apply checks in `--relentless` mode
-- Never run `--relentless` against `target=plan`
+- Never run `--relentless` against a plan file
+- Never write the final report while a dispatched agent is outstanding
 - Never auto-create the `evals/cases/` directory - offer auto-scaffold as a CEO-gated step (`scaffold and promote ...`, `scaffold only`, or `skip`)
 - Never overwrite an existing eval-case JSON; always pick the next free `case-{N}-{slug}.json`
 - Never create a file under `tests/` from Phase 4.5. A script finding promotes to a reproduction command and a proposed `Fix-Note:` line. Only a failure A or B finding becomes a test. That test is a new function in the existing file that holds that guarantee, and never carries a real assertion the CEO has not approved

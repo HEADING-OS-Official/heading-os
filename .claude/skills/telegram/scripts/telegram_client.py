@@ -500,6 +500,10 @@ async def cmd_read(client, args):
                 "text": msg.text or "",
                 "media": bool(msg.media),
                 "reply_to": msg.reply_to.reply_to_msg_id if msg.reply_to else None,
+                "sender_id": msg.sender_id,
+                "forwarded": msg.fwd_from is not None,
+                "edit_date": format_date_iso(msg.edit_date),
+                "media_type": type(msg.media).__name__ if msg.media else None,
             })
         print(json.dumps({"chat": chat_name, "messages": result}, ensure_ascii=False))
     else:

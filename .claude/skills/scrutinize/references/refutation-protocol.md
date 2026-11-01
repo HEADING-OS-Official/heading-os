@@ -1,7 +1,7 @@
 # Refutation Protocol - /scrutinize Phase 2.5
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md` (Phase 2.5)
-**Last Updated:** 2026-09-11
+**Last Updated:** 2026-10-31
 
 The adversarial verification layer that filters false positives before findings reach the approval block. Closes R1 (disprove step) and R6 (two-agent debate on BLOCKER + HIGH) from the 2026-05-27 meta-review of /scrutinize.
 
@@ -69,13 +69,13 @@ For findings that survived Phase 2.5a at severity BLOCKER or HIGH, run a Khan-st
 
 3. **Meta-Judge** (one of the families the Skeptic is not - see the binding rule at step 6). Brief: "Read both sides. Decide. Verdict: CORRECT (finding is real at its stated severity, keep it), CORRECT_DOWNGRADE (finding is real but the stated severity is too high, keep it one tier lower), INCORRECT (drop), or AMBIGUOUS (drop and surface to CEO). Score: 100 if certain CORRECT, 80 if lean-CORRECT, 60 if AMBIGUOUS, 0 if INCORRECT. Max 100 words explaining the decision, and when downgrading, name the tier you are moving it to."
 
-4. Advocate and Skeptic run IN PARALLEL (single Agent tool call message). Meta-Judge runs AFTER both return. This keeps wall-clock low.
+4. Advocate and Skeptic run IN PARALLEL (single Agent tool call message). Meta-Judge runs AFTER both return. This keeps wall-clock low. Each side goes through `scrutinize-dispatch.py --judge --pass 2.5b --side advocate|skeptic`, which records an `argument` row (side and answer length, no text, no verdict); for a Claude side the `--brief-file` holds the side's argument and no `--verdict` is passed. Only the Meta-Judge call (`--side meta`) records a verdict. A 2.5b call with `--family` and no `--side` is refused.
 
 5. Outcomes:
    - `CORRECT` (score >= 75) -> finding proceeds to approval block with the Meta-Judge score replacing the original confidence.
    - `CORRECT_DOWNGRADE` (score >= 75) -> finding proceeds with the Meta-Judge score AND severity lowered one tier (BLOCKER -> HIGH, HIGH -> MEDIUM), mirroring 2.5a's `REFUTE_PARTIAL`. Added 2026-08-09: the outcome set carried a verdict and a score but no severity channel, so a debate that concluded "real, but not at this severity" had nowhere to put the conclusion. On the impeccable trajectory audit both debates produced exactly that, and both judges had to be re-asked for severity out of band, which is a grading habit forming outside the protocol. Downgrading is a judgement the debate is well placed to make and the verdict channel simply could not carry.
    - `INCORRECT` (score < 60) -> finding DROPPED, logged in "Refuted" section.
-   - `AMBIGUOUS` (60 <= score < 75) -> finding DROPPED from approval block by default. If `--include-ambiguous` is set, finding appears in the approval block flagged `[AMBIGUOUS]` for the CEO to manually adjudicate.
+   - `AMBIGUOUS` (60 <= score < 75) -> finding left out of the approval block and listed in the `Not proposed` section after it, tagged `AMBIGUOUS`, for the CEO to read.
 
 6. The adversarial split enforces self-preference mitigation. The roster has held three families since 2026-09-11, so all three roles COULD differ, and they do not: the split keeps the Advocate and the Skeptic in one family by design and forces only the Meta-Judge out of it. The binding rule is therefore the same one the two-family roster carried, narrower and stricter than "all three differ": the **Skeptic and the Meta-Judge must never be the same family**, because a Meta-Judge ruling on its own family's refusal to refute is the exact bias being mitigated. The wider roster changed which pair gets seated, not the rule. `scripts/scrutinize-dispatch.assign_families()` makes the assignment from the six ordered pairs of distinct families, and `assignment_for_run()` derives which one from the run id, so neither is a choice the reviewing model gets to make. If only Claude is reachable (proxy down, both external pins absent from `cliproxy models`, or the session DECLARED sensitive), fall back to Phase 2.5a single-pass refutation only, and surface the degradation WITH ITS CAUSE in the approval block and in the `## Judge layer` section; the dispatcher also writes a `degraded` row, and `--validate` fails a report that claims a skip without one. Dropping a debate role and recording nothing but "not exercised" is a skipped mitigation dressed as a note.
 
@@ -167,7 +167,6 @@ This serves two purposes: (a) audit trail so the CEO can spot-check whether the 
 
 Phase 2.5 is skipped entirely when:
 
-- `target = plan` - plans are conversational, refutation has poor grip on prose
 - `--no-refute` flag is set (CEO override for quick passes)
 - Phase 2 emitted zero BLOCKER/HIGH/MEDIUM findings - nothing to refute
 - fewer than 2 of the three judge families are reachable - falls back to 2.5a single-family only (degradation reported in approval block header)

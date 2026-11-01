@@ -1,7 +1,7 @@
 # Workspace Deep Audit - Inventory Streams
 
 Consumed by: `.claude/skills/workspace-deep-audit/SKILL.md` Phase 1.
-Last Updated: 2026-09-25
+Last Updated: 2026-10-31
 
 **Data addresses.** Resources in the data repository are named here by their
 logical name, never by a path. Resolve the name before the file operation and
@@ -14,7 +14,7 @@ Use `read <name>` for a source that may legitimately be absent, and
 refuses; it never resolves to a plausible directory, and a path written out
 here goes stale the day the directory moves.
 
-7 parallel inventory streams. Each is a self-contained agent prompt. Concurrency cap 5 per wave: if running all 7, batch 5 + 2.
+7 parallel inventory streams. Each is a self-contained agent prompt. Concurrency cap 5 per wave: if running all 7, batch 5 + 2. Dispatch each wave in one message from the session that runs the skill; dispatch the second wave after the first wave's results are in, and never write the report while a stream is outstanding.
 
 All streams are READ-ONLY. None modifies workspace files. Each returns an inline JSON-shaped summary that the synthesis phase consumes.
 

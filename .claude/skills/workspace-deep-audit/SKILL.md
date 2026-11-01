@@ -17,16 +17,10 @@ description: >
 disable-model-invocation: true
 argument-hint: "[--mode={full|quick|focus}] [--focus={skills|rules|deps|security|architecture|observability}] [--vs=<previous_audit_path>]"
 allowed-tools: "Read, Write, Edit, Glob, Grep, Bash(.venv/bin/python:*), Bash(git:*), Bash(wc:*), Bash(du:*), Bash(pre-commit:*), Agent, WebSearch, WebFetch"
-context: fork
-# Backgrounded forks (the default since Claude Code 2.1.218) get the narrower
-# background-subagent tool set, which has no Agent tool. This skill dispatches
-# parallel specialists and only degrades to sequential; keep it in the
-# foreground so the parallel path stays available. Added 2026-08-20.
-background: false
 metadata:
   author: Misha Hanin
   email: misha.hanin@headingos.com
-  version: "1.0"
+  version: "1.1"
 x-heading-capability:
   what: >
     The heaviest workspace skill - a comprehensive 8-section deep audit (executive
@@ -103,7 +97,7 @@ Confirm before proceeding only if `--mode=full` (the heaviest path). For `--mode
 
 ## Phase 1 — Parallel Inventory (up to 7 agents)
 
-Dispatch parallel inventory agents per `references/inventory-streams.md`. Each agent is read-only, returns inline JSON-shaped summary, writes nothing. Concurrency cap: 5 per wave — if all 7 streams needed, batch as 5 + 2.
+Dispatch parallel inventory agents per `references/inventory-streams.md`. Each agent is read-only, returns inline JSON-shaped summary, writes nothing. Concurrency cap: 5 per wave — if all 7 streams needed, batch as 5 + 2. Dispatch each wave in one message. When a result has not arrived, say which streams are outstanding and continue when each arrives. Dispatch the second wave after the first wave's results are in.
 
 Streams:
 
@@ -252,6 +246,7 @@ Append a log entry to the active audit thread (or open one if none exists) at `{
 - NEVER fabricate competitor information. The 14-platform baseline is sourced and version-stamped; if competitor data is needed beyond the baseline, run live WebSearch and cite.
 - NEVER inflate findings. If the workspace has zero P0 items, the report says so. Honesty floor matches `/devil` discipline.
 - NEVER claim "demonstrable" without backing every claim with a hash / count / pin / run output.
+- NEVER write the report while a dispatched agent is outstanding.
 - NEVER trigger this skill recursively. If a recommendation surfaces "run a deeper audit on subsystem X," that's a `--mode=focus` invocation by the CEO, not an inline re-entry.
 
 ## Failure Modes

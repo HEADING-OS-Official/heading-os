@@ -1,7 +1,7 @@
 # Severity Grid - /scrutinize Findings
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md`
-**Last Updated:** 2026-05-27
+**Last Updated:** 2026-10-31
 
 Five-level severity scale plus a 0-100 confidence score for findings produced by a `/scrutinize` VIIA pass. Severity determines required action and approval urgency; confidence determines what gets surfaced in the approval block.
 
@@ -110,7 +110,7 @@ Every finding includes a confidence score alongside its severity. The score is t
 | **75** | Highly confident, real and important |
 | **100** | Certain, definitely real |
 
-**Default threshold: 75.** Findings below threshold log to the saved report but do NOT appear in the approval block unless `--include-low-confidence` is passed.
+**Default threshold: 75.** Findings below threshold never appear in the approval block; they are listed in the `Not proposed` section after it (`references/approval-block.md`) and are not refuted.
 
 **Approval block format with confidence:**
 

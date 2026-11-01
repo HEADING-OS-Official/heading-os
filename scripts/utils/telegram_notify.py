@@ -1,4 +1,5 @@
-"""Single entry point for HEADING OS system notifications: notify(target, message).
+"""Entry points for HEADING OS system notifications: notify(target, message)
+and notify_file(target, path, caption).
 
 Sends via the dedicated notifications bot (TELEGRAM_NOTIFY_BOT_TOKEN), not the
 userbot client - a Bot API sendMessage always push-notifies reliably, unlike a
@@ -13,10 +14,14 @@ the third leg of the lethal trifecta, and the workspace closes it by constructio
 here rather than by asking every caller to behave: see
 `.claude/rules/lethal-trifecta.md` under self-notification.
 
-The allowlist and its resolution order live in `own_targets()` below.
+The allowlist and its resolution order live in `own_targets()` below. Both
+senders, notify() for text and notify_file() for a document, are self-only and
+both pass through the one check in `_own_sink()`; notify_file() additionally
+refuses a relative path, a non-file, anything over the Bot API's 50 MB upload
+limit, and a record whose frontmatter forbids it leaving the machine.
 
-notify() NEVER raises. It degrades to False (with a clear, distinct log hint)
-on: a missing token, an empty/falsy target, Telegram's own "me"/"self"/"saved"
+Neither sender raises. notify() degrades to False (with a clear, distinct log
+hint) on: a missing token, an empty/falsy target, Telegram's own "me"/"self"/"saved"
 (Saved Messages) sentinels - which have no Bot API equivalent, since a bot
 cannot resolve its caller's own account - or a target that is not on the
 allowlist. Nothing in HEADING OS may ever send a notification to Saved Messages,
@@ -27,13 +32,16 @@ Usage::
 
     from scripts.utils import telegram_notify
     ok = telegram_notify.notify(os.environ.get("ODIN_CADENCE_TELEGRAM_TARGET", ""), "text")
+    ok = telegram_notify.notify_file(target, "/abs/path/report.html", "caption")
 """
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 from scripts.utils.paths import load_env
+from scripts.utils.sensitivity import publish_refusal
 from scripts.utils.telegram_bot import TelegramAPIError, TelegramBot
 
 logger = logging.getLogger("telegram_notify")
@@ -155,12 +163,13 @@ def own_targets() -> set[str]:
     return allowed
 
 
-def notify(target: str, message: str) -> bool:
-    """Send a system notification to the operator's own sink via the bot.
+def _own_sink(target: str) -> tuple[str, TelegramBot] | None:
+    """The token and allowlist checks both senders run before a send.
 
-    Returns True on a clean send, False on any failure (missing token,
-    unresolvable target, a target that is not an own sink, transport/API
-    error). NEVER raises. NEVER sends to a target outside ``own_targets()``.
+    Returns the caller's ORIGINAL ``target`` (never the normalised form, which
+    drops the "@" a channel username needs) and a bot, or None after logging
+    why nothing may be sent. One copy on purpose: a second transcription of the
+    allowlist check is the one that stops being fixed.
     """
     load_env()
     token = os.environ.get("TELEGRAM_NOTIFY_BOT_TOKEN")
@@ -170,7 +179,7 @@ def notify(target: str, message: str) -> bool:
             "no notification sent. See TELEGRAM-AND-ALERTS.md in the data repository "
             "(registry name spec-docs) for one-time setup."
         )
-        return False
+        return None
 
     wanted = _normalise(target)
     if not wanted or wanted in _UNRESOLVABLE_TARGETS:
@@ -181,7 +190,7 @@ def notify(target: str, message: str) -> bool:
             "*_TELEGRAM_TARGET env var.",
             target,
         )
-        return False
+        return None
 
     allowed = own_targets()
     if wanted not in allowed:
@@ -201,15 +210,98 @@ def notify(target: str, message: str) -> bool:
             ", ".join(_FEATURE_TARGET_ENV_VARS),
             len(allowed),
         )
-        return False
+        return None
 
-    bot = TelegramBot(token)
+    return target, TelegramBot(token)
+
+
+def notify(target: str, message: str) -> bool:
+    """Send a system notification to the operator's own sink via the bot.
+
+    Returns True on a clean send, False on any failure (missing token,
+    unresolvable target, a target that is not an own sink, transport/API
+    error). NEVER raises. NEVER sends to a target outside ``own_targets()``.
+    """
+    sink = _own_sink(target)
+    if sink is None:
+        return False
+    target, bot = sink
     try:
         # Plain text (parse_mode=None): system notifications are literal lines
         # that routinely contain Markdown-special chars (_ in file paths,
         # access_count, etc.). Markdown parsing would 400 on an unbalanced token.
         bot.send_message(target, message, parse_mode=None, disable_web_page_preview=True)
     except TelegramAPIError as exc:
+        logger.warning("telegram_notify: send failed: %s", exc)
+        return False
+    return True
+
+
+# The Bot API's own limits: 50 MB per uploaded file, 1024 characters per caption.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_MAX_CAPTION_CHARS = 1024
+
+
+def notify_file(target: str, path, caption: str = "") -> bool:
+    """Send one file to the operator's own sink via the bot, as a document.
+
+    Same boundary as ``notify()``: the target goes through ``_own_sink``, so a
+    file can reach no recipient a text notification could not. The path must be
+    absolute (a relative one would resolve against whatever directory the
+    caller happens to run in, so the operator could receive a different file
+    than the one named), an existing regular file, at most ``MAX_UPLOAD_BYTES``, and
+    not a record whose frontmatter forbids it leaving the machine
+    (``publish_refusal``, the same check the Telegram client makes before an
+    upload). A caption over 1024 characters is cut to 1024.
+
+    Returns True on a clean send, False on any refusal or failure. NEVER raises.
+    NEVER sends to a target outside ``own_targets()``.
+    """
+    if not isinstance(path, (str, os.PathLike)) or not Path(path).is_absolute():
+        logger.warning(
+            "telegram_notify: file path %r is not absolute - nothing sent.", path,
+        )
+        return False
+    # Every filesystem call before the send sits in this one handler: a
+    # directory the process cannot traverse makes resolve, is_file or stat
+    # raise PermissionError, and this function must not raise.
+    try:
+        file_path = Path(path).resolve()
+        is_file = file_path.is_file()
+        size = file_path.stat().st_size if is_file else 0
+        # The sensitivity check reads the whole file, so only one within the limit.
+        refusal = (publish_refusal(file_path)
+                   if is_file and size <= MAX_UPLOAD_BYTES else None)
+    except OSError as exc:
+        logger.warning("telegram_notify: cannot read %s: %s - nothing sent.", path, exc)
+        return False
+    if not is_file:
+        logger.warning(
+            "telegram_notify: %s is not an existing regular file - nothing sent.",
+            file_path,
+        )
+        return False
+    if size > MAX_UPLOAD_BYTES:
+        logger.warning(
+            "telegram_notify: %s is %d bytes, over the Bot API upload limit of %d "
+            "- nothing sent.",
+            file_path, size, MAX_UPLOAD_BYTES,
+        )
+        return False
+    if refusal:
+        logger.warning(
+            "telegram_notify: refusing to send %s: %s - nothing sent.",
+            file_path.name, refusal,
+        )
+        return False
+
+    sink = _own_sink(target)
+    if sink is None:
+        return False
+    target, bot = sink
+    try:
+        bot.send_document(target, file_path, caption=caption[:_MAX_CAPTION_CHARS] or None)
+    except (TelegramAPIError, OSError) as exc:
         logger.warning("telegram_notify: send failed: %s", exc)
         return False
     return True

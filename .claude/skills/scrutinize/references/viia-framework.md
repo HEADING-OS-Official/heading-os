@@ -1,7 +1,7 @@
 # VIIA Framework - /scrutinize
 
 **Consumed by:** `.claude/skills/scrutinize/SKILL.md`
-**Last Updated:** 2026-05-27
+**Last Updated:** 2026-10-31
 
 **Data addresses.** Resources in the data repository are named here by their
 logical name, never by a path. Resolve the name before the file operation and
@@ -33,7 +33,7 @@ Trace the target from start to finish.
 
 **Per-target lens:**
 
-- **Plan** - Does the sequence of steps actually produce the claimed outcome? Are success criteria defined and testable? Does any step depend on a prior step's output that is not explicitly produced?
+- **Plan file** (`file:<path>` of a plan, used instead of the File / dir lens) - Does the sequence of steps actually produce the claimed outcome? Are success criteria defined and testable? Does any step depend on a prior step's output that is not explicitly produced?
 - **Execution** - Does the code do what the plan promised? Do changed files fulfill their modified responsibilities? Are tests present and actually testing the right thing?
 - **File / dir** - Does the artifact fulfill its stated purpose? Does a skill file meet skill standards? Does a reference file have the required headers?
 - **Workspace** - Do the rules, skills, and scripts compose into a coherent system? Does `CLAUDE.md` accurately reflect the current workspace? Do declared triggers match the actual skill-router registry?
@@ -70,7 +70,7 @@ These five are not universal because they have no signal on, say, a Python utili
 
 | Target type | Universal (1-9) | Sanctions (10) | Five Principles (11) | Vocabulary (12) | Voss (13) | Corp-docs (14) |
 |---|---|---|---|---|---|---|
-| plan | yes | if plan touches content | yes | yes | if plan touches comms | if plan produces corp doc |
+| file (plan) | yes | if plan touches content | yes | yes | if plan touches comms | if plan produces corp doc |
 | execution (Python script) | yes | if script generates content | no | no | no | no |
 | execution (content artefact) | yes | yes | yes | yes | yes | yes |
 | execution (skill or rule) | yes | yes | yes | yes | conditional | yes |
@@ -132,7 +132,7 @@ Produces the approval block (see SKILL.md Phase 3 output format). Writes nothing
 
 Use `severity-grid.md` mapping. Additionally:
 
-- For **plan** target, `PASS` also requires: all success criteria testable, all dependencies between steps explicit, rollback/recovery path defined for any destructive step.
+- For a **plan file** (`file:<path>` of a plan), `PASS` also requires: all success criteria testable, all dependencies between steps explicit, rollback/recovery path defined for any destructive step.
 - For **execution** target, `PASS` also requires: changed files match the plan's declared scope, post-apply checks would pass on every edited file, no regressions introduced to unrelated files.
 - For **workspace** target, `PASS` also requires: no cross-area contradictions (e.g., a rule that no skill follows), `CLAUDE.md` accurate to current state, `workspace-overview` in sync with actual files.
 

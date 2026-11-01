@@ -257,6 +257,20 @@ for unit in "$UNIT_NAME.service" "$UNIT_NAME.timer"; do
     fi
 done
 
+# TOOL_PATH lands inside `Environment="PATH=..."` (HOS-283). There a double
+# quote or a backslash is a systemd escape and `%` is a specifier (systemd.syntax
+# § QUOTING, systemd.unit § SPECIFIERS); before that, `|`, `&` and `\` break the
+# sed substitution itself, and a newline or carriage return breaks both. None
+# occurs in a real PATH, so refuse rather than escape.
+case "$TOOL_PATH" in
+    *[\"\\%\|\&]* | *$'\n'* | *$'\r'*)
+        echo "TOOL_PATH contains a character the unit cannot carry (\" \\ % | & or a line break):" >&2
+        echo "  $TOOL_PATH" >&2
+        echo "Set TOOL_PATH=... to a value without them and re-run." >&2
+        exit 7
+        ;;
+esac
+
 mkdir -p "$DEST_DIR"
 
 for unit in "$UNIT_NAME.service" "$UNIT_NAME.timer"; do

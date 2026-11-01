@@ -386,3 +386,34 @@ def test_every_platform_template_routes_hindsight_queries_to_the_dispatcher():
                      if "cognee-capture.py" in h.get("command", "")]
     assert not unrouted, f"Hindsight queries the dispatcher never sees: {unrouted}"
     assert not leftover, f"a removed hook is still registered: {leftover}"
+
+
+_OUTBOUND_MCP_TOOLS = ("mcp__claude_ai_Gmail__send_message",
+                       "mcp__claude_ai_Google_Drive__share_file",
+                       "mcp__lific__delete",
+                       "mcp__hindsight-main__delete_document",
+                       "mcp__drive__batchShareDocument",
+                       "mcp__x__sendMessage")
+
+
+def test_every_platform_template_routes_outbound_mcp_tools_to_the_dispatcher():
+    """The release gate refuses an MCP send, share or delete only if it sees one.
+
+    MEASURED 2026-10-31 on main before HOS-272: in all three templates the
+    Gmail, Drive and Lific tools matched no dispatcher matcher, so the wall could
+    not see them; the Hindsight delete reached it only through the Hindsight
+    matcher, where nothing gated it.
+    """
+    templates = sorted((ROOT / ".claude").glob("settings.local.*.json"))
+    assert len(templates) >= 2, (
+        f"{len(templates)} platform templates, below the 2 the official tree ships")
+    unrouted = []
+    for template in templates:
+        hooks = json.loads(template.read_text(encoding="utf-8")).get("hooks") or {}
+        matchers = [group.get("matcher") or ""
+                    for group in hooks.get("PreToolUse", [])
+                    if any("_dispatch.py" in h.get("command", "")
+                           for h in group.get("hooks", []))]
+        unrouted += [f"{template.name}: {tool}" for tool in _OUTBOUND_MCP_TOOLS
+                     if not any(re.fullmatch(m, tool) for m in matchers)]
+    assert not unrouted, f"outbound MCP tools the dispatcher never sees: {unrouted}"

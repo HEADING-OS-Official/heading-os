@@ -59,6 +59,7 @@ services:
   research-drafts: "capture-design-exemplars.py: scraped design-reference screenshots and their manifest"
   compact-watch: "checkpoint-state poll logs of scripts/dev/compact-watch.py, which is removed; kept because the runtime mover still names it"
   yard-watch: "the yard-watch Stop hook: when each yard's verdict was first seen and whether it has been notified"
+  herdr-waiters: "the herdr waiter wrapper: one record per running waiter, so deleting a yard stops exactly its waiters"
   release: "the release gate in .claude/hooks/_dispatch.py: the journal of every authorised commit and push"
   council-models-notify: "the council-models freshness nudge: the deduplication key for which finding has already been notified"
   inference-guard: "inference-guard.py: the outage streak and whether the operator was told"

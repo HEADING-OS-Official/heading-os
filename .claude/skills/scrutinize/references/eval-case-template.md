@@ -1,7 +1,7 @@
 # Eval-Case Template
 
 > Consumed by: `.claude/skills/scrutinize/SKILL.md` (Phase 4.5)
-> Last Updated: 2026-10-16
+> Last Updated: 2026-10-31
 >
 > Defines the format and promotion workflow for converting `/scrutinize` findings into regression eval cases under `.claude/skills/{skill}/evals/cases/`. Closes P1.6 from the 2026-05-17 workspace deep audit (production-to-eval flywheel).
 >
@@ -283,6 +283,6 @@ Drafts land in `.claude/skills/{name}/evals/outcomes/_staged/flag-{ts}-{slug}.js
 - Never promote LOW or NIT findings - the eval suite must stay signal-rich
 - Never promote findings whose fix was rejected or deferred - only applied findings qualify
 - Never run Phase 4.5 in `--relentless` mode - relentless pre-approves fixes but eval-case promotion is a separate CEO decision
-- Never run Phase 4.5 for `target=plan` - plans don't have skill files to test
+- Never run Phase 4.5 for a plan file - plans don't have skill files to test
 - Never create a file under `tests/` from Phase 4.5; only a failure A or B finding becomes a test, as a new function in the existing file holding that guarantee
 - Never emit a failure A or B test function with a real assertion the CEO has not approved - drafts start as `pytest.skip()` until the assertion is filled in

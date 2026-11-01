@@ -1,7 +1,7 @@
 # Scrutinize — Saved Report Format
 
 Consumed by: `.claude/skills/scrutinize/SKILL.md` (Phase 5 — Report Persistence).
-Last Updated: 2026-09-11
+Last Updated: 2026-10-31
 
 Defines the persisted-report section layout and the `--relentless` consolidated-report
 shape. The SKILL body holds the target→path table and slug derivation; this file holds
@@ -14,8 +14,9 @@ Emit these sections in order in the saved Markdown report:
 1. **Target + grade + findings summary** — counts by severity + counts by confidence band.
 2. **Full findings list (above threshold)** — every finding with ID, severity, confidence,
    location, statement, evidence, proposed fix.
-3. **Findings Below Threshold** (only if any exist) — findings with confidence < 75 hidden
-   from the approval block by default.
+3. **Not proposed** (only if any exist): placed right after the proposed findings, which
+   are the approval block's content: findings with confidence < 75 and findings the 2.5b
+   debate judged AMBIGUOUS, one line each (id, statement, score), never in the approval block.
 4. **Refuted Findings** (Phase 2.5 drops) — findings dropped by 2.5a or 2.5b with the
    refutation reason and which judge family refuted them.
 5. **Judge Layer** (when Phase 2.5 ran) — family used per phase, position-swap bits for
@@ -57,7 +58,7 @@ report stays the human artifact; the record is what anything downstream can coun
 
 ```
 {"run_id", "ts", "target",
- "kind": "pass_start|verdict|reproduction|role|currency|fp_flag|degraded",
+ "kind": "pass_start|verdict|argument|reproduction|role|currency|fp_flag|degraded",
  "finding_id", "pass": "2.5a|2.5b|null", "judge_family": "claude|kimi|chatgpt|null",
  "verdict": "REFUTED|REFUTE_PARTIAL|REFUTATION_FAILED|CORRECT|CORRECT_DOWNGRADE|
              INCORRECT|AMBIGUOUS|REPRODUCED|FALSIFIED|null",

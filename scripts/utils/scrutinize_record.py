@@ -42,8 +42,14 @@ from scripts.utils.jsonl_lines import jsonl_lines  # noqa: E402
 # Vocabulary
 # ============================================================
 KINDS = frozenset({
-    "pass_start", "verdict", "reproduction", "role", "currency", "fp_flag", "degraded",
+    "pass_start", "verdict", "argument", "reproduction", "role", "currency", "fp_flag",
+    "degraded",
 })
+
+# The two 2.5b debate sides whose answer is an ARGUMENT, not a ruling. Only the
+# Meta-Judge rules in a debate; recording a side's answer as a verdict turned
+# every side answer without a verdict token into a `degraded` row (HOS-270).
+ARGUMENT_SIDES = frozenset({"advocate", "skeptic"})
 
 VERDICTS = frozenset({
     "REFUTED", "REFUTE_PARTIAL", "REFUTATION_FAILED",
@@ -151,6 +157,19 @@ def _check(row: dict) -> None:
     family = row.get("judge_family")
     if family is not None and family not in FAMILIES:
         raise ValueError(f"unknown judge_family {family!r}; the roster is {sorted(FAMILIES)}")
+
+    if kind == "argument":
+        if row.get("pass") != "2.5b":
+            raise ValueError(
+                f"an argument row belongs to pass 2.5b, got {row.get('pass')!r}")
+        if verdict is not None:
+            raise ValueError(f"an argument row carries no verdict, got {verdict!r}")
+        payload = row.get("payload")
+        side = payload.get("side") if isinstance(payload, dict) else None
+        if side not in ARGUMENT_SIDES:
+            raise ValueError(
+                f"an argument row needs payload.side in {sorted(ARGUMENT_SIDES)}, "
+                f"got {side!r}")
 
     role = row.get("role")
     if role is not None and role not in ROLES:
