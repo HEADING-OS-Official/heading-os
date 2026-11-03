@@ -13,7 +13,8 @@ bare.
                                   word is a bare name in `tools`
 
 Read by the hindsight-claude step (scripts/utils/install_hindsight.py), which
-rewrites a bare hook command, and by scripts/doctor.py. heading-install.py does
+rewrites a bare hook command and a bare MCP server command (the Hindsight
+plugin registers its server as `node`), and by scripts/doctor.py. heading-install.py does
 not import this module, so it may import engine modules; it does so inside
 `home_tools`, because install_hindsight imports this module.
 

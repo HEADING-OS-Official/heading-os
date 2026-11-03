@@ -694,39 +694,29 @@ def check_claude(ctx) -> bool:
             and not bare_home_tools(home, home_tools(home, ctx.engine)))
 
 
-def absolute_hooks(ctx) -> None:
-    """Every Claude Code hook command that starts with a bare home tool, rewritten to its absolute path.
+_NO_NODE = ("a Claude Code hook calls node, but Node.js is not where the prerequisites "
+            "step installs it; run the installer again from the start")
 
-    Only the leading name changes, to the shell-quoted path from
-    install_commands.home_tools; every other byte of the command and of the
-    file stays. Written through a .tmp file and os.replace, keeping the mode
-    (HOS-312, F5: a session started before the install has no Node.js on PATH).
-    """
-    home = _home(ctx)
-    tools = home_tools(home, ctx.engine)
-    path = claude_settings_path(home)
+
+def _read_config(path: Path, what: str):
+    """(text, parsed) of a Claude Code JSON file, or None when it is absent or not JSON."""
     try:
         text = path.read_text(encoding="utf-8")
-        settings = json.loads(text)
+        return text, json.loads(text)
     except (OSError, ValueError) as exc:
-        # No settings file, or not JSON: nothing is registered there to rewrite.
-        print(f"  note: {path} not read ({type(exc).__name__}); no hook command rewritten")
-        return
-    replaced: list[tuple[str, str]] = []
-    for _event, hook in hook_commands(settings):
-        command = hook["command"]
-        if (command == "node" or command.startswith("node ")) and "node" not in tools:
-            raise HindsightError("a Claude Code hook calls node, but Node.js is not where the prerequisites "
-                                 "step installs it; run the installer again from the start")
-        for name, absolute in tools.items():
-            if command == name or command.startswith(name + " "):
-                hook["command"] = shlex.quote(absolute) + command[len(name):]
-                replaced.append((command, hook["command"]))
-                break
-    if not replaced:
-        return
-    # Each command string replaced where it stands, so the rest of the file keeps its bytes;
-    # a file whose text does not parse back to the rewritten settings is written whole instead.
+        # No file, or not JSON: nothing is registered there to rewrite.
+        print(f"  note: {path} not read ({type(exc).__name__}); no {what} rewritten")
+        return None
+
+
+def _write_replaced(path: Path, text: str, data, replaced: list[tuple[str, str]]) -> None:
+    """`data` written to `path` with each (before, after) string value replaced where it stands.
+
+    The rest of the file keeps its bytes; a file whose text does not parse back
+    to `data` is written whole instead. Written through a new temporary file
+    beside it (created exclusively, so an existing path or symlink there is
+    never opened) and os.replace, keeping the mode.
+    """
     new_text = text
     for before, after in replaced:
         for encoded in (json.dumps(before, ensure_ascii=False), json.dumps(before)):
@@ -734,18 +724,84 @@ def absolute_hooks(ctx) -> None:
                 new_text = new_text.replace(encoded, json.dumps(after, ensure_ascii=False))
                 break
     try:
-        same = json.loads(new_text) == settings
+        same = json.loads(new_text) == data
     except ValueError:
         same = False
     if not same:
-        new_text = json.dumps(settings, indent=2) + "\n"
+        new_text = json.dumps(data, indent=2) + "\n"
     mode = path.stat().st_mode & 0o777
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(new_text)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        # The descriptor handed to the file object first, so `with` closes it on every path.
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), mode)
+            fh.write(new_text)
+        os.replace(tmp, path)
+    except BaseException:
+        # The temporary file removed, the original left as it was; the error goes on to the step loop.
+        os.unlink(tmp)
+        raise
+
+
+def absolute_hooks(ctx) -> None:
+    """Every Claude Code hook command that starts with a bare home tool, rewritten to its absolute path.
+
+    Only the leading name changes, to the shell-quoted path from
+    install_commands.home_tools; every other byte of the command and of the
+    file stays (HOS-312, F5: a session started before the install has no
+    Node.js on PATH).
+    """
+    home = _home(ctx)
+    tools = home_tools(home, ctx.engine)
+    path = claude_settings_path(home)
+    read = _read_config(path, "hook command")
+    if read is None:
+        return
+    text, settings = read
+    replaced: list[tuple[str, str]] = []
+    for _event, hook in hook_commands(settings):
+        command = hook["command"]
+        if (command == "node" or command.startswith("node ")) and "node" not in tools:
+            raise HindsightError(_NO_NODE)
+        for name, absolute in tools.items():
+            if command == name or command.startswith(name + " "):
+                hook["command"] = shlex.quote(absolute) + command[len(name):]
+                replaced.append((command, hook["command"]))
+                break
+    if replaced:
+        _write_replaced(path, text, settings, replaced)
+
+
+def absolute_mcp_commands(ctx) -> None:
+    """Every user-scope MCP server whose `command` is a bare home tool, rewritten to its absolute path.
+
+    The Hindsight plugin registers its `hindsight` server with the command
+    `node` (measured on a guest install, 2026-11-03). Only `command` changes,
+    to the path from install_commands.home_tools, unquoted because Claude Code
+    runs it without a shell; `args` and every other byte of the file stay.
+    """
+    from scripts.utils.install_lific import claude_config_path
+
+    home = _home(ctx)
+    tools = home_tools(home, ctx.engine)
+    path = claude_config_path(home)
+    read = _read_config(path, "MCP server command")
+    if read is None:
+        return
+    text, config = read
+    servers = config.get("mcpServers") if isinstance(config, dict) else None
+    replaced: list[tuple[str, str]] = []
+    for entry in servers.values() if isinstance(servers, dict) else ():
+        command = entry.get("command") if isinstance(entry, dict) else None
+        if not isinstance(command, str) or command.startswith("/"):
+            continue
+        if command == "node" and "node" not in tools:
+            raise HindsightError(_NO_NODE)
+        if command in tools:
+            entry["command"] = tools[command]
+            replaced.append((command, tools[command]))
+    if replaced:
+        _write_replaced(path, text, config, replaced)
 
 
 def run_claude(ctx) -> None:
@@ -775,6 +831,7 @@ def run_claude(ctx) -> None:
         if proc.returncode != 0:
             raise HindsightError(f"the Hindsight plugin for Claude Code could not be installed: {_why(proc)}")
     absolute_hooks(ctx)
+    absolute_mcp_commands(ctx)
     # Written after the plugin install, which may have rewritten the file; keys it has are kept.
     current = _coding_agent(home)
     if current is None and coding_agent_path(home).exists():
