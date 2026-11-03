@@ -561,15 +561,17 @@ SERVICE_FAMILIES: tuple[ServiceFamily, ...] = (
     # layer itself from the uv environment the installer's hindsight steps create.
     # Never beside hindsight-tunnel: that unit means Hindsight runs on another
     # machine and 127.0.0.1:8888 is already its forward.
-    # Linux only (HOS-304 review round 1): the launchd translation does not carry
-    # EnvironmentFile, so on a Mac the server would start without its key.
+    # The key reaches it from server.env: systemd reads the unit's EnvironmentFile,
+    # and on a Mac the agent starts through scripts/utils/env_exec.py, which reads
+    # the same file the same way (HOS-341; until then the family was Linux only).
     ServiceFamily("hindsight-server", ("hindsight-server.service",), True, adopts_foreign=True,
-                  platforms=("linux",), conflicts_with=("hindsight-tunnel.service",)),
+                  conflicts_with=("hindsight-tunnel.service",)),
     # HOS-312: the Hindsight web console beside the server, from the package the
-    # installer's hindsight-console step unpacks; Linux only and never beside
-    # hindsight-tunnel, for the server's reasons above.
+    # installer's hindsight-console step unpacks; never beside hindsight-tunnel,
+    # for the server's reason above. Its key reaches it from console.env the same
+    # way as the server's: EnvironmentFile on Linux, env_exec.py on a Mac (HOS-341).
     ServiceFamily("hindsight-control-plane", ("hindsight-control-plane.service",), True, adopts_foreign=True,
-                  platforms=("linux",), conflicts_with=("hindsight-tunnel.service",)),
+                  conflicts_with=("hindsight-tunnel.service",)),
 )
 
 #: The first line of every unit this layer renders (a plist carries it as an
@@ -922,8 +924,65 @@ def _launchd_labels(fam: ServiceFamily) -> list[str]:
     return [LAUNCHD_PREFIX + _service_of(p, _template(p))[: -len(".service")] for p in fam.enable_units]
 
 
+_LAUNCHD_EXIT_RE = re.compile(r"^\s*last exit code = (.+?)\s*$", re.M)
+
+
+def launchd_status(label: str, env: dict[str, str] | None = None) -> dict:
+    """What `launchctl print gui/<uid>/<label>` says of one agent (HOS-341; UNTESTED on a Mac).
+
+    `loaded` when the command exits 0; `running` when a line reads
+    `state = running`; `last_exit` the integer after `last exit code = `, None
+    when that line reads `(never exited)` or is absent. `launchctl list`
+    answering 0 means only that launchd knows the label, never that it runs.
+    `env` is the environment the command runs in, so an injected launchctl
+    on its PATH answers instead of the machine's own.
+    """
+    cmd = ["launchctl", "print", f"gui/{os.getuid()}/{label}"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", env=env)
+    except OSError as exc:
+        _warn(f"launchctl print {label}: {exc}")
+        return {"loaded": False, "running": False, "last_exit": None}
+    out = proc.stdout or ""
+    found = _LAUNCHD_EXIT_RE.search(out)
+    last_exit = None
+    if found and found.group(1) != "(never exited)":
+        try:
+            last_exit = int(found.group(1))
+        except ValueError:
+            last_exit = None  # a form this reader does not know reads as no exit code
+    return {"loaded": proc.returncode == 0,
+            "running": re.search(r"^\s*state = running\s*$", out, re.M) is not None,
+            "last_exit": last_exit}
+
+
+def launchd_healthy(status: dict, timer: bool) -> bool:
+    """A calendar job is healthy when loaded and its last run exited 0 or never ran; a service, when running."""
+    if timer:
+        return status["loaded"] and status["last_exit"] in (0, None)
+    return status["running"]
+
+
+def _env_exec_args(value: str, home: Path, workspace_dir: Path) -> list[str]:
+    """The ProgramArguments head that gives a launchd agent its unit's EnvironmentFile (HOS-341).
+
+    launchd has no EnvironmentFile, and the file holds keys a plist must not, so
+    the agent starts `scripts/utils/env_exec.py`, which reads the file and then
+    becomes the program. systemd's leading `-` (a missing file is fine) becomes
+    `--optional`.
+    """
+    optional = value.startswith("-")
+    path = (value[1:] if optional else value).replace("%h", str(home))
+    if "%" in path or not Path(path).is_absolute():
+        raise ServiceLayerError(f"launchd: EnvironmentFile={value!r} renders to {path!r}, "
+                                "which is not an absolute path free of %")
+    python = _unit_identity(workspace_dir)[0]
+    return [python, str(workspace_dir / "scripts" / "utils" / "env_exec.py"),
+            *(["--optional"] if optional else []), path]
+
+
 def launchd_jobs(fam: ServiceFamily, rendered: dict[str, str], home: Path,
-                 logs_dir: Path) -> list[tuple[str, dict, list[str]]]:
+                 logs_dir: Path, workspace_dir: Path) -> list[tuple[str, dict, list[str]]]:
     """(label, plist dict, notes) per job: one per timer, or one for a long-running service."""
     jobs = []
     for primary in fam.enable_units:
@@ -936,8 +995,13 @@ def launchd_jobs(fam: ServiceFamily, rendered: dict[str, str], home: Path,
         exec_lines = svc.get("ExecStart", [])
         if len(exec_lines) != 1:
             raise ServiceLayerError(f"{service_name}: launchd needs exactly one ExecStart, found {len(exec_lines)}")
-        job: dict = {"Label": label,
-                     "ProgramArguments": [a.replace("%h", str(home)) for a in shlex.split(exec_lines[0])]}
+        program = [a.replace("%h", str(home)) for a in shlex.split(exec_lines[0])]
+        env_files = svc.get("EnvironmentFile", [])
+        if len(env_files) > 1:
+            raise ServiceLayerError(f"{service_name}: launchd takes one EnvironmentFile, found {len(env_files)}")
+        if env_files:
+            program = _env_exec_args(env_files[0], home, workspace_dir) + program
+        job: dict = {"Label": label, "ProgramArguments": program}
         if "WorkingDirectory" in svc:
             job["WorkingDirectory"] = svc["WorkingDirectory"][0].replace("%h", str(home))
         env = {}
@@ -1083,7 +1147,7 @@ def _systemd_install(fam: ServiceFamily, workspace_dir: Path, dry_run: bool) -> 
 
 def _launchd_install(fam: ServiceFamily, workspace_dir: Path, dry_run: bool) -> bool:
     agents, logs = _launchd_agents_dir(), _launchd_logs_dir()
-    jobs = launchd_jobs(fam, render_family_systemd(fam, workspace_dir), Path.home(), logs)
+    jobs = launchd_jobs(fam, render_family_systemd(fam, workspace_dir), Path.home(), logs, workspace_dir)
     for _, _, notes in jobs:
         for note in notes:
             _warn(note)
@@ -1205,11 +1269,13 @@ def service_status(fams: list[ServiceFamily], *, target_platform: str | None = N
                 (_ok if good else _warn if not fam.mandatory else _fail)(line)
                 healthy = healthy and (good or not fam.mandatory)
         else:
-            for label in _launchd_labels(fam):
+            for primary, label in zip(fam.enable_units, _launchd_labels(fam), strict=True):
                 present = (_launchd_agents_dir() / f"{label}.plist").is_file()
-                loaded = _run(["launchctl", "list", label]).returncode == 0
-                good = present and loaded
-                line = f"{fam.name}: {label} plist={'yes' if present else 'no'} loaded={'yes' if loaded else 'no'}"
+                st = launchd_status(label)
+                good = present and launchd_healthy(st, primary.endswith(".timer"))
+                line = (f"{fam.name}: {label} plist={'yes' if present else 'no'} "
+                        f"loaded={'yes' if st['loaded'] else 'no'} running={'yes' if st['running'] else 'no'} "
+                        f"last_exit={'none' if st['last_exit'] is None else st['last_exit']}")
                 (_ok if good else _warn if not fam.mandatory else _fail)(line)
                 healthy = healthy and (good or not fam.mandatory)
     return healthy
@@ -1278,7 +1344,7 @@ def render_services(fams: list[ServiceFamily], dest: Path, *, workspace_dir: Pat
                 _write_atomic(dest / unit, text.encode("utf-8"))
                 written.append(dest / unit)
             continue
-        for label, job, notes in launchd_jobs(fam, rendered, Path.home(), _launchd_logs_dir()):
+        for label, job, notes in launchd_jobs(fam, rendered, Path.home(), _launchd_logs_dir(), workspace_dir):
             for note in notes:
                 _warn(note)
             path = dest / f"{label}.plist"

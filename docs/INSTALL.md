@@ -18,9 +18,11 @@ The default `<target>` is `~/HeadingOS`. The installer writes `HEADING_OS_DATA` 
 
 - Linux.
 - Windows 11 through WSL2 with Ubuntu.
-- macOS 13 or later.
+- macOS 13 or later: experimental. A full install on a Mac has not yet been confirmed; Linux and Windows with WSL2 are supported.
 
 Windows without WSL is not supported. The installer stops on any other system.
+
+HEADING OS uses about 13 GB of disk once installed. The installer checks the free space before it changes anything. It stops when less than 15 GB is free where it would install (GB here is 1024^3 bytes, as `df -h` counts).
 
 ## Prerequisites
 
@@ -102,14 +104,17 @@ WSL has no default browser. A login prints a URL and a one-time code. Open the U
 
 You do three things before the first question: install Claude Code, sign in to it, and paste one sentence. From then on you answer in the Claude chat, or in windows the installer opens on your own screen.
 
-1. **All questions first.** Before it installs anything, the installer asks every question the install needs:
+1. **The plan and your consent first.** Before anything on your computer changes, the installer shows its plan in four groups. The groups are system packages, files in your home folder, downloads, and programs and timers in the background. It asks about each group. You answer yes, yes to all, or no. A no stops the install, and nothing is changed.
+2. **All questions next.** Before it installs anything, the installer asks every question the install needs:
    - your mail: Exchange, Google, or connect it later (the default);
    - a private backup of your data on GitHub: yes, or later;
    - your time zone, confirmed from your computer's own setting.
-2. **Secrets in a window on your screen.** You type a secret such as your Exchange password into a window on your screen, never into the chat. On a computer without a desktop, you type it into one terminal line the installer prints.
-3. **Your computer password, once.** On Linux with a desktop, one system window asks for it. WSL has no such window, so there you type it into one terminal line. The installer tells you before the run starts.
-4. **One unattended run.** The installer then installs everything without stopping. For a sign-in or the computer password, it opens the window or the browser page itself. Claude tells you which one to look at.
-5. **The finish.** The install ends when every check is green. The installer first tells you what opens next. It then opens a new terminal window with Herdr and Claude in the HEADING OS folder. The setup wizard starts there. If you ran the install inside Herdr, it opens a new Herdr workspace instead. You can then close the terminal where the install ran. Where it cannot open a window, it tells you to open a new terminal and type `heading /setup-wizard`.
+3. **Secrets in a window on your screen.** You type a secret such as your Exchange password into a window on your screen, never into the chat. On a computer without a desktop, you type it into one terminal line the installer prints.
+4. **Your computer password, once.** On Linux with a desktop, one system window asks for it. WSL has no such window, so there you type it into one terminal line. The installer tells you before the run starts.
+5. **One unattended run.** The installer then installs everything without stopping. For a sign-in or the computer password, it opens the window or the browser page itself. Claude tells you which one to look at.
+6. **Pause or stop when you want.** Tell Claude "pause" or "stop" in the chat, or use the buttons in the progress window. The install ends after the step that runs now, and the finished steps stay in place. To continue, Claude runs the same command again.
+7. **A clear refusal.** When a step fails, the message names the step, the reason and what is already finished. It offers a rerun only when a rerun can help.
+8. **The finish.** The install ends when every check is green. The file `<target>/installed.txt` then lists what was installed and how to remove each part by hand. There is no uninstall command. The installer first tells you what opens next. It then opens a new terminal window with Herdr and Claude in the HEADING OS folder. The setup wizard starts there. If you ran the install inside Herdr, it opens a new Herdr workspace instead. You can then close the terminal where the install ran. Where it cannot open a window, it tells you to open a new terminal and type `heading /setup-wizard`.
 
 ## Run the installer
 
@@ -136,12 +141,21 @@ The installer accepts these options:
 | `--github-backup yes\|later` | `yes` also keeps a private copy of your data on your GitHub account; an existing private repository with the same name is adopted. `later` keeps it on this computer only. |
 | `--tz ZONE` | Your time zone, such as `Europe/Berlin`. |
 | `--proxy-signin now\|later` | The Claude sign-in for the model proxy now, or later. |
-| `--answers FILE` | Reads the answers from a JSON file (mode 600) and never stops to ask. |
+| `--answers FILE` | Reads the answers from a JSON file (mode 600) and never stops to ask. Needs `--consent`. |
+| `--consent VALUE` | What you agree to before anything changes: `all`, `no`, or a comma list of `system`, `home`, `downloads` and `services`. Without it, the installer shows its plan and asks. |
 | `--ref TAG` | Installs this tag or branch instead of the latest release. Without it the installer stops when it cannot find a release, rather than falling back to a branch. |
 | `--from GIT_URL` | Clones the engine from another git URL. |
 | `--dry-run` | Shows what each step would do, and changes nothing. |
 
 Run `bash install.sh --help` to print the same list.
+
+To pause or stop a running install, run this in another terminal (add `--target DIR` when you chose another folder). The install ends after the step that runs now:
+
+```bash
+uv run --quiet --python 3.11 --no-project ~/HeadingOS/engine/scripts/heading-install.py --control pause
+```
+
+Use `--control stop` to stop. To continue, run the installer again with the same options.
 
 
 ### What the installer does, step by step

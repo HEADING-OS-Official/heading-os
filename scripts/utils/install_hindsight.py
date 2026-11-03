@@ -43,9 +43,10 @@ on a command line: the key goes from `secrets` into files inside this process,
 and the command line's own `configure` is not used because it takes the key
 only on argv (`hindsight configure --help`, 1.1.0, read 2026-11-01).
 
-Standard library only at import time, like the installer. Linux (systemd user
-units) is the path; on macOS the service step refuses (MACOS_UNSUPPORTED) and
-the service layer offers the family on Linux only.
+Standard library only at import time, like the installer. The server runs as a
+systemd user unit on Linux and as a launchd agent on macOS; on a Mac the agent
+reads server.env through scripts/utils/env_exec.py (HOS-341). macOS is UNTESTED
+on a Mac.
 """
 
 from __future__ import annotations
@@ -124,11 +125,6 @@ ENV_LLM_API_KEY = "HINDSIGHT_API_LLM_API_KEY"  # pragma: allowlist secret (a set
 ENV_LLM_MODEL = "HINDSIGHT_API_LLM_MODEL"
 LLM_PROVIDER = "openai"
 ENGINE_ROOT = Path(__file__).resolve().parent.parent.parent
-# HELM's decision, HOS-304 review round 1: the family is Linux only, because the
-# launchd translation does not carry the unit's EnvironmentFile, so a Mac server
-# would start without its key and its extraction settings.
-MACOS_UNSUPPORTED = ("the local Hindsight memory server is not yet supported on macOS; "
-                     "HEADING OS installs it on Linux and WSL2 only for now")
 
 
 class HindsightError(OSError):
@@ -179,10 +175,36 @@ def cli_path(home: Path) -> Path:
 
 
 def unit_path(ctx) -> Path:
-    """Where the service layer, run with this context's environment, writes the unit."""
+    """Where the service layer, run with this context's environment, writes the unit
+    (on macOS the agent's plist, under this context's home)."""
     from scripts.utils.schedule import systemd_user_dir
 
+    if platform.system() == "Darwin":
+        return _home(ctx) / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
     return systemd_user_dir(_env(ctx)) / UNIT
+
+
+def log_hint(unit: str, label: str) -> str:
+    """Where a service's own log is read: journald on Linux, the agent's log file on macOS."""
+    if platform.system() == "Darwin":
+        from scripts.utils.schedule import LAUNCHD_PREFIX, _launchd_logs_dir
+
+        return f"tail -n 50 {_launchd_logs_dir() / (label[len(LAUNCHD_PREFIX):] + '.log')}"
+    return f"journalctl --user -u {unit} -n 50"
+
+
+def restart_hint(unit: str, label: str) -> str:
+    """The command a person runs to restart a service themselves."""
+    if platform.system() == "Darwin":
+        return f"launchctl kickstart -k gui/$(id -u)/{label}"
+    return f"systemctl --user restart {unit}"
+
+
+def restart_command(ctx, unit: str, label: str) -> list[str]:
+    """The restart this installer runs: launchd's kickstart -k on macOS, systemctl on Linux."""
+    if platform.system() == "Darwin":  # the form install_lific.py uses; UNTESTED on a Mac
+        return ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"]
+    return [_systemctl(ctx), "--user", "restart", unit]
 
 
 # ============================================================
@@ -547,7 +569,7 @@ def _adopted(ctx) -> bool:
 
 
 def check_service(ctx) -> bool:
-    if getattr(ctx, "dry_run", False) or platform.system() == "Darwin":
+    if getattr(ctx, "dry_run", False):
         return False  # its check asks the server, and a dry run sends nothing
     home = _home(ctx)
     if tunnel_conflict(ctx) or not ctx.python.exists():
@@ -560,18 +582,14 @@ def _restart(ctx) -> None:
     """Settings are read when the server starts; an adopted unit is never restarted here."""
     if _adopted(ctx):
         print(f"  {unit_path(ctx)} was not written by HEADING OS and is left untouched, so it is not "
-              f"restarted. To load the new settings, run yourself: systemctl --user restart {UNIT}")
+              f"restarted. To load the new settings, run yourself: {restart_hint(UNIT, LAUNCHD_LABEL)}")
         return
-    else:
-        cmd = [_systemctl(ctx), "--user", "restart", UNIT]
-    proc = _run(ctx, cmd, timeout=120)
+    proc = _run(ctx, restart_command(ctx, UNIT, LAUNCHD_LABEL), timeout=120)
     if proc.returncode != 0:
         raise HindsightError(f"the Hindsight server could not be restarted to load its settings: {_why(proc)}")
 
 
 def run_service(ctx) -> None:
-    if platform.system() == "Darwin":
-        raise HindsightError(MACOS_UNSUPPORTED)
     home = _home(ctx)
     conflict = tunnel_conflict(ctx)
     if conflict:
@@ -585,7 +603,7 @@ def run_service(ctx) -> None:
     while not server_ready(ctx):
         if time.monotonic() >= deadline:
             raise HindsightError(f"hindsight-server runs but {API_URL}/health/ready does not answer 200; "
-                                 f"read its log: journalctl --user -u {UNIT} -n 50")
+                                 f"read its log: {log_hint(UNIT, LAUNCHD_LABEL)}")
         time.sleep(2)
 
 

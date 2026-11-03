@@ -22,6 +22,8 @@ Usage:
                                     [--proxy-signin now|later] [--answers PATH]
                                     [--repo-name NAME] [--ref TAG]
                                     [--from GIT_URL] [--dry-run]
+                                    [--consent all|no|GROUPS]
+  python scripts/heading-install.py --control pause|stop [--target DIR]
 
   --target DIR     where engine/ and data/ go (default: ~/HeadingOS)
   --mail exchange|google|none
@@ -48,6 +50,15 @@ Usage:
   --google-audience production|internal
                    with --mail google: the publishing status you read on the
                    Google console's Audience page
+  --consent all|no|GROUPS
+                   the kinds of change you agree to (HOS-340): all, no, or a
+                   comma list of system, home, downloads and services. A step
+                   of a kind not agreed to stops the run and asks first; a run
+                   from --answers takes it from the file's `consent` key and
+                   never asks. Kept in .env (a "no" never is)
+  --control pause|stop
+                   ask the install running in --target to pause or stop after
+                   the step it is running now; it changes nothing else
 
 The intake (HOS-312). Before the first step runs, dry run included, each of the
 three intake answers comes from its flag, else from the engine's .env when a
@@ -57,6 +68,12 @@ answers are stored in .env only, by the steps `answers`, `timezone` and
 `mail-choice`; a flag given on a rerun replaces the stored value. The fourth
 answer, the Claude sign-in for the model proxy, is never asked, and is `now`
 unless a flag, the answers file or the engine .env says `later`.
+
+Consent (HOS-340). Every step belongs to one of four groups of change
+(install_answers.CONSENT_GROUPS: system, home, downloads, services). Before a
+step that is not already in place runs, the run checks that the consent covers
+its group; when it does not, the run stops with need-answer and asks for it,
+before that step changes anything. A dry run never asks.
 
 Every run past argument parsing ends with one line on stdout:
   HEADING-INSTALL: {"state": ..., "say": ..., "next": ...}
@@ -78,13 +95,19 @@ Every run past argument parsing ends with one line on stdout:
     install report is written: a person being needed is not a failure. Steps
     raise it through scripts/utils/install_person.py (HOS-312)
   state failed (exit 1; exit 2 for a refused --target or a refused or
-    incomplete --answers file, with no report): `say` is the reason,
-    `next` reruns the same command; the details are in
-    <target>/install-report.txt (mode 600, no secret and no other .env value)
+    incomplete --answers file, with no report): `say` names the step and the
+    reason, `next` reruns the same command, or is "" when the reason names
+    something the person must do that a rerun alone does not fix; the details
+    are in <target>/install-report.txt (mode 600, no secret and no other .env value)
+  state paused (exit 5): the person asked to pause (--control pause, or the
+    progress window); `next` continues the install
+  state stopped (exit 6): the person asked to stop, or answered no to a
+    consent question; `next` is the same command, or "" for a no
   state done (exit 0): after a run that was not a dry run, the installer
     has opened one new window running `heading /setup-wizard` (a Linux
     desktop with x-terminal-emulator, not WSL), or `say` tells the person to
-    open a new terminal and type `heading /setup-wizard`
+    open a new terminal and type `heading /setup-wizard`; `say` also names
+    <target>/installed.txt, what was installed and how to remove each by hand
 Argument errors (exit 2) print no such line.
 
 Examples:
@@ -136,7 +159,26 @@ PROFILE_END = "# <<< HEADING OS <<<"
 
 
 class StepFailed(RuntimeError):
-    """A step could not finish; the message is the plain line the user sees."""
+    """A step could not finish; the message is the plain line the user sees.
+
+    `rerun_helps` is False when the message names something the person must do
+    and running the same command again alone does not get past it (HOS-340).
+    """
+
+    def __init__(self, message: str = "", *, rerun_helps: bool = True):
+        super().__init__(message)
+        self.rerun_helps = rerun_helps
+
+
+class NeedConsent(Exception):
+    """The next step's group of change is not agreed to yet (HOS-340); `group` names it.
+
+    Not a StepFailed, OSError or RuntimeError, so no handler of a step failure catches it.
+    """
+
+    def __init__(self, group: str):
+        super().__init__(group)
+        self.group = group
 
 
 # ============================================================
@@ -154,6 +196,7 @@ class Ctx:
     mail: str | None = None
     tz: str | None = None
     proxy_signin: str | None = None
+    consent: str | None = None
     google_client: str | None = None
     google_audience: str | None = None
     bin_dirs: list[Path] = field(default_factory=list)
@@ -268,7 +311,7 @@ def latest_release(source: str, ctx: Ctx) -> str:
     semver = [t for t in tags if t[0] < 1000]
     pool = semver or tags
     if not pool:
-        raise StepFailed(f"{source} has no release tag (vX.Y.Z) yet; name one with --ref")
+        raise StepFailed(f"{source} has no release tag (vX.Y.Z) yet; name one with --ref", rerun_helps=False)
     return "v%d.%d.%d" % max(pool)
 
 
@@ -346,15 +389,26 @@ class Step:
     title: str
     check: Callable[[Ctx], bool]
     run: Callable[[Ctx], None]
+    group: str  # one of install_answers.CONSENT_GROUPS (HOS-340)
 
 
 STEPS: list[Step] = []
 
 
-def step(name: str, title: str, check: Callable[[Ctx], bool]):
-    """Register the decorated function as the `run` of a step, in file order."""
+def step(name: str, title: str, check: Callable[[Ctx], bool], *, group: str):
+    """Register the decorated function as the `run` of a step, in file order.
+
+    `group` is the kind of change the step makes, by this precedence, first
+    match wins, judged on everything its run does: it installs, enables, starts
+    or restarts a background service or timer (services); it runs anything
+    through the computer password (system); it fetches from the internet
+    (downloads); else home.
+    """
+    if group not in install_answers.CONSENT_GROUPS:
+        raise ValueError(f"step {name}: unknown group {group!r}")
+
     def deco(fn: Callable[[Ctx], None]):
-        STEPS.append(Step(name, title, check, fn))
+        STEPS.append(Step(name, title, check, fn, group))
         return fn
     return deco
 
@@ -427,9 +481,10 @@ def install_node(ctx: Ctx) -> None:
     arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
     osname = {"Linux": "linux", "Darwin": "darwin"}[platform.system()]
     if not arch:
-        raise StepFailed(f"no Node.js build for this processor ({machine}); install Node.js {NODE_MIN_MAJOR}+ yourself")
+        raise StepFailed(f"no Node.js build for this processor ({machine}); install Node.js {NODE_MIN_MAJOR}+ yourself",
+                         rerun_helps=False)
     if not hasattr(tarfile, "data_filter"):
-        raise StepFailed("this Python cannot unpack archives safely; install Node.js yourself")
+        raise StepFailed("this Python cannot unpack archives safely; install Node.js yourself", rerun_helps=False)
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from scripts.utils.user_agent import user_agent  # stdlib only; the one workspace constant
 
@@ -478,16 +533,17 @@ def install_node(ctx: Ctx) -> None:
         raise StepFailed(f"Node.js {version} was unpacked but does not start: {probe.stderr.strip()[-200:]}")
 
 
-@step("prerequisites", "Platform and prerequisites (git, uv, Python 3.11, Node.js)", check_prereqs)
+@step("prerequisites", "Platform and prerequisites (git, uv, Python 3.11, Node.js)", check_prereqs, group="downloads")
 def run_prereqs(ctx: Ctx) -> None:
     problem = _platform_problem(ctx)
     if problem:
         raise StepFailed(problem)
     if not which("git", ctx):
-        raise StepFailed("git is not installed; run install.sh, which installs it, or your package manager")
+        raise StepFailed("git is not installed; run install.sh, which installs it, or your package manager",
+                         rerun_helps=False)
     uv = which("uv", ctx)
     if not uv:
-        raise StepFailed("uv is not installed; run install.sh, which installs it")
+        raise StepFailed("uv is not installed; run install.sh, which installs it", rerun_helps=False)
     if not _python311_ok(ctx):
         run([uv, "python", "install", "3.11"], ctx)
     if not _node_ok(ctx):
@@ -500,7 +556,7 @@ def run_prereqs(ctx: Ctx) -> None:
 # ---- Step 2: folders --------------------------------------------------------
 
 @step("folders", "Folders engine/ and data/", lambda c: c.target.is_dir() and
-      (c.engine.is_dir() or not c.engine.exists()) and c.data.is_dir())
+      (c.engine.is_dir() or not c.engine.exists()) and c.data.is_dir(), group="home")
 def run_folders(ctx: Ctx) -> None:
     if ctx.engine.exists() and not ctx.engine.is_dir():
         raise StepFailed(f"{ctx.engine} exists and is not a folder; move it aside, then run this again")
@@ -515,7 +571,7 @@ def check_engine(ctx: Ctx) -> bool:
     return (ctx.engine / ".git").exists() and (ctx.engine / "scripts" / "create-data-repo.py").is_file()
 
 
-@step("engine", "Engine, cloned at the latest release", check_engine)
+@step("engine", "Engine, cloned at the latest release", check_engine, group="downloads")
 def run_engine(ctx: Ctx) -> None:
     if ctx.engine.exists() and any(ctx.engine.iterdir()):
         if not (ctx.engine / ".git").exists():
@@ -549,13 +605,14 @@ def check_pyenv(ctx: Ctx) -> bool:
     return proc.returncode == 0 and "Would make no changes" in (proc.stdout + proc.stderr)
 
 
-@step("python-env", "Python environment with every module's libraries", check_pyenv)
+@step("python-env", "Python environment with every module's libraries", check_pyenv, group="downloads")
 def run_pyenv(ctx: Ctx) -> None:
     # Every extra: every module is mandatory, and the yards already run the
     # full set (`uv sync --all-extras`), so HELM and an executive match.
     run([which("uv", ctx) or "uv", "sync", "--quiet", "--all-extras", "--python", "3.11"], ctx, cwd=ctx.engine)
     if not check_pyenv(ctx):
-        raise StepFailed("some libraries did not install; run: uv sync --all-extras, in the engine folder")
+        raise StepFailed("some libraries did not install; run: uv sync --all-extras, in the engine folder",
+                         rerun_helps=False)
 
 
 # ---- Step 5: data repository ------------------------------------------------
@@ -617,7 +674,7 @@ def _require_private_origin(ctx: Ctx) -> None:
     if not _origin_is_private(ctx):
         slug = _origin_slug(ctx) or "origin"
         raise StepFailed(f"{slug} is not a private GitHub repository (or GitHub did not confirm it); "
-                         "your data never goes there. Make it private, or remove that origin")
+                         "your data never goes there. Make it private, or remove that origin", rerun_helps=False)
 
 
 def _create_data(ctx: Ctx, *extra: str) -> None:
@@ -666,7 +723,7 @@ def _github(ctx: Ctx) -> None:
     gh = which("gh", ctx)
     if not gh:
         raise StepFailed("the GitHub command line tool (gh) is not installed: https://cli.github.com, "
-                         "or run without --github to keep the data local")
+                         "or run without --github to keep the data local", rerun_helps=False)
     if run([gh, "auth", "status"], ctx, check=False).returncode != 0:
         _github_sign_in(ctx, gh)
     person.clear(ctx, GITHUB_SIGNIN)
@@ -686,7 +743,7 @@ def _github(ctx: Ctx) -> None:
     is_private, url = (view.stdout.strip().split("\t") + [""])[:2]
     if is_private != "true":
         raise StepFailed(f"{slug} exists and is PUBLIC; your data never goes there. "
-                         "Make it private on GitHub, or choose another name with --repo-name")
+                         "Make it private on GitHub, or choose another name with --repo-name", rerun_helps=False)
     remote_empty = run(["git", "ls-remote", url], ctx).stdout.strip() == ""
     if not _data_is_repo(ctx):
         if remote_empty:
@@ -695,7 +752,8 @@ def _github(ctx: Ctx) -> None:
             # Adopted: the data already lives there (a second machine, a reinstall).
             run(["git", "clone", "--quiet", url + ".git", str(ctx.data)], ctx)
             if not (ctx.data / ".schema-version").is_file():
-                raise StepFailed(f"{slug} is not a HEADING OS data repository; choose another name with --repo-name")
+                raise StepFailed(f"{slug} is not a HEADING OS data repository; choose another name with --repo-name",
+                                 rerun_helps=False)
             return
     if _has_origin(ctx):
         # Whatever origin is, on every run: a repository made public later,
@@ -711,7 +769,7 @@ def _github(ctx: Ctx) -> None:
     _create_data(ctx)  # origin is set, so it only pushes, verified
 
 
-@step("data", "Your private data repository", check_data)
+@step("data", "Your private data repository", check_data, group="downloads")
 def run_data(ctx: Ctx) -> None:
     if not _data_is_repo(ctx) and any(ctx.data.iterdir()):
         raise StepFailed(f"{ctx.data} is not empty and is not a HEADING OS data repository; "
@@ -738,7 +796,7 @@ def check_data_layout(ctx: Ctx) -> bool:
             and run(_layout_cmd(ctx, "--check-layout"), ctx, cwd=ctx.engine, check=False).returncode == 0)
 
 
-@step("data-layout", "Your data repository's layout, as the push checks expect it", check_data_layout)
+@step("data-layout", "Your data repository's layout, as the push checks expect it", check_data_layout, group="home")
 def run_data_layout(ctx: Ctx) -> None:
     # Never pushes: a --github install's data step sends it on the next rerun.
     run(_layout_cmd(ctx, "--repair-layout"), ctx, cwd=ctx.engine)
@@ -755,7 +813,7 @@ def check_gates(ctx: Ctx) -> bool:
             and run(["bash", str(s / "setup-platform.sh"), "--check"], ctx, cwd=ctx.engine, check=False).returncode == 0)
 
 
-@step("gates", "Settings file and safety checks", check_gates)
+@step("gates", "Settings file and safety checks", check_gates, group="home")
 def run_gates(ctx: Ctx) -> None:
     env_file = ctx.engine / ".env"
     if not env_file.exists():
@@ -765,25 +823,40 @@ def run_gates(ctx: Ctx) -> None:
     run([str(ctx.python), "scripts/install-git-hooks.py"], ctx, cwd=ctx.engine)
     run(["bash", "scripts/setup-platform.sh"], ctx, cwd=ctx.engine)
     if not check_gates(ctx):
-        raise StepFailed("a safety check is still not armed; run: bash scripts/setup-platform.sh --check")
+        raise StepFailed("a safety check is still not armed; run: bash scripts/setup-platform.sh --check",
+                         rerun_helps=False)
 
 
 # ---- HOS-312: the intake's answers, kept in .env ----------------------------
-# HEADING_OS_GITHUB_BACKUP and HEADING_OS_PROXY_SIGNIN here; HEADING_OS_TZ and HEADING_OS_MAIL by the
-# timezone and mail-choice steps below. Read back through install_answers.
+# HEADING_OS_GITHUB_BACKUP, HEADING_OS_PROXY_SIGNIN and HEADING_OS_TZ here; HEADING_OS_MAIL by the
+# mail-choice step below. HEADING_OS_TZ is written here, before the first timer is rendered, because
+# every unit takes its zone from the engine .env (HOS-341: on a Mac whose zone is not UTC the
+# memory-index timer was refused at step 18, while the timezone step that wrote it came at step 36).
+# The timezone step stays and then normally finds it in place. Read back through install_answers.
 
 from scripts.utils.env_file import upsert_env_value  # noqa: E402 - the one .env writer
 
 
+def _kept_consent(ctx: Ctx) -> str | None:
+    """The consent to keep in .env: never a no, and nothing when none was given."""
+    return None if ctx.consent in (None, "no") else ctx.consent
+
+
 def check_answers(ctx: Ctx) -> bool:
     return (install_answers.github_backup(ctx.engine, environ=False) == ctx.github_backup
-            and install_answers.proxy_signin(ctx.engine, environ=False) == ctx.proxy_signin)
+            and install_answers.proxy_signin(ctx.engine, environ=False) == ctx.proxy_signin
+            and install_answers.timezone(ctx.engine, environ=False) == ctx.tz
+            and _kept_consent(ctx) in (None, install_answers.consent(ctx.engine, environ=False)))
 
 
-@step("answers", "Your install answers, kept in the settings file", check_answers)
+@step("answers", "Your install answers, kept in the settings file", check_answers, group="home")
 def run_answers(ctx: Ctx) -> None:
-    for name, value in ((install_answers.GITHUB_BACKUP_ENV, ctx.github_backup),
-                        (install_answers.PROXY_SIGNIN_ENV, ctx.proxy_signin)):
+    pairs = [(install_answers.GITHUB_BACKUP_ENV, ctx.github_backup),
+             (install_answers.PROXY_SIGNIN_ENV, ctx.proxy_signin),
+             (install_answers.TZ_ENV, ctx.tz)]
+    if _kept_consent(ctx) is not None:
+        pairs.append((install_answers.CONSENT_ENV, _kept_consent(ctx)))
+    for name, value in pairs:
         try:
             upsert_env_value(ctx.engine / ".env", name, value)
         except ValueError as exc:
@@ -803,7 +876,7 @@ def check_shell(ctx: Ctx) -> bool:
     return True
 
 
-@step("shell", "Tools and data found in every new terminal", check_shell)
+@step("shell", "Tools and data found in every new terminal", check_shell, group="home")
 def run_shell(ctx: Ctx) -> None:
     sp = shell_path()
     for d in ctx.bin_dirs:
@@ -828,32 +901,32 @@ def run_shell(ctx: Ctx) -> None:
 from scripts.utils import install_herdr_cliproxy as hc  # noqa: E402
 
 
-@step("herdr", "Herdr, the terminal that runs parallel yards", hc.herdr_ready)
+@step("herdr", "Herdr, the terminal that runs parallel yards", hc.herdr_ready, group="downloads")
 def run_herdr(ctx: Ctx) -> None:
     hc.install_herdr(ctx)
 
 
-@step("herdr-plugin", "Herdr's yard plugin and its view of Claude Code", hc.herdr_plugin_ready)
+@step("herdr-plugin", "Herdr's yard plugin and its view of Claude Code", hc.herdr_plugin_ready, group="home")
 def run_herdr_plugin(ctx: Ctx) -> None:
     hc.install_herdr_plugin(ctx)
 
 
-@step("cliproxy", "CLIProxyAPI, the local door to other AI models", hc.cliproxy_ready)
+@step("cliproxy", "CLIProxyAPI, the local door to other AI models", hc.cliproxy_ready, group="downloads")
 def run_cliproxy(ctx: Ctx) -> None:
     hc.install_cliproxy(ctx)
 
 
-@step("cliproxy-config", "CLIProxyAPI settings and its private key", hc.cliproxy_config_ready)
+@step("cliproxy-config", "CLIProxyAPI settings and its private key", hc.cliproxy_config_ready, group="home")
 def run_cliproxy_config(ctx: Ctx) -> None:
     hc.install_cliproxy_config(ctx)
 
 
-@step("cliproxy-service", "CLIProxyAPI running in the background", hc.cliproxy_service_ready)
+@step("cliproxy-service", "CLIProxyAPI running in the background", hc.cliproxy_service_ready, group="services")
 def run_cliproxy_service(ctx: Ctx) -> None:
     hc.install_cliproxy_service(ctx)
 
 
-@step("cliproxy-signin", "Model sign-ins: Claude, then the others you choose", hc.signin_ready)
+@step("cliproxy-signin", "Model sign-ins: Claude, then the others you choose", hc.signin_ready, group="services")
 def run_cliproxy_signin(ctx: Ctx) -> None:
     hc.install_signins(ctx)
 
@@ -866,7 +939,7 @@ from scripts.utils import install_index as _index  # noqa: E402
 
 
 @step("embedding-server", "Local search engine (ollama, a large download that resumes if interrupted)",
-      _index.check_server)
+      _index.check_server, group="services")
 def run_embedding_server(ctx: Ctx) -> None:
     try:
         _index.install_server(ctx)
@@ -875,7 +948,7 @@ def run_embedding_server(ctx: Ctx) -> None:
 
 
 @step("embedding-model", "Search language model bge-m3 (about 1.2 GB, resumes if interrupted)",
-      _index.check_model)
+      _index.check_model, group="downloads")
 def run_embedding_model(ctx: Ctx) -> None:
     try:
         _index.pull_model(ctx)
@@ -883,7 +956,7 @@ def run_embedding_model(ctx: Ctx) -> None:
         raise StepFailed(str(exc)) from exc
 
 
-@step("index-build", "First search index of your engine and data, refreshed every hour", _index.check_index)
+@step("index-build", "First search index of your engine and data, refreshed every hour", _index.check_index, group="services")
 def run_index_build(ctx: Ctx) -> None:
     try:
         _index.build_index(ctx)
@@ -901,27 +974,27 @@ def _lific(fn: Callable[[Ctx], None], ctx: Ctx) -> None:
         raise StepFailed(str(exc)) from exc
 
 
-@step("lific-binary", f"Lific {lific.VERSION}, the issue tracker, checksum-verified", lific.check_binary)
+@step("lific-binary", f"Lific {lific.VERSION}, the issue tracker, checksum-verified", lific.check_binary, group="downloads")
 def run_lific_binary(ctx: Ctx) -> None:
     _lific(lific.run_binary, ctx)
 
 
-@step("lific-init", "Lific's settings and database, reachable only from this computer", lific.check_init)
+@step("lific-init", "Lific's settings and database, reachable only from this computer", lific.check_init, group="home")
 def run_lific_init(ctx: Ctx) -> None:
     _lific(lific.run_init, ctx)
 
 
-@step("lific-service", "Lific's background service, running and answering", lific.check_service)
+@step("lific-service", "Lific's background service, running and answering", lific.check_service, group="services")
 def run_lific_service(ctx: Ctx) -> None:
     _lific(lific.run_service, ctx)
 
 
-@step("lific-project", "Lific project HOS with Claude's own account and key", lific.check_project)
+@step("lific-project", "Lific project HOS with Claude's own account and key", lific.check_project, group="home")
 def run_lific_project(ctx: Ctx) -> None:
     _lific(lific.run_project, ctx)
 
 
-@step("lific-mcp", "Lific connected to Claude Code", lific.check_mcp)
+@step("lific-mcp", "Lific connected to Claude Code", lific.check_mcp, group="home")
 def run_lific_mcp(ctx: Ctx) -> None:
     _lific(lific.run_mcp, ctx)
 
@@ -934,17 +1007,17 @@ def run_lific_mcp(ctx: Ctx) -> None:
 from scripts.utils import install_hindsight as hs  # noqa: E402
 
 
-@step("hindsight-server", "Hindsight, the memory server, on this computer only", hs.check_server_install)
+@step("hindsight-server", "Hindsight, the memory server, on this computer only", hs.check_server_install, group="downloads")
 def run_hindsight_server(ctx: Ctx) -> None:
     hs.run_server_install(ctx)
 
 
-@step("hindsight-settings", "Hindsight's settings and its private key", hs.check_settings)
+@step("hindsight-settings", "Hindsight's settings and its private key", hs.check_settings, group="downloads")
 def run_hindsight_settings(ctx: Ctx) -> None:
     hs.run_settings(ctx)
 
 
-@step("hindsight-service", "Hindsight running in the background", hs.check_service)
+@step("hindsight-service", "Hindsight running in the background", hs.check_service, group="services")
 def run_hindsight_service(ctx: Ctx) -> None:
     hs.run_service(ctx)
 
@@ -952,27 +1025,27 @@ def run_hindsight_service(ctx: Ctx) -> None:
 from scripts.utils import install_hindsight_console as hs_console  # noqa: E402 - HOS-312
 
 
-@step("hindsight-console", "The Hindsight web console, on this computer only", hs_console.check_install)
+@step("hindsight-console", "The Hindsight web console, on this computer only", hs_console.check_install, group="downloads")
 def run_hindsight_console(ctx: Ctx) -> None:
     hs_console.run_install(ctx)
 
 
-@step("hindsight-console-service", "The Hindsight web console running in the background", hs_console.check_service)
+@step("hindsight-console-service", "The Hindsight web console running in the background", hs_console.check_service, group="services")
 def run_hindsight_console_service(ctx: Ctx) -> None:
     hs_console.run_service(ctx)
 
 
-@step("hindsight-bank", "Your memory bank, main", hs.check_bank)
+@step("hindsight-bank", "Your memory bank, main", hs.check_bank, group="home")
 def run_hindsight_bank(ctx: Ctx) -> None:
     hs.run_bank(ctx)
 
 
-@step("hindsight-claude", "Claude Code connected to your memory", hs.check_claude)
+@step("hindsight-claude", "Claude Code connected to your memory", hs.check_claude, group="downloads")
 def run_hindsight_claude(ctx: Ctx) -> None:
     hs.run_claude(ctx)
 
 
-@step("hindsight-timers", "Memory kept current: sync and snapshot", hs.check_timers)
+@step("hindsight-timers", "Memory kept current: sync and snapshot", hs.check_timers, group="services")
 def run_hindsight_timers(ctx: Ctx) -> None:
     hs.run_timers(ctx)
 
@@ -990,22 +1063,22 @@ def _agentview(fn: Callable[[Ctx], None], ctx: Ctx) -> None:
         raise StepFailed(str(exc)) from exc
 
 
-@step("agent-watch", "The agent-watch panel for subagents", agentview.check_agent_watch)
+@step("agent-watch", "The agent-watch panel for subagents", agentview.check_agent_watch, group="home")
 def run_agent_watch(ctx: Ctx) -> None:
     _agentview(agentview.run_agent_watch, ctx)
 
 
-@step("plugins", "Claude Code plugins the engine uses", agentview.check_plugins)
+@step("plugins", "Claude Code plugins the engine uses", agentview.check_plugins, group="downloads")
 def run_plugins(ctx: Ctx) -> None:
     _agentview(agentview.run_plugins, ctx)
 
 
-@step("agentsview", "AgentsView, the archive of your past sessions", agentview.check_agentsview)
+@step("agentsview", "AgentsView, the archive of your past sessions", agentview.check_agentsview, group="services")
 def run_agentsview(ctx: Ctx) -> None:
     _agentview(agentview.run_agentsview, ctx)
 
 
-@step("usage-dashboard", "The proxy usage dashboard, refreshed on a timer", agentview.check_usage_dashboard)
+@step("usage-dashboard", "The proxy usage dashboard, refreshed on a timer", agentview.check_usage_dashboard, group="services")
 def run_usage_dashboard(ctx: Ctx) -> None:
     _agentview(agentview.run_usage_dashboard, ctx)
 
@@ -1022,37 +1095,37 @@ from scripts.utils import install_google as _google  # noqa: E402
 from scripts.utils import install_mail as _mail  # noqa: E402
 
 
-@step("timezone", "Your time zone, for every scheduled job", _mail.timezone_ready)
+@step("timezone", "Your time zone, for every scheduled job", _mail.timezone_ready, group="home")
 def run_timezone(ctx: Ctx) -> None:
     _mail.install_timezone(ctx)
 
 
-@step("mail-choice", "Which mail system HEADING OS reads", _mail.mail_choice_ready)
+@step("mail-choice", "Which mail system HEADING OS reads", _mail.mail_choice_ready, group="home")
 def run_mail_choice(ctx: Ctx) -> None:
     _mail.install_mail_choice(ctx)
 
 
-@step("google-client", "Your own Google sign-in app (the client file)", _google.google_client_ready)
+@step("google-client", "Your own Google sign-in app (the client file)", _google.google_client_ready, group="home")
 def run_google_client(ctx: Ctx) -> None:
     _google.install_google_client(ctx)
 
 
-@step("google-audience", "Your Google app published (In production, or Internal)", _google.google_audience_ready)
+@step("google-audience", "Your Google app published (In production, or Internal)", _google.google_audience_ready, group="home")
 def run_google_audience(ctx: Ctx) -> None:
     _google.install_google_audience(ctx)
 
 
-@step("google-consent", "Gmail and Google Calendar signed in", _google.google_consent_ready)
+@step("google-consent", "Gmail and Google Calendar signed in", _google.google_consent_ready, group="downloads")
 def run_google_consent(ctx: Ctx) -> None:
     _google.install_google_consent(ctx)
 
 
-@step("mail-account", "Your Exchange mailbox and calendar", _mail.mail_account_ready)
+@step("mail-account", "Your Exchange mailbox and calendar", _mail.mail_account_ready, group="home")
 def run_mail_account(ctx: Ctx) -> None:
     _mail.install_mail_account(ctx)
 
 
-@step("mail-services", "Mail sync and Sentinel running in the background", _mail.mail_services_ready)
+@step("mail-services", "Mail sync and Sentinel running in the background", _mail.mail_services_ready, group="services")
 def run_mail_services(ctx: Ctx) -> None:
     _mail.install_mail_services(ctx)
 
@@ -1097,7 +1170,7 @@ def check_services(ctx: Ctx) -> bool:
     return _services_all(ctx, "status", capture=True).returncode == 0
 
 
-@step("services", "Every background service HEADING OS needs", check_services)
+@step("services", "Every background service HEADING OS needs", check_services, group="services")
 def run_services(ctx: Ctx) -> None:
     if _services_all(ctx, "install", capture=False).returncode != 0:
         raise StepFailed("the service layer could not install every service; "
@@ -1115,7 +1188,7 @@ def check_launcher(ctx: Ctx) -> bool:
     return launcher_ready(ctx.engine)
 
 
-@step("launcher", "The heading command, which opens Claude in the HEADING OS folder", check_launcher)
+@step("launcher", "The heading command, which opens Claude in the HEADING OS folder", check_launcher, group="home")
 def run_launcher(ctx: Ctx) -> None:
     from scripts.utils.heading_launcher import install_launcher
     print(install_launcher(ctx.engine).message)
@@ -1151,13 +1224,13 @@ def check_admin_console(ctx: Ctx) -> bool:
         return False
 
 
-@step("admin-console", "The admin console page, with every web interface and the guides", check_admin_console)
+@step("admin-console", "The admin console page, with every web interface and the guides", check_admin_console, group="home")
 def run_admin_console(ctx: Ctx) -> None:
     run([str(ctx.python), str(ctx.engine / "scripts" / "heading-console.py"), "build", "--engine", str(ctx.engine)],
         ctx, cwd=ctx.engine)
 
 
-@step("verify", "A new terminal finds the engine's tools and your data", lambda c: _fresh_login_finds(c)[0])
+@step("verify", "A new terminal finds the engine's tools and your data", lambda c: _fresh_login_finds(c)[0], group="home")
 def run_verify(ctx: Ctx) -> None:
     ok, found = _fresh_login_finds(ctx)
     if not ok:
@@ -1195,14 +1268,14 @@ def check_doctor(ctx: Ctx) -> bool:
     return _doctor(ctx)[0] == 0
 
 
-@step("doctor", "Every HEADING OS check is green (scripts/doctor.py)", check_doctor)
+@step("doctor", "Every HEADING OS check is green (scripts/doctor.py)", check_doctor, group="downloads")
 def run_doctor(ctx: Ctx) -> None:
     rc, red, tail = _doctor(ctx)
     if rc == 0:
         return
     if red:
         raise StepFailed(f"doctor found {len(red)} red: " + "; ".join(red)
-                         + ". Each row's fix is printed by: .venv/bin/python scripts/doctor.py")
+                         + ". Each row's fix is printed by: .venv/bin/python scripts/doctor.py", rerun_helps=False)
     raise StepFailed(f"doctor exited {rc}" + (f"\n{tail}" if tail else ""))
 
 
@@ -1277,7 +1350,8 @@ def _announce(ctx: Ctx, say: str) -> None:
     the handoff never opens under a window still showing the last step.
     """
     print(say, flush=True)
-    progress.wait_shown(ctx, progress.write(ctx, "done", len(STEPS), len(STEPS), "", say))
+    progress.wait_shown(ctx, progress.write(ctx, "done", len(STEPS), len(STEPS), "", say,
+                                            consent=consent_words(ctx.consent)))
 
 
 def hand_off(ctx: Ctx) -> str:
@@ -1349,7 +1423,7 @@ def hand_off(ctx: Ctx) -> str:
 # ---- HOS-312: the intake, the status line and the install report ----------
 
 STATUS_PREFIX = "HEADING-INSTALL: "
-STATE_EXIT = {"done": 0, "failed": 1, "need-answer": 3, "waiting-for-person": 4}
+STATE_EXIT = {"done": 0, "failed": 1, "need-answer": 3, "waiting-for-person": 4, "paused": 5, "stopped": 6}
 ANSWER = "{answer}"
 FREE = "{free}"
 REPORT_NAME = "install-report.txt"
@@ -1357,7 +1431,8 @@ REPORT_NAME = "install-report.txt"
 RERUN_FLAGS = (("--target", "target"), ("--mail", "mail"), ("--github-backup", "github_backup"),
                ("--tz", "tz"), ("--proxy-signin", "proxy_signin"), ("--answers", "answers"),
                ("--repo-name", "repo_name"), ("--ref", "ref"), ("--from", "source"),
-               ("--google-client", "google_client"), ("--google-audience", "google_audience"))
+               ("--google-client", "google_client"), ("--google-audience", "google_audience"),
+               ("--consent", "consent"))
 
 MAIL_QUESTION = ("Which mail system do you use? HEADING OS reads your mail and calendar, and nothing "
                  "is ever sent without your approval. You can also connect mail later.",
@@ -1424,6 +1499,9 @@ def fill_answers(ctx: Ctx, args: argparse.Namespace,
         ctx.tz = filed.get("tz") or install_answers.timezone(ctx.engine, environ=False)
     ctx.proxy_signin = (args.proxy_signin or filed.get("proxy_signin")
                         or install_answers.proxy_signin(ctx.engine, environ=False) or "now")
+    # Never asked here: a step whose group it does not cover asks (run_step, HOS-340).
+    ctx.consent = (args.consent or filed.get("consent")
+                   or install_answers.consent(ctx.engine, environ=False))
     if ctx.mail is None:
         return ("--mail", *MAIL_QUESTION)
     if ctx.github_backup is None:
@@ -1466,14 +1544,215 @@ def write_report(ctx: Ctx, s: Step, say: str) -> Path:
     return report
 
 
-def step_failed(ctx: Ctx, s: Step, say: str, next_cmd: str) -> int:
-    print(say)
-    print("Fix that, then run the same command again; finished steps are skipped.")
+# ---- HOS-340: what was installed, and how to remove it by hand ----------
+
+INSTALLED_NAME = "installed.txt"
+INSTALLED_HEADER = ("What HEADING OS installed on this computer. Something you had before the install can "
+                    "appear here; check before deleting it.")
+INSTALLED_SYSTEM = ("System packages are installed only by install.sh through your password; HEADING OS does "
+                    "not record which, and other programs may use them, so this report does not suggest "
+                    "removing them.")
+SERVICES_OF = "service:"   # where = "service:<family>[,<family>]", or "service:*" for every mandatory family
+LINGER = "linger:"         # where: the systemd linger every service install turns on (Linux only)
+
+#: Step name to (what, where, how to remove), read from each step's code (HOS-340). `where` takes
+#: {target}, {engine}, {data} and {home}; an empty `how` means "delete <where>". A path is listed
+#: only when it exists when the file is written. Anything inside {engine} or {data} goes with them.
+INSTALLED: dict[str, list[tuple[str, str, str]]] = {
+    "prerequisites": [  # install_node (node_home, os.replace into current); uv python install 3.11
+        ("Node.js", "{home}/.local/share/heading-os/node", ""),
+        ("Python 3.11, put in place by uv when it was missing", "uv's own Python folder", "uv python uninstall 3.11"),
+    ],
+    "folders": [("The HEADING OS folder: the engine, your data and the install's state", "{target}",
+                 "delete {target}, after keeping a copy of {data}, which holds your own data")],
+    "engine": [("The engine", "{engine}", "")],
+    "data": [("Your data repository", "{data}", "delete it only after keeping a copy: it holds your own data"),
+             ("With a GitHub backup only: the private repository on your GitHub account", "github.com",
+              "delete it in that repository's settings on github.com, only if you no longer want that copy")],
+    "shell": [("Lines in your shell startup files", "{home}/.profile, {home}/.bash_profile, {home}/.bash_login, "
+               "{home}/.bashrc, {home}/.zprofile and {home}/.zshrc, whichever exist",
+               "delete the block from '" + PROFILE_BEGIN + "' to '" + PROFILE_END + "', and each line "
+               "beginning '# added by HEADING OS: PATH' together with the line after it")],
+    "herdr": [("Herdr", "{home}/.local/bin/herdr", ""),
+              ("Herdr's settings (on a computer that already had them, only a [ui.toast] block was added)",
+               "{home}/.config/herdr", "")],
+    "herdr-plugin": [("Herdr's yard plugin heading-os.yard and its view of Claude Code", "Herdr's own settings",
+                      "they stop working once Herdr is deleted (above)")],
+    "cliproxy": [("CLIProxyAPI", "{home}/.local/share/heading-os/cliproxyapi", "")],
+    "cliproxy-config": [("CLIProxyAPI's settings and private key", "{home}/.config/heading-os/cliproxyapi", "")],
+    "cliproxy-service": [("CLIProxyAPI in the background", SERVICES_OF + "cliproxyapi", "")],
+    "cliproxy-signin": [("Your model sign-ins for CLIProxyAPI", "{home}/.cli-proxy-api", "")],
+    "embedding-server": [("ollama, the local search engine", "{home}/.local/share/heading-os/ollama", ""),
+                         ("ollama in the background", SERVICES_OF + "embedding-server", "")],
+    "embedding-model": [("The search language model bge-m3", "{home}/.local/share/heading-os/ollama/models", "")],
+    "index-build": [("The hourly search index refresh", SERVICES_OF + "memory-index-refresh", "")],
+    "lific-binary": [("Lific", "{home}/.local/bin/lific", "")],
+    "lific-init": [("Lific's settings and Claude's key for it", "{home}/.config/lific", "")],
+    "lific-service": [("Lific in the background", SERVICES_OF + "lific", "")],
+    "lific-mcp": [("Lific's bridge to Claude Code", "{home}/.local/bin/lific-mcp", ""),
+                  ("Lific registered with Claude Code", "{home}/.claude.json", "claude mcp remove --scope user lific")],
+    "hindsight-server": [("Hindsight, the memory server", "{home}/.local/share/heading-os/hindsight", ""),
+                         ("The hindsight command", "{home}/.local/bin/hindsight", "")],
+    "hindsight-settings": [("Hindsight's settings", "{home}/.config/heading-os/hindsight", ""),
+                           ("Hindsight's key and connection headers", "{home}/.config/hindsight", ""),
+                           ("Hindsight's command settings and the Claude Code memory plugin's files",
+                            "{home}/.hindsight", "")],
+    "hindsight-service": [("Hindsight in the background", SERVICES_OF + "hindsight-server", "")],
+    "hindsight-console": [("The Hindsight web console", "{home}/.local/share/heading-os/hindsight-control-plane",
+                           "")],
+    "hindsight-console-service": [("The Hindsight web console in the background",
+                                   SERVICES_OF + "hindsight-control-plane", "")],
+    "hindsight-claude": [("Your memory registered with Claude Code", "{home}/.claude.json",
+                          "claude mcp remove --scope user hindsight-main"),
+                         ("The Hindsight memory plugin's hooks", "{home}/.claude/settings.json",
+                          "delete the hook entries whose command names hindsight")],
+    "hindsight-timers": [("Memory sync and snapshot timers", SERVICES_OF + "hindsight-sync,hindsight-snapshot", "")],
+    "agent-watch": [("The Claude Code plugin agent-watch and its catalogue heading-os-mods", "Claude Code's plugins",
+                     "claude plugin uninstall agent-watch@heading-os-mods; then "
+                     "claude plugin marketplace remove heading-os-mods")],
+    "plugins": [("The Claude Code plugins the engine uses, and the catalogue claude-plugins-official",
+                 "Claude Code's plugins", "claude plugin uninstall <name>, for each plugin set to true under "
+                 "enabledPlugins in {engine}/.claude/settings.json; then "
+                 "claude plugin marketplace remove claude-plugins-official")],
+    "agentsview": [("AgentsView", "{home}/.local/share/heading-os/agentsview", ""),
+                   ("AgentsView in the background", SERVICES_OF + "agentsview", "")],
+    "usage-dashboard": [("The proxy usage dashboard timer", SERVICES_OF + "proxy-usage-dashboard", "")],
+    "google-consent": [("The access you gave your own Google app", "your Google account",
+                        "remove it at https://myaccount.google.com/linkedapps")],
+    "mail-services": [("Mail sync and Sentinel (Exchange only)", SERVICES_OF + "sentinel,sync-exchange-daemon", "")],
+    "services": [("Every background service and timer HEADING OS needs", SERVICES_OF + "*", ""),
+                 ("Background services keep running while you are logged out (systemd linger)", LINGER,
+                  "loginctl disable-linger, only if nothing else on this computer needs it")],
+    "launcher": [("The heading command", "{home}/.local/bin/heading", "")],
+}
+
+
+def _service_lines(names: list[str], seen: set[str]) -> list[str]:
+    """One line per family of `names` ("*": every mandatory one) with what remove_services would do by hand.
+
+    Asks scripts/utils/schedule.py, the module that removes them, for the families, the unit
+    folder and the adopted check, so these lines say what `heading-services.py remove` does.
+    Families seen before, absent here, or adopted (left alone by remove_services) are left out.
+    """
+    from scripts.utils import schedule
+
+    target = platform.system().lower()
+    fams = schedule.select_families(None, mandatory_only=True) if names == ["*"] else \
+        schedule.select_families(names)
+    lines = []
+    for fam in fams:
+        if fam.name in seen or target not in fam.platforms or not fam.this_machine:
+            continue
+        seen.add(fam.name)
+        if target == "linux":
+            dest = schedule.systemd_user_dir()
+            files = [dest / u for u in fam.units]
+            if not any(f.exists() for f in files) or schedule._adopted_units(fam, dest):
+                continue
+            services = [u for u in fam.units if u.endswith(".service")]
+            how = [f"systemctl --user disable --now {' '.join(fam.enable_units)}"]
+            if services:
+                how.append(f"systemctl --user stop {' '.join(services)}")
+            how += ["delete " + ", ".join(str(f) for f in files), "systemctl --user daemon-reload"]
+            lines.append(f"- Background {fam.kind} {fam.name}: {', '.join(str(f) for f in files)}. "
+                         f"To remove: {'; then '.join(how)}")
+        else:
+            for label in schedule._launchd_labels(fam):
+                plist = schedule._launchd_agents_dir() / f"{label}.plist"
+                if not plist.exists() or (fam.adopts_foreign and schedule._adopted([plist])):
+                    continue
+                lines.append(f"- Background {fam.kind} {fam.name}: {plist}. To remove: launchctl bootout "
+                             f"gui/{os.getuid()}/{label} (when that fails: launchctl unload {plist}); "
+                             f"then delete {plist}")
+    return lines
+
+
+def write_installed(ctx: Ctx) -> Path:
+    """<target>/installed.txt: per consent group, what the steps put in place and how to remove each by hand.
+
+    Mode 600 from creation (mkstemp), replaced whole with os.replace, like write_report.
+    """
+    values = {"target": ctx.target, "engine": ctx.engine, "data": ctx.data, "home": Path.home()}
+    by_group: dict[str, list[str]] = {g: [] for g in install_answers.CONSENT_GROUPS}
+    seen: set[str] = set()
+    for s in STEPS:
+        for what, where, how in INSTALLED.get(s.name, []):
+            if where.startswith(SERVICES_OF):
+                by_group[s.group] += _service_lines(where[len(SERVICES_OF):].split(","), seen)
+                continue
+            if where == LINGER:
+                if platform.system() == "Linux" and seen:
+                    by_group[s.group].append(f"- {what}. To remove: {how}")
+                continue
+            if where == "github.com" and not ctx.github:
+                continue
+            where = where.format(**values)
+            if where.startswith("/") and ", " not in where and not Path(where).exists():
+                continue
+            how = how.format(**values) if how else f"delete {where}"
+            by_group[s.group].append(f"- {what}: {where}. To remove: {how}")
+    lines = [INSTALLED_HEADER, ""]
+    for group, words in install_answers.CONSENT_GROUPS.items():
+        lines.append(f"{group} ({words}):")
+        lines += [INSTALLED_SYSTEM] if group == "system" else (by_group[group] or ["- nothing"])
+        lines.append("")
+    ctx.target.mkdir(parents=True, exist_ok=True)
+    out = ctx.target / INSTALLED_NAME
+    fd, tmp = tempfile.mkstemp(prefix=INSTALLED_NAME + ".", suffix=".tmp", dir=ctx.target)
     try:
-        print(f"The details are in {write_report(ctx, s, say)}")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+        os.replace(tmp, out)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return out
+
+
+def step_failed(ctx: Ctx, s: Step, index: int, total: int, say: str, next_cmd: str,
+                rerun_helps: bool = True) -> int:
+    """The one refusal text for a failed step, printed and sent as `say` (HOS-340).
+
+    `say` is the reason only. With `rerun_helps` False the text has no "run
+    again" sentence and `next` is empty: the reason names what to do first.
+    """
+    lines = [f"Step {index} of {total} failed: {s.title}.", say]
+    if index == 1:
+        lines.append("This was the first step, so nothing was finished before it.")
+    elif index == 2:
+        lines.append("The 1 step before it is finished and stays in place.")
+    else:
+        lines.append(f"The {index - 1} steps before it are finished and stay in place.")
+    if rerun_helps:
+        lines.append("Fix that, then run the same command again; finished steps are skipped.")
+    text = "\n".join(lines)
+    print(text)
+    try:
+        print(f"The details are in {write_report(ctx, s, text)}")
     except OSError as exc:
         print(f"  note: the install report could not be written ({exc})")
-    return status_line("failed", say, next_cmd)
+    return status_line("failed", text, next_cmd if rerun_helps else "")
+
+
+def consent_covers(consent: str | None, group: str) -> bool:
+    """True when the consent agrees to `group`: all, or a list naming it."""
+    return consent == "all" or (consent not in (None, "no") and group in consent.split(","))
+
+
+def consent_words(consent: str | None) -> str:
+    """The agreed groups in words for the progress window: "everything", a list, or ""."""
+    if consent in (None, "no"):
+        return ""
+    if consent == "all":
+        return "everything"
+    return ", ".join(install_answers.CONSENT_GROUPS[g] for g in consent.split(","))
+
+
+def consent_options(consent: str | None, group: str) -> list[dict]:
+    """The three answers to a consent question, the same three install.sh offers."""
+    value = group if consent in (None, "no") else f"{consent},{group}"
+    return [{"label": "Yes", "value": value},
+            {"label": "Yes to all steps, do not ask again", "value": "all"},
+            {"label": "No, stop here", "value": "no"}]
 
 
 def run_step(ctx: Ctx, s: Step, label: str, state: dict) -> bool:
@@ -1492,6 +1771,8 @@ def run_step(ctx: Ctx, s: Step, label: str, state: dict) -> bool:
     if ctx.dry_run:
         print(f"{label}: would be done now")
         return True
+    if not consent_covers(ctx.consent, s.group):
+        raise NeedConsent(s.group)
     repairing = s.name in state["steps"]
     s.run(ctx)
     ctx.bin_dirs = compute_bin_dirs(ctx)
@@ -1562,6 +1843,103 @@ def dry_run_agreement(ctx: Ctx, next_cmd: str) -> int:
     return status_line("failed", f"Dry run: the agreement check could not run: {last}", next_cmd)
 
 
+def _consent_arg(value: str) -> str:
+    if not install_answers.valid_consent(value):
+        raise argparse.ArgumentTypeError("use all, no, or a comma list of "
+                                         + ", ".join(install_answers.CONSENT_GROUPS) + ", each once")
+    return value
+
+
+def control(target: Path, request: str) -> int:
+    """`--control pause|stop`: ask the install running in `target` to end after its current step.
+
+    Only while a run is going on there: its progress record says running and
+    its writer is alive. Otherwise nothing is created, the state folder included.
+    """
+    folder = target / ".heading-install"
+    record = progress.read(folder / progress.PROGRESS_NAME)
+    noun = "Pause" if request == "pause" else "Stop"
+    if record is not None and record.get("state") == "running" and progress._writer_alive(record):
+        try:
+            progress.request_control(folder, request)
+        except OSError as exc:
+            refusal = f"The {request} request could not be written ({exc})."
+            print(refusal)
+            return status_line("failed", refusal, "")
+        say = f"{noun} requested: the install stops after the step it is running now."
+        print(say)
+        return status_line("done", say)
+    refusal = f"No install is running in {target}, so there is nothing to {request}."
+    print(refusal)
+    return status_line("failed", refusal, "")
+
+
+def _ended_by_request(ctx: Ctx, ap: argparse.ArgumentParser, args: argparse.Namespace, request: str,
+                      done: int, total: int) -> int:
+    """The paused or stopped end, after `done` finished steps (0: before the first)."""
+    title = STEPS[done - 1].title if done else STEPS[0].title
+    where = f"after step {done} of {total} ({title})" if done else f"before step 1 of {total} ({title})"
+    state = "paused" if request == "pause" else "stopped"
+    progress.write(ctx, state, done, total, STEPS[done - 1].title if done else "", consent=consent_words(ctx.consent))
+    if state == "paused":
+        say = (f"Paused {where}, as you asked. Nothing is broken: the finished steps stay in place. "
+               "To continue, run the same command again.")
+    else:
+        say = (f"Stopped {where}, as you asked. The finished steps stay in place. "
+               "When you want to finish the install, run the same command again.")
+    print(say)
+    return status_line(state, say, rerun_command(ap, args))
+
+
+def step_loop(ctx: Ctx, ap: argparse.ArgumentParser, args: argparse.Namespace, state: dict) -> int | None:
+    """Every step in order; the status line's exit code when the run ends early, None when all are in place."""
+    total = len(STEPS)
+    agreed = consent_words(ctx.consent)
+    for i, s in enumerate(STEPS, 1):
+        request = None if ctx.dry_run else progress.take_control(ctx)
+        if request:
+            return _ended_by_request(ctx, ap, args, request, i - 1, total)
+        label = f"[{i}/{total}] {s.title}"
+        progress.write(ctx, "running", i, total, s.title, consent=agreed)
+        try:
+            in_place = run_step(ctx, s, label, state)
+        except NeedConsent as need:
+            words = install_answers.CONSENT_GROUPS[need.group]
+            if args.answers is not None:
+                refusal = (f"The answers file gives no consent for {words}, "
+                           "and an install run from a file never stops to ask.")
+                progress.write(ctx, "failed", i, total, s.title, consent=agreed)
+                print(refusal)
+                return status_line("failed", refusal, "", code=2)
+            progress.write(ctx, "need-answer", i, total, s.title, consent=agreed)
+            say = f"The next step, {s.title}, belongs to {words}, which you have not agreed to yet. Do you agree?"
+            return status_line("need-answer", say, rerun_command(ap, args, ask="--consent"),
+                               consent_options(ctx.consent, need.group))
+        except WaitingForPerson as wait:
+            progress.write(ctx, "waiting-for-person", i, total, s.title, consent=agreed)
+            return status_line("waiting-for-person", str(wait), rerun_command(ap, args))
+        except StepFailed as exc:
+            progress.write(ctx, "failed", i, total, s.title, consent=agreed)
+            return step_failed(ctx, s, i, total, str(exc), rerun_command(ap, args), exc.rerun_helps)
+        except (OSError, subprocess.SubprocessError) as exc:
+            progress.write(ctx, "failed", i, total, s.title, consent=agreed)
+            return step_failed(ctx, s, i, total, str(exc), rerun_command(ap, args), True)
+        except Exception as exc:  # noqa: BLE001 - any other error still ends with the report and the status line
+            traceback.print_exc()
+            progress.write(ctx, "failed", i, total, s.title, consent=agreed)
+            return step_failed(ctx, s, i, total, f"Unexpected error: {type(exc).__name__}: {exc}",
+                               rerun_command(ap, args), True)
+        if not in_place:
+            progress.write(ctx, "failed", i, total, s.title, consent=agreed)
+            return step_failed(ctx, s, i, total, "It ran, but its result is still not in place.",
+                               rerun_command(ap, args), True)
+    # A pause or stop asked during the last step is honoured too, never removed unread by main.
+    request = None if ctx.dry_run else progress.take_control(ctx)
+    if request:
+        return _ended_by_request(ctx, ap, args, request, total, total)
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Install HEADING OS (resumable; safe to run again).")
     ap.add_argument("--target", default=str(Path.home() / "HeadingOS"),
@@ -1587,6 +1965,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="with --mail google: the client file downloaded from your own Google sign-in app")
     ap.add_argument("--google-audience", choices=_google.AUDIENCES, default=None,
                     help="with --mail google: the status on the Google console's Audience page")
+    ap.add_argument("--consent", type=_consent_arg, default=None, metavar="all|no|GROUPS",
+                    help="the kinds of change you agree to: all, no, or a comma list of "
+                         + ", ".join(install_answers.CONSENT_GROUPS))
+    ap.add_argument("--control", choices=progress.CONTROL_REQUESTS, default=None,
+                    help="ask the install running in --target to pause or stop after its current step")
     args = ap.parse_args(argv)
     if args.github:
         args.github_backup = "yes"  # the hidden alias; every rerun command writes the normalised flag
@@ -1595,6 +1978,8 @@ def main(argv: list[str] | None = None) -> int:
         refusal = "The target folder name contains a line break; choose a plain folder name."
         print(refusal)
         return status_line("failed", refusal, "", code=2)
+    if args.control:
+        return control(Path(args.target).expanduser().absolute(), args.control)
     ctx = Ctx(target=Path(args.target).expanduser().absolute(), source=args.source, ref=args.ref,
               github_backup=args.github_backup, repo_name=args.repo_name, dry_run=args.dry_run,
               google_client=(str(Path(args.google_client).expanduser().resolve())
@@ -1609,6 +1994,12 @@ def main(argv: list[str] | None = None) -> int:
             print(exc)
             return status_line("failed", str(exc), "", code=2)
     missing = fill_answers(ctx, args, filed)
+    if ctx.consent == "no":
+        # Before the first step: an install that is already complete never reaches a step that asks.
+        say = "You stopped the install. This run changed nothing; steps finished by an earlier run stay in place."
+        progress.write(ctx, "stopped", 0, len(STEPS), "", consent=consent_words(ctx.consent))
+        print(say)
+        return status_line("stopped", say, "")
     if missing:
         flag, say, options = missing
         if args.answers is not None:
@@ -1619,7 +2010,7 @@ def main(argv: list[str] | None = None) -> int:
                        "never stops to ask.")
             print(refusal)
             return status_line("failed", refusal, "", code=2)
-        progress.write(ctx, "need-answer", 0, len(STEPS), "")
+        progress.write(ctx, "need-answer", 0, len(STEPS), "", consent=consent_words(ctx.consent))
         return status_line("need-answer", say, rerun_command(ap, args, ask=flag), options)
     inherited = os.environ.get("HEADING_OS_DATA")
     if inherited and Path(inherited).expanduser().absolute() != ctx.data:
@@ -1628,28 +2019,17 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"HEADING OS install into {ctx.target}" + (" (dry run: nothing is changed)" if ctx.dry_run else ""))
     state = load_state(ctx)
-    total = len(STEPS)
     progress.start(ctx)
-    for i, s in enumerate(STEPS, 1):
-        label = f"[{i}/{total}] {s.title}"
-        progress.write(ctx, "running", i, total, s.title)
-        try:
-            in_place = run_step(ctx, s, label, state)
-        except WaitingForPerson as wait:
-            progress.write(ctx, "waiting-for-person", i, total, s.title)
-            return status_line("waiting-for-person", str(wait), rerun_command(ap, args))
-        except (StepFailed, OSError, subprocess.SubprocessError) as exc:
-            progress.write(ctx, "failed", i, total, s.title)
-            return step_failed(ctx, s, f"{label}: FAILED. {exc}", rerun_command(ap, args))
-        except Exception as exc:  # noqa: BLE001 - any other error still ends with the report and the status line
-            traceback.print_exc()
-            progress.write(ctx, "failed", i, total, s.title)
-            return step_failed(ctx, s, f"{label}: FAILED. Unexpected error: {type(exc).__name__}: {exc}",
-                               rerun_command(ap, args))
-        if not in_place:
-            progress.write(ctx, "failed", i, total, s.title)
-            return step_failed(ctx, s, f"{label}: FAILED. It ran, but its result is still not in place.",
-                               rerun_command(ap, args))
+    try:
+        ended = step_loop(ctx, ap, args, state)
+    finally:
+        if not ctx.dry_run:
+            try:
+                progress.clear_control(ctx)  # a request nobody consumed never reaches a later run
+            except OSError as exc:
+                print(f"  note: the pause or stop request could not be removed ({exc})")
+    if ended is not None:
+        return ended
 
     if ctx.dry_run:
         return dry_run_agreement(ctx, rerun_command(ap, args))
@@ -1658,7 +2038,12 @@ def main(argv: list[str] | None = None) -> int:
     hint = refresh_hint(ctx)
     if hint:
         print(f"To use it in THIS terminal, run once: {hint}   (new terminals need nothing)")
-    return status_line("done", hand_off(ctx))
+    try:
+        installed = f" What was installed, and how to remove each part by hand, is in {write_installed(ctx)}."
+    except OSError as exc:
+        print(f"  note: the list of what was installed could not be written ({exc})")
+        installed = ""
+    return status_line("done", hand_off(ctx) + installed)
 
 
 if __name__ == "__main__":

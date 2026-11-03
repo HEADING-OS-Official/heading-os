@@ -12,6 +12,8 @@ it here and keeps no default of its own (the install and setup design approved
   HEADING_OS_GITHUB_BACKUP   yes or later
   HEADING_OS_TZ              an IANA zone this Python can load
   HEADING_OS_PROXY_SIGNIN    now or later (the Claude sign-in for the model proxy)
+  HEADING_OS_INSTALL_CONSENT all, or the consent groups agreed to, comma separated
+                             (HOS-340; never asked here, and a "no" is never stored)
 
 Each function returns the value, or None when it is unset or not a valid value.
 With `environ=True` (the doctor, the watchdog) the process environment is read
@@ -52,6 +54,16 @@ PROXY_SIGNIN_ENV = "HEADING_OS_PROXY_SIGNIN"
 MAIL_CHOICES = ("exchange", "google", "none")
 GITHUB_BACKUP_CHOICES = ("yes", "later")
 PROXY_SIGNIN_CHOICES = ("now", "later")
+CONSENT_ENV = "HEADING_OS_INSTALL_CONSENT"
+#: The four kinds of change the person agrees to before any is made, in the order
+#: they are asked: name to the words every question uses (HOS-340). install.sh
+#: holds the same four strings, because it asks before this file exists on disk.
+CONSENT_GROUPS = {
+    "system": "installing system packages with your computer password",
+    "home": "putting files in your home folder",
+    "downloads": "downloading from the internet",
+    "services": "running programs and timers in the background",
+}
 
 _log = logging.getLogger(__name__)
 _ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -132,9 +144,24 @@ def timezone(engine: Path, *, environ: bool = True) -> str | None:
     return value if valid_zone(value) else None
 
 
-#: The keys an answers file may hold, each with its accepted values (None: a zone `valid_zone` accepts).
+def valid_consent(value: str | None) -> bool:
+    """True for `all`, `no`, or a comma list of distinct names from CONSENT_GROUPS."""
+    if value in ("all", "no"):
+        return True
+    names = value.split(",") if value else []
+    return bool(names) and len(set(names)) == len(names) and all(n in CONSENT_GROUPS for n in names)
+
+
+def consent(engine: Path, *, environ: bool = True) -> str | None:
+    """`HEADING_OS_INSTALL_CONSENT`: a value `valid_consent` accepts, else None."""
+    value = _raw(engine, CONSENT_ENV, environ)
+    return value if valid_consent(value) else None
+
+
+#: The keys an answers file may hold, each with its accepted values (None: a zone `valid_zone` accepts;
+#: a function: the values it accepts).
 ANSWERS_FILE_KEYS = {"mail": MAIL_CHOICES, "github_backup": GITHUB_BACKUP_CHOICES, "tz": None,
-                     "proxy_signin": PROXY_SIGNIN_CHOICES}
+                     "proxy_signin": PROXY_SIGNIN_CHOICES, "consent": valid_consent}
 
 
 class AnswersFileError(ValueError):
@@ -180,6 +207,7 @@ def read_answers_file(path: Path) -> dict[str, str]:
         if not isinstance(value, str):
             raise AnswersFileError(f"The answers file's {key} is not text.")
         choices = ANSWERS_FILE_KEYS[key]
-        if not (valid_zone(value) if choices is None else value in choices):
+        if not (valid_zone(value) if choices is None else
+                choices(value) if callable(choices) else value in choices):
             raise AnswersFileError(f"The answers file's {key} is not one of the accepted answers.")
     return data

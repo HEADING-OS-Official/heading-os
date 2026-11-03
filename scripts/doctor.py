@@ -363,7 +363,32 @@ def check_secrets(p: Probes, env: dict[str, str] | None) -> list[Row]:
     return rows
 
 
+def _launchd_row(p: Probes, module: str, unit: str, kind: str, installer: str) -> Row:
+    """One unit on macOS, read from launchd (HOS-341; UNTESTED on a Mac)."""
+    from scripts.utils.schedule import SERVICE_FAMILIES, _launchd_labels, launchd_healthy, launchd_status
+
+    name = f"{unit}.timer" if kind == "timer" else f"{unit}.service"
+    fix = installer if installer == MAIL_REMEDY else _remedy(p.engine_root, installer)
+    fam = next((f for f in SERVICE_FAMILIES if name in f.enable_units), None)
+    if fam is None:
+        return Row(module, unit, RED, f"no service family installs {name}", fix)
+    label = _launchd_labels(fam)[fam.enable_units.index(name)]
+    st = launchd_status(label)
+    if not st["loaded"]:
+        return Row(module, unit, RED, f"{label} is not loaded", fix)
+    exit_text = (("never ran" if kind == "timer" else "never exited") if st["last_exit"] is None
+                 else f"last exit {st['last_exit']}")
+    good = launchd_healthy(st, timer=kind == "timer")
+    if kind == "timer":
+        return Row(module, unit, OK if good else RED, f"{label} loaded, {exit_text}", "" if good else fix)
+    return Row(module, unit, OK if good else RED,
+               f"{label} {'running' if good else 'loaded but not running'}, {exit_text}",
+               "" if good else f"launchctl kickstart -k gui/$(id -u)/{label}")
+
+
 def _unit_row(p: Probes, module: str, unit: str, kind: str, installer: str) -> Row:
+    if p.platform == "darwin":
+        return _launchd_row(p, module, unit, kind, installer)
     if not p.platform.startswith("linux"):
         return Row(module, unit, RED, f"doctor reads no service manager on {p.platform} yet",
                    "the launchd half of the service layer (HOS-303)")

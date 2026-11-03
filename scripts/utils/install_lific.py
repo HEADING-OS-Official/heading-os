@@ -411,9 +411,10 @@ def unit_adopted(home: Path) -> bool:
 
 
 def _service_running(ctx) -> bool:
-    if platform.system() == "Darwin":  # UNTESTED on a Mac
-        return subprocess.run(["launchctl", "list", LAUNCHD_LABEL], capture_output=True,
-                              env=_env(ctx)).returncode == 0
+    if platform.system() == "Darwin":  # UNTESTED on a Mac; running, never only known to launchd (HOS-341)
+        from scripts.utils.schedule import launchd_status
+
+        return launchd_status(LAUNCHD_LABEL, _env(ctx))["running"]
     sc = _systemctl(ctx)
     enabled = subprocess.run([sc, "--user", "is-enabled", UNIT], capture_output=True, text=True, env=_env(ctx))
     active = subprocess.run([sc, "--user", "is-active", UNIT], capture_output=True, text=True, env=_env(ctx))

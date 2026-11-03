@@ -197,7 +197,7 @@ Assistant:  Brief ready. Dana joined as CFO in March and has asked twice about
 
 **A Claude Max subscription is recommended.** A single morning of meeting prep, research and drafts can mean hundreds of pages read on your behalf, and Max gives the assistant far more room before it reaches a usage limit. An Anthropic API key also works.
 
-**Step 1. Get ready.** You need a computer running macOS 13 or later, Linux, or Windows 11 with WSL2 (Windows' built-in Linux; the guide shows how to switch it on). You also need a [Claude](https://claude.com/pricing) subscription, and, if you want a private copy of your vault on GitHub, a free [GitHub](https://github.com) account. The installer gets the free tools it needs. [docs/INSTALL.md](docs/INSTALL.md) lists each one with the exact command to install it.
+**Step 1. Get ready.** You need a computer running Linux, or Windows 11 with WSL2 (Windows' built-in Linux; the guide shows how to switch it on). macOS 13 or later: experimental. A full install on a Mac has not yet been confirmed; Linux and Windows with WSL2 are supported. HEADING OS uses about 13 GB of disk once installed, and the installer needs 15 GB free to start. You also need a [Claude](https://claude.com/pricing) subscription, and, if you want a private copy of your vault on GitHub, a free [GitHub](https://github.com) account. The installer gets the free tools it needs. [docs/INSTALL.md](docs/INSTALL.md) lists each one with the exact command to install it.
 
 **Step 2. Run the installer.** Open a terminal and paste these two lines:
 

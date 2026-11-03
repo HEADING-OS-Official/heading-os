@@ -9,10 +9,10 @@ This page is written for you, Claude. The executive pasted one sentence, `Instal
 ## The five rules
 
 1. Run the one command below that gets the installer and starts it.
-2. Read the `HEADING-INSTALL:` line. Relay `say`. For `need-answer`, ask exactly the question given, with the options given. Then run `next`.
+2. Read the `HEADING-INSTALL:` line. Relay `say`. For `need-answer`, ask exactly the question given, with the options given. Then run `next`. When `say` holds the install plan, relay it whole, never shortened: it is what the executive agrees to.
 3. Never send the executive to a terminal unless the line's `say` does so. Only two cases do: the computer password on WSL, and a machine with no desktop. Never ask for a secret in the chat. Never edit a file.
 4. On `failed`, relay `say`, give the path of the install report, `~/HeadingOS/install-report.txt`, and stop. The report holds the step that failed, its title, the time and the platform. It holds the four answers by name: mail (exchange, google, or none for later), GitHub backup, time zone, Claude sign-in. It ends with what the installer said. It holds no secret and no `.env` value. It never leaves the computer on its own: the executive decides whether to send it.
-5. On `done`, say the closing sentence `say` gives and end.
+5. On `done`, say the closing sentence `say` gives and end. It names `~/HeadingOS/installed.txt`, the list of what was installed and how to remove each part by hand.
 
 ## The command
 
@@ -41,12 +41,22 @@ bash ~/install.sh --from <copy> --ref main
 
 Every run ends with one line: `HEADING-INSTALL: {"state": ..., "say": ..., "next": ...}`. `say` is in English; relay it in the executive's language.
 
-- `need-answer`: `say` is the question and `options` the allowed answers. In `next`, replace the bare word `{answer}` with the chosen option's `value`, character for character, and change nothing else. An option whose value is `{free}` means: ask for the executive's own words. Put them in single quotes, and write each single quote inside as `'"'"'`.
+- `need-answer`: `say` is the question and `options` the allowed answers. Before anything changes, the installer shows its plan and asks for consent per group of change: system packages, files in the home folder, downloads, background programs and timers. The options are always Yes, Yes to all steps, and No. In `next`, replace the bare word `{answer}` with the chosen option's `value`, character for character, and change nothing else. An option whose value is `{free}` means: ask for the executive's own words. Put them in single quotes, and write each single quote inside as `'"'"'`.
 - `waiting-for-person`: a window or a browser page is open for the executive. Relay `say`, wait until they say they are done, then run `next` unchanged. The one exception: when they would rather do the Claude sign-in later, append ` --proxy-signin later` to `next`.
-- `failed`: rule 4.
+- `paused`: relay `say`, then ask whether to continue. On yes, run `next` unchanged.
+- `stopped`: relay `say` and end.
+- `failed`: rule 4. When `next` is empty, `say` names what to do first; offer no rerun.
 - `done`: rule 5.
 
-Run each `next` as a background command, and relay each `say` when the run exits. A long step such as the model download then outlasts the chat tool's time limit.
+Run every installer command as a background command and wait for it to end, then relay its `say`. A long step such as the model download then outlasts the chat tool's time limit, and the chat stays free while it runs.
+
+When the executive says pause or stop while a run goes on, run at once, as its own command:
+
+```bash
+uv run --quiet --python 3.11 --no-project <target>/engine/scripts/heading-install.py --control pause --target <target>
+```
+
+with `stop` in place of `pause` for stop, and `<target>` the install folder, `~/HeadingOS` unless the install named another. It ends with its own `HEADING-INSTALL:` line like every run; relay its `say`. The install itself then ends after the step it is running with `paused` or `stopped`. When the control command exits 1, or the engine folder does not exist yet, say: "This part of the install cannot be paused; it takes a few minutes. Say pause again once the numbered steps start." The progress window, on a desktop, has the same two buttons.
 
 After the install, run .venv/bin/python scripts/heading-console.py open in ~/HeadingOS/engine to see every web interface and the guides.
 

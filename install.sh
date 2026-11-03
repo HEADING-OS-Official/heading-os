@@ -12,7 +12,7 @@
 # Usage:
 #   bash install.sh [--target DIR] [--github] [--ref TAG] [--from GIT_URL] [--dry-run]
 #                   [--mail CHOICE] [--github-backup yes|later] [--tz ZONE]
-#                   [--proxy-signin now|later] [--answers FILE]
+#                   [--proxy-signin now|later] [--answers FILE] [--consent VALUE]
 #
 #   --target DIR    where engine/ and data/ go (default: ~/HeadingOS)
 #   --github        also keep a private copy of your data on your GitHub account
@@ -26,6 +26,11 @@
 #   --ref TAG       install this tag or branch instead of the latest release
 #   --from GIT_URL  clone the engine from here (default: the official repository)
 #   --dry-run       say what would be done; change nothing
+#   --consent VALUE what you agree to before anything on this computer changes:
+#                   all, no, or a comma list of the groups system, home,
+#                   downloads and services. Without it the installer shows its
+#                   plan and asks, one group at a time; with --answers it is
+#                   required, because a run from a file never stops to ask
 set -euo pipefail
 
 FROM="https://github.com/HEADING-OS-Official/heading-os.git"
@@ -33,6 +38,10 @@ TARGET="$HOME/HeadingOS"
 REF=""
 PASS=()
 ANSWERS=""
+CONSENT=""
+HAVE_CONSENT=0
+KEEP=()  # every argument as given, minus --consent and its value: the base of a consent question's `next`
+ORIG=("$@")  # every argument as given, --consent included: the `next` of the free-space refusal
 
 die()  { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m  ok\033[0m  %s\n' "$*"; }
@@ -40,13 +49,14 @@ warn() { printf '\033[33m  warn\033[0m %s\n' "$*"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --target) TARGET="${2:?--target needs a path}"; shift 2 ;;
-        --ref) REF="${2:?--ref needs a tag or branch}"; shift 2 ;;
-        --from) FROM="${2:?--from needs a git URL}"; shift 2 ;;
-        --github|--dry-run) PASS+=("$1"); shift ;;
-        --mail|--github-backup|--tz|--proxy-signin) PASS+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
-        --answers) ANSWERS="${2:?--answers needs a file}"; shift 2 ;;
-        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        --target) TARGET="${2:?--target needs a path}"; KEEP+=("$1" "$2"); shift 2 ;;
+        --ref) REF="${2:?--ref needs a tag or branch}"; KEEP+=("$1" "$2"); shift 2 ;;
+        --from) FROM="${2:?--from needs a git URL}"; KEEP+=("$1" "$2"); shift 2 ;;
+        --github|--dry-run) PASS+=("$1"); KEEP+=("$1"); shift ;;
+        --mail|--github-backup|--tz|--proxy-signin) PASS+=("$1" "${2:?$1 needs a value}"); KEEP+=("$1" "$2"); shift 2 ;;
+        --answers) ANSWERS="${2:?--answers needs a file}"; KEEP+=("$1" "$2"); shift 2 ;;
+        --consent) CONSENT="${2:?--consent needs a value}"; HAVE_CONSENT=1; shift 2 ;;
+        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
 done
@@ -98,6 +108,194 @@ fi
 # zstd unpacks the local search engine's .tar.zst archive (scripts/utils/install_index.py).
 if command -v apt-get >/dev/null 2>&1 && ! command -v zstd >/dev/null 2>&1; then
     PKGS="${PKGS:+$PKGS }zstd"
+fi
+
+# ---- Consent (HOS-340): the plan, and the person's yes, before the first change ----
+# Everything above only reads this computer. The four groups, in the order they are
+# asked, with the same words as CONSENT_GROUPS in scripts/utils/install_answers.py.
+CONSENT_GROUPS="system home downloads services"
+group_words() {
+    case "$1" in
+        system) printf '%s' "installing system packages with your computer password" ;;
+        home) printf '%s' "putting files in your home folder" ;;
+        downloads) printf '%s' "downloading from the internet" ;;
+        services) printf '%s' "running programs and timers in the background" ;;
+    esac
+}
+valid_consent() {  # all, no, or a comma list of distinct group names
+    case "$1" in all|no) return 0 ;; ""|,*|*,|*,,*|*[!a-z,]*) return 1 ;; esac
+    _seen=","
+    _rest="$1,"
+    while [ -n "$_rest" ]; do
+        _g="${_rest%%,*}"
+        _rest="${_rest#*,}"
+        case " $CONSENT_GROUPS " in *" $_g "*) ;; *) return 1 ;; esac
+        case "$_seen" in *",$_g,"*) return 1 ;; esac
+        _seen="$_seen$_g,"
+    done
+}
+agreed() { [ "$CONSENT" = all ] || case ",$CONSENT," in *",$1,"*) true ;; *) false ;; esac; }
+# One JSON string: backslash and double quote escaped, newline and tab as \n and \t,
+# every other byte below 0x20 as \u00XX; every other byte as it is.
+json_str() {
+    printf '%s' "$1" | LC_ALL=C od -An -v -tu1 | LC_ALL=C awk '
+        BEGIN { printf "\"" }
+        { for (i = 1; i <= NF; i++) { b = $i + 0
+            if (b == 34) printf "\\\""
+            else if (b == 92) printf "\\\\"
+            else if (b == 10) printf "\\n"
+            else if (b == 9) printf "\\t"
+            else if (b < 32) printf "\\u00%02x", b
+            else printf "%c", b } }
+        END { printf "\"" }'
+}
+# One word for a shell command line, quoted the way Python's shlex.quote does.
+shq() {
+    case "$1" in
+        "") printf "''" ;;
+        *[!A-Za-z0-9@%+=:,./_-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\"'\"'/g")" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+# The last line of every run that stops here, the shape scripts/heading-install.py prints.
+status() {  # state say next [options as JSON]
+    printf 'HEADING-INSTALL: {"state": %s, "say": %s, "next": %s' "$(json_str "$1")" "$(json_str "$2")" \
+        "$(json_str "$3")"
+    [ -z "${4:-}" ] || printf ', "options": %s' "$4"
+    printf '}\n'
+}
+plan_block() {
+    case "$1" in
+        system)
+            if [ -z "$PKGS" ]; then
+                printf '%s\n' "Nothing: everything this group needs is already installed."
+            elif [ "$(uname -s)" = Darwin ]; then
+                printf '%s\n' "- Apple's Command Line Tools, which include git; macOS asks for them in its own window."
+            else
+                printf '%s\n' "- The system packages $PKGS, through a system window that asks for your computer password once."
+            fi ;;
+        home)
+            printf '%s\n' \
+                "- The uv tool, at ~/.local/bin/uv, when it is missing." \
+                "- The folder $TARGET, with engine/ (HEADING OS itself) and data/ (your own private data)." \
+                "- Claude Code settings in ~/.claude and ~/.claude.json: the plugins HEADING OS uses, and its connections to your memory and to the issue tracker." \
+                "- Tools in ~/.local/bin: herdr, lific, lific-mcp, hindsight and heading." \
+                "- Programs in ~/.local/share/heading-os: Node.js, CLIProxyAPI, ollama with its search model, Hindsight, the Hindsight web console and AgentsView." \
+                "- Settings in ~/.config/heading-os, ~/.config/herdr, ~/.config/lific, ~/.config/hindsight and ~/.hindsight, and model sign-ins in ~/.cli-proxy-api." \
+                "- A few lines in your shell startup files, such as ~/.profile and ~/.bashrc, so a new terminal finds these tools and your data." \
+                "- At the end, $TARGET/installed.txt: what was installed, and how to remove each part by hand." ;;
+        downloads)
+            printf '%s\n' \
+                "- astral.sh: the uv tool, when it is missing." \
+                "- github.com: HEADING OS itself; the releases of Herdr, CLIProxyAPI, ollama, Lific, Hindsight's command and AgentsView; the Claude Code plugin catalogue; and, if you choose a GitHub backup, your private copy there." \
+                "- nodejs.org: Node.js, when Node.js 22 or newer is missing." \
+                "- pypi.org and files.pythonhosted.org: the Python libraries of HEADING OS and of Hindsight." \
+                "- registry.npmjs.org: the Hindsight web console; and through npx, the Claude Code memory plugin." \
+                "- Through ollama: the search language model bge-m3, about 1.2 GB." \
+                "- Through uv: Python 3.11, when it is missing. Hindsight also fetches its own embedding models the first time it starts." \
+                "- api.anthropic.com: the list of Claude models, only when an Anthropic API key is set." \
+                "- Google, only if you connect Google mail: the sign-in, Gmail and Google Calendar." \
+                "- In total about 13 GB on disk once installed; 15 GB free is needed to start." ;;
+        services)
+            printf '%s\n' \
+                "- On Linux as systemd user services and timers in ~/.config/systemd/user, on macOS as launchd agents in ~/Library/LaunchAgents. On Linux they keep running while you are logged out (linger is turned on for your account)." \
+                "- Services: cliproxyapi, embedding-server (ollama), lific, agentsview, hindsight-server and hindsight-control-plane." \
+                "- Timers: memory-index-refresh, hindsight-sync (with hindsight-capture-check), hindsight-snapshot, proxy-usage-dashboard, archive-transcripts, chronicle, council-models-check, daemon-watchdog, datastore-map, dream-shadow, inference-guard, memory-hygiene, odin-propose, ops-radar, recall-calibration, reminders, router-accuracy, and on Linux update-manager." \
+                "- Only if you connect Exchange mail: sentinel and sync-exchange-daemon, which read your mailbox." ;;
+    esac
+}
+plan_section() {  # one group: its words, then its block
+    _w="$(group_words "$1")"
+    printf '%s%s:\n' "$(printf '%s' "$_w" | cut -c1 | tr '[:lower:]' '[:upper:]')" "$(printf '%s' "$_w" | cut -c2-)"
+    plan_block "$1"
+}
+
+# ---- Free space (HOS-341): after the options and the platform, before consent and any change ----
+# The checks above it only read this computer; it sits here because it needs shq and status.
+# 15 GiB free where the install goes. MEASURED by HELM on test VM 101 after a 47 of 47
+# install on 2026-11-03 (du -sh): ~/.local 11G, ~/HeadingOS 1.1G, ~/.cache 408M,
+# ~/.claude 23M, about 13 GB in all; 15 GB leaves room for the downloads before they unpack.
+# GB here is 1024^3 bytes, as df -h counts.
+MIN_FREE_KB=15728640
+if [ "$DRY" -eq 0 ]; then
+    DF_AT="$TARGET"
+    while [ ! -e "$DF_AT" ]; do DF_AT="$(dirname "$DF_AT")"; done
+    # The available column is the one before Capacity (NN%), so a device name with a space cannot shift it.
+    FREE_KB="$(df -Pk "$DF_AT" 2>/dev/null | awk 'NR == 2 { for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit } }')"
+    case "$FREE_KB" in
+        ""|*[!0-9]*) warn "could not read the free space at $DF_AT; the install needs about 15 GB" ;;
+        *)
+            if [ "$FREE_KB" -lt "$MIN_FREE_KB" ]; then
+                SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+                NEXT="bash $(shq "$SELF")"
+                for a in ${ORIG[@]+"${ORIG[@]}"}; do NEXT="$NEXT $(shq "$a")"; done
+                SAY="HEADING OS needs 15 GB free to start (it uses about 13 GB once installed), and this computer has $((FREE_KB / 1048576)) GB free where it would install. Free some space, then run this again."
+                printf '%s\n' "$SAY"
+                status failed "$SAY" "$NEXT"
+                exit 1
+            fi ;;
+    esac
+fi
+
+if [ "$HAVE_CONSENT" -eq 1 ] && ! valid_consent "$CONSENT"; then
+    die "--consent takes all, no, or a comma list of system, home, downloads and services, each once (not: $CONSENT)"
+fi
+if [ "$HAVE_CONSENT" -eq 1 ] && [ "$CONSENT" = no ]; then
+    printf '%s\n' "Nothing was changed."
+    status stopped "You stopped the install before it changed anything. Nothing was installed." ""
+    exit 6
+fi
+if [ -n "$ANSWERS" ] && [ "$HAVE_CONSENT" -eq 0 ]; then
+    status failed "An install run from an answers file never stops to ask. Add --consent all, or the list of groups you agree to, to the command." ""
+    exit 2
+fi
+ALL=1
+for g in $CONSENT_GROUPS; do agreed "$g" || ALL=0; done
+[ "$ALL" -eq 0 ] || CONSENT=all
+FINAL=()  # added to the handover only once consent covers all four groups
+[ "$CONSENT" != all ] || FINAL=(--consent all)
+if [ "$DRY" -eq 0 ] && [ "$CONSENT" != all ] && [ -n "$ANSWERS" ]; then
+    # A run from a file never asks: it refuses a group this script itself would need, and hands
+    # the list on, so heading-install.py refuses each later step whose group it leaves out.
+    NEED=""
+    [ -z "$PKGS" ] || NEED="system"
+    if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ] || [ ! -d "$ENGINE/.git" ]; then
+        NEED="$NEED home downloads"
+    fi
+    # The handover `uv run --python 3.11` downloads Python when uv finds none; `uv python find` never downloads.
+    UVBIN="$(command -v uv 2>/dev/null || true)"
+    [ -n "$UVBIN" ] || UVBIN="$HOME/.local/bin/uv"
+    if [ -x "$UVBIN" ] && ! "$UVBIN" python find 3.11 >/dev/null 2>&1; then
+        NEED="$NEED downloads"
+    fi
+    for g in $NEED; do
+        agreed "$g" || { status failed "The answers file gives no consent for $(group_words "$g"), and an install run from a file never stops to ask." ""; exit 2; }
+    done
+    FINAL=(--consent "$CONSENT")
+elif [ "$DRY" -eq 0 ] && [ "$CONSENT" != all ]; then
+    ASK=""
+    for g in $CONSENT_GROUPS; do agreed "$g" || { ASK="$g"; break; }; done
+    SAY=""
+    if [ "$HAVE_CONSENT" -eq 0 ]; then
+        SAY="Before anything on this computer changes, here is what the install will do, in four groups. You agree to each group on its own."
+        for g in $CONSENT_GROUPS; do SAY="$SAY
+
+$(plan_section "$g")"; done
+    else
+        SAY="$(plan_section "$ASK")"
+    fi
+    SAY="$SAY
+
+Do you agree to $(group_words "$ASK")?"
+    YES="${CONSENT:+$CONSENT,}$ASK"
+    SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    NEXT="bash $(shq "$SELF")"
+    for a in ${KEEP[@]+"${KEEP[@]}"}; do NEXT="$NEXT $(shq "$a")"; done
+    NEXT="$NEXT --consent {answer}"
+    printf '%s\n' "$SAY"
+    status need-answer "$SAY" "$NEXT" \
+        "[{\"label\": \"Yes\", \"value\": $(json_str "$YES")}, {\"label\": \"Yes to all steps, do not ask again\", \"value\": \"all\"}, {\"label\": \"No, stop here\", \"value\": \"no\"}]"
+    exit 3
 fi
 # The password goes into the desktop's own system window (pkexec), never into
 # this script: run from a Claude chat it has no terminal, so sudo cannot ask
@@ -167,4 +365,5 @@ if [ ! -d "$ENGINE/.git" ]; then
 fi
 
 exec uv run --quiet --python 3.11 --no-project "$ENGINE/scripts/heading-install.py" \
-    --target "$TARGET" --from "$FROM" ${REF:+--ref "$REF"} "${PASS[@]+"${PASS[@]}"}"
+    --target "$TARGET" --from "$FROM" ${REF:+--ref "$REF"} "${PASS[@]+"${PASS[@]}"}" \
+    ${FINAL[@]+"${FINAL[@]}"}

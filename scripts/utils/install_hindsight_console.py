@@ -29,9 +29,10 @@ unpacked 1.1.0 tarball, never by running it:
   so the root answers a 3xx.
 
 Every function takes its home, its `systemctl` and its Python from the step
-context, as install_hindsight.py does. Linux only, as the server is: on macOS,
-or where hindsight-tunnel is installed, the steps refuse with the server's own
-sentence and the checks are false.
+context, as install_hindsight.py does. Linux and macOS, as the server is (on a
+Mac the agent reads console.env through scripts/utils/env_exec.py, HOS-341;
+UNTESTED on a Mac); where hindsight-tunnel is installed, the steps refuse with
+the server's own sentence and the checks are false.
 """
 
 from __future__ import annotations
@@ -75,8 +76,6 @@ def install_dir(home: Path) -> Path:
 
 def _refusal(ctx) -> str | None:
     """The server's own reason not to run here, or None."""
-    if platform.system() == "Darwin":
-        return hs.MACOS_UNSUPPORTED
     return hs.tunnel_conflict(ctx)
 
 
@@ -151,17 +150,20 @@ def run_service(ctx) -> None:
     if changed_since_start(hs.console_env_path(hs._home(ctx)), _pid(ctx)):
         from scripts.utils.schedule import systemd_user_dir, written_by_service_layer
 
-        unit = systemd_user_dir(hs._env(ctx)) / UNIT
+        if platform.system() == "Darwin":
+            unit = hs._home(ctx) / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+        else:
+            unit = systemd_user_dir(hs._env(ctx)) / UNIT
         if unit.exists() and not written_by_service_layer(unit):
             print(f"  {unit} was not written by HEADING OS and is left untouched, so it is not restarted. "
-                  f"To load the new key, run yourself: systemctl --user restart {UNIT}")
+                  f"To load the new key, run yourself: {hs.restart_hint(UNIT, LAUNCHD_LABEL)}")
         else:
-            proc = hs._run(ctx, [hs._systemctl(ctx), "--user", "restart", UNIT], timeout=120)
+            proc = hs._run(ctx, hs.restart_command(ctx, UNIT, LAUNCHD_LABEL), timeout=120)
             if proc.returncode != 0:
                 raise hs.HindsightError(f"the Hindsight web console could not be restarted: {hs._why(proc)}")
     deadline = time.monotonic() + READY_WAIT_S
     while not answers(HINDSIGHT_CONSOLE_URL):
         if time.monotonic() >= deadline:
             raise hs.HindsightError(f"{UNIT} runs but {HINDSIGHT_CONSOLE_URL}/ does not answer; "
-                                    f"read its log: journalctl --user -u {UNIT} -n 50")
+                                    f"read its log: {hs.log_hint(UNIT, LAUNCHD_LABEL)}")
         time.sleep(2)

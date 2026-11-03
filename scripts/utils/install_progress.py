@@ -14,17 +14,24 @@ process, started through `install_person.start_detached` like a sign-in, reads
 it twice a second. A run that finds the window still open reuses it.
 
   <target>/.heading-install/progress.json   mode 600, written atomically
-      state  running | done | failed | need-answer | waiting-for-person
+      state  running | done | failed | need-answer | waiting-for-person | paused | stopped
       step   1-based index of the current step (0 before the first)
       total  number of steps
       title  the step's `@step` title
       say    only for done: the handoff sentence; never anything else
+      consent  the groups of changes the person agreed to, in words ("everything"
+               for all; "" before an answer), shown under the heading (HOS-340)
       pid, pid_start   the installer run that wrote it, so a run that vanished
                        without an end state is told from one still working
       seq    a stamp (time.time_ns) for this record
   <target>/.heading-install/progress-shown.json   written by the window, mode 600:
       seq    the stamp of the record it has drawn, so the installer can wait
              until an announcement is on screen before it opens what it announced
+  <target>/.heading-install/control.json   mode 600, written by `request_control`
+      request  pause | stop: the run ends after the step it is running (HOS-340)
+      at       when it was asked (ISO time, UTC)
+      Written by `heading-install.py --control` and by the window's two buttons;
+      the run removes it when it reads it, and whenever its step loop ends.
 
 The file never holds a secret, an answer or a sign-in code: a waiting-for-person
 `say` (which can hold a one-time code) and a failure message (which can hold a
@@ -49,6 +56,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -57,9 +65,11 @@ from scripts.utils.atomic import atomic_write_text  # noqa: E402 - stdlib only
 
 PROGRESS_NAME = "progress.json"
 SHOWN_NAME = "progress-shown.json"
+CONTROL_NAME = "control.json"
+CONTROL_REQUESTS = ("pause", "stop")
 SHOWN_WAIT_S = 2.0           # how long an announcement waits to be drawn before the handoff opens anyway
 WINDOW = "progress-window"
-END_STATES = ("done", "failed", "need-answer", "waiting-for-person")
+END_STATES = ("done", "failed", "need-answer", "waiting-for-person", "paused", "stopped")
 POLL_MS = 500
 DONE_CLOSE_S = 120           # a finished install's window closes itself after two minutes
 IDLE_CLOSE_S = 60 * 60       # an end state nobody reran for an hour: the window closes itself
@@ -77,13 +87,70 @@ def shown_file(ctx) -> Path:
     return person.state_dir(ctx) / SHOWN_NAME
 
 
-def write(ctx, state: str, step: int, total: int, title: str, say: str = "") -> int | None:
+def control_file(ctx) -> Path:
+    return person.state_dir(ctx) / CONTROL_NAME
+
+
+def request_control(ctx_or_state_dir, request: str) -> Path:
+    """Ask the running install to pause or stop after the step it is running; the one writer of control.json.
+
+    `ctx_or_state_dir` is the run's context, or the `<target>/.heading-install`
+    folder itself (the window and `heading-install.py --control`, which must not
+    create that folder). Returns the file written.
+    """
+    if request not in CONTROL_REQUESTS:
+        raise ValueError(f"unknown control request {request!r}")
+    folder = ctx_or_state_dir if isinstance(ctx_or_state_dir, Path) else person.state_dir(ctx_or_state_dir)
+    path = folder / CONTROL_NAME
+    atomic_write_text(path, json.dumps({"request": request,
+                                        "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}) + "\n",
+                      mode=0o600)
+    return path
+
+
+def _claim_control(ctx) -> Path | None:
+    """Move control.json to a name only this run uses; the claimed copy, or None when there is none.
+
+    The rename is atomic, so a request written after it lands in a new control.json and is
+    read at the next step boundary; a read followed by an unlink could delete it unread.
+    """
+    path = control_file(ctx)
+    claimed = path.with_name(f"{CONTROL_NAME}.{os.getpid()}.claimed")
+    try:
+        os.rename(path, claimed)
+    except FileNotFoundError:
+        return None
+    return claimed
+
+
+def take_control(ctx) -> str | None:
+    """The pending request, pause or stop, claimed and removed as it is read; None when there is none.
+
+    An unreadable file is removed too and read as no request.
+    """
+    claimed = _claim_control(ctx)
+    if claimed is None:
+        return None
+    data = read(claimed)
+    claimed.unlink(missing_ok=True)
+    request = (data or {}).get("request")
+    return request if request in CONTROL_REQUESTS else None
+
+
+def clear_control(ctx) -> None:
+    """Remove a request nobody consumed, so it is never carried into a later run."""
+    claimed = _claim_control(ctx)
+    if claimed is not None:
+        claimed.unlink(missing_ok=True)
+
+
+def write(ctx, state: str, step: int, total: int, title: str, say: str = "", *, consent: str = "") -> int | None:
     """Record where the run is and return the record's stamp; a failure to write is one note, never a stop."""
     if ctx.dry_run:
         return None
     seq = time.time_ns()
     payload = {"state": state, "step": step, "total": total, "title": title,
-               "say": say if state == "done" else "",
+               "say": say if state == "done" else "", "consent": consent,
                "pid": os.getpid(), "pid_start": person._start_time(os.getpid()) or "", "seq": seq}
     try:
         atomic_write_text(progress_file(ctx), json.dumps(payload) + "\n", mode=0o600)
@@ -173,8 +240,7 @@ def _alive(pid, pid_start) -> bool:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
-    fields = person._stat_fields(pid)
-    return len(fields) > 19 and fields[0] != "Z" and fields[19] == str(pid_start or "")
+    return person.alive_since(pid, str(pid_start or ""))  # /proc on Linux, ps on macOS (HOS-341)
 
 
 def _writer_alive(data: dict) -> bool:
@@ -182,7 +248,14 @@ def _writer_alive(data: dict) -> bool:
 
 
 def view(data: dict | None, writer_alive: bool = True) -> dict:
-    """The window's text for one progress record: heading, step line, detail, and whether it is finished."""
+    """The window's text for one progress record: heading, consent, step line, detail, and whether it is finished."""
+    v = _view(data, writer_alive)
+    agreed = str((data or {}).get("consent") or "")
+    v["consent"] = f"You agreed to: {agreed}" if agreed else ""
+    return v
+
+
+def _view(data: dict | None, writer_alive: bool) -> dict:
     if data is None and not writer_alive:
         return {"heading": "The install stopped", "line": "",
                 "detail": "The installer ended before it reported a step. Claude has the details in the chat.",
@@ -209,6 +282,16 @@ def view(data: dict | None, writer_alive: bool = True) -> dict:
     if state == "need-answer":
         return {"heading": TITLE, "line": line,
                 "detail": "Waiting for you in the chat: Claude has a question.", "end": True}
+    if state == "paused":
+        return {"heading": "The install is paused",
+                "line": f"Paused after step {step} of {total}: {title}" if step else "Paused before step 1",
+                "detail": "Nothing is broken: the finished steps stay in place. "
+                          "To continue, tell Claude in the chat.", "end": True}
+    if state == "stopped":
+        return {"heading": "The install stopped",
+                "line": f"Stopped after step {step} of {total}: {title}" if step else "Stopped before step 1",
+                "detail": "You asked to stop. The finished steps stay in place; "
+                          "to finish the install later, tell Claude in the chat.", "end": True}
     if state == "waiting-for-person":
         return {"heading": TITLE, "line": line,
                 "detail": f"{title}\nWaiting for you in the window or browser page that opened; "
@@ -235,6 +318,8 @@ def run_window(path: Path, writer: tuple[str, str] | None = None) -> int:
         root.attributes("-type", "utility")  # a small tool window, not a main one; X11 alone has -type
     heading = tkinter.Label(root, text=TITLE, font=("TkDefaultFont", 13, "bold"))
     heading.pack(padx=16, pady=(14, 4), anchor="w")
+    agreed = tkinter.Label(root, text="", wraplength=420, justify="left")
+    agreed.pack(padx=16, anchor="w")
     line = tkinter.Label(root, text="Starting...")
     line.pack(padx=16, anchor="w")
     detail = tkinter.Label(root, text="", wraplength=420, justify="left")
@@ -255,6 +340,23 @@ def run_window(path: Path, writer: tuple[str, str] | None = None) -> int:
         root.destroy()
 
     close = tkinter.Button(root, text="Close", command=finish)
+    controls = tkinter.Frame(root)
+    asked = {"text": ""}  # "Pause requested" or "Stop requested" while this run goes on
+
+    def ask(request: str) -> None:
+        try:
+            request_control(path.parent, request)
+        except OSError as exc:
+            asked["text"] = f"The request could not be written ({exc})"
+            return
+        asked["text"] = "Pause requested" if request == "pause" else "Stop requested"
+        pause_button.config(state="disabled")
+        stop_button.config(state="disabled")
+
+    pause_button = tkinter.Button(controls, text="Pause after this step", command=lambda: ask("pause"))
+    stop_button = tkinter.Button(controls, text="Stop after this step", command=lambda: ask("stop"))
+    pause_button.pack(side="left", padx=(0, 8))
+    stop_button.pack(side="left")
 
     def tick() -> None:
         data = read(path)
@@ -269,12 +371,22 @@ def run_window(path: Path, writer: tuple[str, str] | None = None) -> int:
         # No record at all (a first run killed before its first write, or every write failing):
         # the run that started the window is the writer to watch.
         v = view(data, _alive(*seen["writer"]) if seen["writer"] else True)
-        text = (v["heading"], v["line"], v["detail"])
+        running = not v["end"] and (data or {}).get("state") == "running"
+        if not running and asked["text"]:
+            asked["text"] = ""  # the run ended: the next run starts with both buttons again
+            pause_button.config(state="normal")
+            stop_button.config(state="normal")
+        text = (v["heading"], v["consent"], v["line"], asked["text"] or v["detail"], running)
         if text != seen["text"]:
             seen["text"] = text
             heading.config(text=v["heading"])
+            agreed.config(text=v["consent"])
             line.config(text=v["line"])
-            detail.config(text=v["detail"])
+            detail.config(text=asked["text"] or v["detail"])
+            if running:
+                controls.pack(padx=16, pady=(0, 12), anchor="w")
+            else:
+                controls.pack_forget()
         if data:
             steps_bar.config(maximum=max(int(data.get("total") or 1), 1), value=int(data.get("step") or 0))
         if v["end"] != seen["end"]:

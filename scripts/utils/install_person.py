@@ -13,9 +13,10 @@ Each detached process leaves two files in <target>/.heading-install (mode 700):
                      because no secret passes through a detached process's
                      output (the secret window prints only names).
   person-<name>.pid  the pid on line 1 and its start time on line 2 (field 22
-                     of /proc/<pid>/stat), mode 600, so a reused pid is never
-                     taken for the process. A finished child not yet reaped
-                     (state Z) counts as not running.
+                     of /proc/<pid>/stat; on macOS, which has no /proc, the
+                     `ps -o lstart=` text, HOS-341), mode 600, so a reused pid
+                     is never taken for the process. A finished child not yet
+                     reaped (state Z) counts as not running.
 
 A step calls `clear` when it finds the person's work done and when it reports
 a sign-in that ended without success. A sign-in that succeeded and whose step
@@ -119,10 +120,35 @@ def _stat_fields(pid: int) -> list[str]:
     return stat[stat.rfind(")") + 1:].split()
 
 
+def _ps(field: str, pid: int) -> str | None:
+    """`ps -o <field>= -p <pid>` in the C locale, stripped; None when ps fails or prints nothing (macOS)."""
+    try:
+        proc = subprocess.run(["ps", "-o", f"{field}=", "-p", str(pid)], capture_output=True, text=True,
+                              errors="replace", env={**os.environ, "LC_ALL": "C"}, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = proc.stdout.strip()
+    return out if proc.returncode == 0 and out else None
+
+
 def _start_time(pid: int) -> str | None:
-    """Field 22 of /proc/<pid>/stat (start time, clock ticks since boot), or None."""
+    """Field 22 of /proc/<pid>/stat (start time, clock ticks since boot), or None.
+
+    macOS has no /proc: there it is `ps -o lstart=` (HOS-341; UNTESTED on a Mac).
+    """
+    if platform.system() == "Darwin":
+        return _ps("lstart", pid)
     fields = _stat_fields(pid)
     return fields[19] if len(fields) > 19 else None
+
+
+def alive_since(pid: int, started: str) -> bool:
+    """Process `pid` runs, is not a zombie, and started at `started` (a `_start_time` value)."""
+    if platform.system() == "Darwin":
+        state = _ps("stat", pid)
+        return state is not None and not state.startswith("Z") and _start_time(pid) == started
+    fields = _stat_fields(pid)
+    return len(fields) > 19 and fields[0] != "Z" and fields[19] == started
 
 
 def _recorded(ctx, name: str) -> tuple[int, str] | None:
@@ -142,8 +168,7 @@ def running(ctx, name: str) -> bool:
     if rec is None or not rec[1]:
         return False
     pid, started = rec
-    fields = _stat_fields(pid)
-    return len(fields) > 19 and fields[0] != "Z" and fields[19] == started
+    return alive_since(pid, started)
 
 
 def ended(ctx, name: str) -> bool:

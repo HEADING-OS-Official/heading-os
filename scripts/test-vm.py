@@ -961,7 +961,8 @@ def cmd_install(cfg: Config, r: Runner, args) -> int:
     script = ('rm -rf "$HOME/heading-src" '
               f'&& git clone -q --branch {ref} "$HOME/heading-os.bundle" "$HOME/heading-src" '
               f'&& bash "$HOME/heading-src/install.sh" --from "$HOME/heading-os.bundle" --ref {ref} '
-              '--answers "$HOME/heading-answers.json"')
+              '--answers "$HOME/heading-answers.json" '
+              f'--consent {shlex.quote(args.consent)}')  # HOS-340: a run from an answers file never asks
     run = r.guest(user, ["bash", "-c", script], check=False, timeout=None, what="install.sh")
     lines = ((run.stdout or "") + (run.stderr or "")).splitlines()
     for line in lines:
@@ -1019,6 +1020,9 @@ def main(argv=None) -> int:
     s.add_argument("--source", required=True, help="a local git repository holding an Official engine tree")
     s.add_argument("--ref", required=True, help="the branch or tag in it to install")
     s.add_argument("--answers", required=True, help="the intake answers, a JSON file of mode 600")
+    s.add_argument("--consent", default="all",
+                   help="passed to install.sh: all (the default), no, or a comma list of system, home, "
+                        "downloads, services")
     s.add_argument("--yes", action="store_true", help="confirm: installs on the guest")
     args = p.parse_args(argv)
 

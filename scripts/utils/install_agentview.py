@@ -451,9 +451,10 @@ def install_binary(home: Path) -> None:
 
 
 def _unit_active(ctx) -> bool:
-    if platform.system() == "Darwin":  # UNTESTED on a Mac
-        return subprocess.run(["launchctl", "list", LAUNCHD_LABEL], capture_output=True,
-                              env=_env(ctx)).returncode == 0
+    if platform.system() == "Darwin":  # UNTESTED on a Mac; running, never only known to launchd (HOS-341)
+        from scripts.utils.schedule import launchd_status
+
+        return launchd_status(LAUNCHD_LABEL, _env(ctx))["running"]
     proc = subprocess.run([str(getattr(ctx, "systemctl", None) or "systemctl"), "--user", "is-active", UNIT],
                           capture_output=True, text=True, env=_env(ctx))
     return proc.stdout.strip() == "active"
