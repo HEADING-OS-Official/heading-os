@@ -4,9 +4,9 @@
 # engine that is not the engine itself (scripts, hooks, plugins, skills) counts as
 # a leak and must NOT be in it!" The definition he accepted the same day, proposed
 # by HELM, translated: "the engine is code and what that code cannot run or
-# install without; everything else is a leak". The classes below are HELM's recommendations, which he
-# accepted; the per-file entries are a yard's reading of each file, written with
-# the reason so a reviewer can refuse one.
+# install without; everything else is a leak". The classes below are HELM's
+# recommendations, which he accepted; the per-file entries are a yard's
+# reading of each file, written with the reason so a reviewer can refuse one.
 #
 # Read by scripts/check-engine-only.py, at pre-commit and as the sixth push
 # ratchet. A tracked file is engine when a class pattern or a per-file entry
@@ -652,6 +652,9 @@ files:
 - path: reference/humanization-rule-detail.md
   class: skill-reference-instruction
   reason: .claude/rules/humanization.md tells the model to read it before any outbound voice pass.
+- path: reference/install-agent.md
+  class: skill-reference-instruction
+  reason: Claude executes it during install; the site page /install points Claude to it in the latest release.
 - path: reference/lethal-trifecta-detail.md
   class: skill-reference-instruction
   reason: .claude/rules/lethal-trifecta.md defers the self-notification boundary's limit to it.
@@ -724,6 +727,18 @@ files:
 - path: scripts/claude-mods/agent-watch/types/index.d.ts
   class: engine-code
   reason: the agent-watch mod's state contract, named in its plugin.json as "types" and checked by claude plugin validate against every $.state key the module uses; HOS-225.
+- path: scripts/claude-mods/context-bar/.claude-plugin/plugin.json
+  class: install-file
+  reason: Claude Code reads it as the manifest of the context-bar mod when the folder is loaded as a plugin (claude --plugin-dir, or an install); HOS-331.
+- path: scripts/claude-mods/context-bar/hooks/hooks.json
+  class: install-file
+  reason: Claude Code reads it to find the context-bar hooks module; HOS-331.
+- path: scripts/claude-mods/context-bar/hooks/register.tsx
+  class: engine-code
+  reason: the context-bar mod itself, the hooks module Claude Code runs (band above the prompt with the context fill by category, /context-bar panel); HOS-331.
+- path: scripts/claude-mods/context-bar/types/index.d.ts
+  class: engine-code
+  reason: the context-bar mod's state contract, named in its plugin.json as "types" and checked by claude plugin validate against every $.state key the module uses; HOS-331.
 - path: scripts/herdr/heading-os-yard/data-overlay-pre-commit
   class: install-file
   reason: scripts/install-data-overlay-guard.py (BODY_PATH) reads it as the hook body it installs.
@@ -773,6 +788,9 @@ files:
 - path: scripts/data-names.example.yaml
   class: example-template
   reason: scripts/utils/data_path.py example_names_path() is the default registry a tree with no registry resolves from; bare structure, no operator address (decision 8).
+- path: scripts/test-vm.example.yaml
+  class: example-template
+  reason: scripts/test-vm.py (EXAMPLE_FILE, load_config()) names it as the shape of the private test-vm.yaml under data-config; values emptied (decision 8).
 - path: scripts/operator.example.yaml
   class: example-template
   reason: scripts/utils/operator_identity.py (_EXAMPLE_PATH) names it as the shipped generic identity; values emptied (decision 8).

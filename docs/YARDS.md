@@ -34,8 +34,8 @@ To decide where something belongs, ask one question: **does it touch something l
 
 1. HEADING OS installed, as described in `INSTALL.md`.
 2. Herdr installed and connected, as described in `HERDR.md`. Herdr creates yards, prepares them, and carries briefs into them. Read `HERDR.md` first.
-3. Optional: Lific, the local issue tracker (`LIFIC.md`), if you want each brief tied to an issue.
-4. Optional: CLIProxyAPI (`CLIPROXY.md`), if you want `scripts/review-branch.py` to have an outside model review a branch before you merge it.
+3. Lific, the local issue tracker (`LIFIC.md`), which ties each brief to an issue.
+4. CLIProxyAPI (`CLIPROXY.md`), which lets `scripts/review-branch.py` have an outside model review a branch before you merge it.
 
 Nothing else is installed for this guide. Yards are a way of working, built from Herdr and scripts the engine already has.
 

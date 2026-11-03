@@ -224,7 +224,7 @@ def _mechanical(prev: dict, project: Path, master: str, stale: Path | None,
 {master}
 Generated: {CP.utc_now().isoformat()}
 Previous session: {prev.get("session_id") or "unknown"}
-Task: {", ".join(_prev_tasks(prev)) or "none"}
+Task: {", ".join(_mechanical_tasks(prev)) or "none"}
 Transcript: {transcript}
 
 Built by the SessionStart hook from the previous session's transcript, because
@@ -245,11 +245,19 @@ summary of the work: read the transcript for anything they do not settle.
 """
 
 
-def _prev_tasks(prev: dict) -> list[str]:
-    """The task list of the session before /clear (task dossier, HOS-256)."""
+def _mechanical_tasks(prev: dict) -> list[str]:
+    """The ids the operator messages `_mechanical` quotes name, cut as it cuts them (HOS-330)."""
     try:
         from scripts.utils import dossier
-        return dossier.session_tasks(prev)
+        digest = CP.transcript_digest(prev.get("transcript_path"))
+        if digest is None:
+            return []
+        found: list[str] = []
+        for _when, text in digest["operator"][-OPERATOR_MESSAGES:]:
+            for ident in dossier.prompt_ids(text[:MAX_MESSAGE_CHARS]):
+                if ident not in found:
+                    found.append(ident)
+        return found
     except Exception as exc:  # noqa: BLE001 - the injection matters more than the list
         print(f"checkpoint-inject: task list unreadable: {exc}", file=sys.stderr)
         return []
@@ -276,7 +284,7 @@ def _carry_tasks(prev: dict, state_path: Path) -> list[str]:
 
 def _post_mechanical(prev: dict, filed: Path | None, bottom: str) -> None:
     """One `handoff` record of kind `mechanical` on each task, after the file is on disk."""
-    tasks = _prev_tasks(prev)
+    tasks = _mechanical_tasks(prev)
     if not tasks or filed is None:
         return
     try:
@@ -471,8 +479,8 @@ def _after_compact(payload: dict, project: Path, slug: str, state: dict, unatten
 
 
 # Carried across /clear in HELM and in a yard alike (operator decision
-# 2026-10-14, "carry it over in HELM and in a yard", translated): the unattended switch and the
-# session-wide record behind the `Unattended:` line. Read in `_after_clear`.
+# 2026-10-14, "carry it over in HELM and in a yard"): the unattended switch
+# and the session-wide record behind the `Unattended:` line. Read in `_after_clear`.
 CARRIED_KEYS = (
     "session_unattended", "unattended_total", "unattended_first_at", "unattended_last_at_total",
     "unattended_last_stop", "second_wind_attempts",

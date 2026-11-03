@@ -18,7 +18,7 @@ unreachable; any watched service not active; cliproxy-update HALT; an expired
 subscription login of the proxy (cliproxy-update AUTH_EXPIRED, with the login command,
 for as long as the file exists); any proxy update, rollback, refusal, deferral or
 expired-login event since the previous run; certificate on the server with fewer
-than 20 days left (the Porkbun renewal did not arrive); root disk above 75 %;
+than 20 days left (the renewal did not arrive); root disk above 75 %;
 Hindsight operations waiting while none has completed for 30 minutes; LLM 401/403
 in the last hour (the first sign of an account problem); any Hindsight async
 operation in status failed, as one line with the total and, per operation type, the

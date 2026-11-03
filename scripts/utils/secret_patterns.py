@@ -188,10 +188,39 @@ SECRET_PATTERNS = [
     # form would exclude any value that merely BEGINS with those letters, and
     # lower-case "changeme..." or "reset2024..." is what a real weak password
     # looks like. Flagging the whole lookahead would have been that loosening.
+    #
+    # WHITESPACE IS THE FIRST ALTERNATIVE OF THE EXCLUSION LOOKAHEAD, since
+    # 2026-11-01. The whitespace run after the label is greedy but not atomic:
+    # with two or more whitespace characters, the engine first takes them all,
+    # the lookahead sees an excluded word and fails, the engine backtracks the
+    # run by one character, the lookahead now sees a space instead of the word
+    # and passes, and the value class then matches that space plus the excluded
+    # text. So any run of two or more whitespace characters disarmed every
+    # exclusion, while a single space could not backtrack. With whitespace
+    # excluded first, no backtracked position can leave whitespace in front of
+    # the lookahead, so it is always tested at the first non-whitespace
+    # character, which is what the exclusions were written to mean. Two kinds of
+    # match go away: a line whose first non-whitespace text is an exclusion, and
+    # a SHORT VALUE, the named residual. Before, backtracked whitespace counted
+    # toward the eight-character minimum, so a value of fewer than eight
+    # characters fired after two or more whitespace characters; now the minimum
+    # applies after the whole run, exactly as it already did after one space,
+    # where a value under eight characters was never refused. A value of eight
+    # or more characters is still refused after any run of whitespace. Not a
+    # possessive quantifier or an atomic group, although Python 3.11 accepts
+    # both: the sample generator in tests/test_gate_secret_scanner.py walks the
+    # parsed pattern and knows only the plain greedy and lazy repeats.
+    # MEASURED 2026-11-01 on invented strings: a label followed by two spaces
+    # and an instruction starting "See ", by three spaces and "set ", by a tab,
+    # a space and "Your ", by two spaces and "Stored", and by a no-break space,
+    # a space and "See ", were each refused before and pass after; a label
+    # followed by one, two or five spaces or a tab and then a twelve-character
+    # mixed value is refused before and after; a label followed by two spaces
+    # and a seven-character mixed value was refused before and passes after.
     # The same text sits in `.claude/hooks/_dispatch.py`; keep it byte-identical.
     (re.compile(
         r'\*\*Password:\*\*\s+'
-        r'(?!Stored|REDACTED|N/A|TBD|Change|Reset|(?i:See |Set |Use |Your ))'
+        r'(?!\s|Stored|REDACTED|N/A|TBD|Change|Reset|(?i:See |Set |Use |Your ))'
         r'[^\n]{8,}'
     ), "Plaintext password in markdown"),
     # Generic env-style password assignments with real values.
@@ -428,7 +457,10 @@ def redact(text: str) -> str:
     capitalised spelling was. That is the one change to this function's output,
     and it is confined to lines the scanner no longer flags either, so the
     subset invariant above still holds. The reasoning, and why the other six
-    exclusions stayed case-sensitive, is at the pattern itself.
+    exclusions stayed case-sensitive, is at the pattern itself. Since
+    2026-11-01 a label followed by whitespace and then an exclusion is left
+    whole whatever the whitespace run, confined likewise to lines the scanner
+    no longer flags, so the subset invariant above still holds.
 
     Returns the input unchanged, byte for byte, when nothing matches.
     """

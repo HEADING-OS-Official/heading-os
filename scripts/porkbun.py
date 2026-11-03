@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Porkbun API from the terminal, and delivery of a Porkbun-issued certificate.
+"""Porkbun API from the terminal: DNS records and the issued certificate.
 
 Porkbun issues and renews a free Let's Encrypt certificate for a domain whose DNS
 it hosts, and `/ssl/retrieve/<domain>` hands out the current chain and key. This
@@ -11,23 +11,11 @@ script is the one place the workspace talks to that API:
     porkbun.py dns set <domain> <type> <subdomain> <content> [--ttl N] [--yes]
     porkbun.py dns delete <domain> <type> <subdomain> [--yes]
     porkbun.py ssl show <domain>
-    porkbun.py ssl push [<domain>] [--host ALIAS] [--name FQDN] [--force]
     porkbun.py self-test
 
 Credentials come from the engine's gitignored `.env` (`PORKBUN_API_KEY`,
 `PORKBUN_SECRET_API_KEY`) through `load_api_key` and are never printed. A write to
 DNS without `--yes` only prints what it would do.
-
-`ssl push` keeps the API key on this machine. It retrieves the bundle, validates
-it here, asks the server what it holds, and hands the chain and key over SSH to a
-forced command on the server (`scripts/server/install-tls-cert.sh`), which
-validates again, swaps the files atomically and reloads nginx only after
-`nginx -t` passes. The server never holds a key that can edit the zone. Its
-defaults, so that the timer unit carries no name, come from `.env`:
-`PORKBUN_CERT_DOMAIN`, `PORKBUN_CERT_HOST` (an ssh alias) and `PORKBUN_CERT_NAME`
-(the FQDN the certificate must cover). A failed push, or a certificate on the
-server with fewer than `ALERT_DAYS` left, is reported to the operator's own
-notification sinks and exits non-zero, so the unit shows `failed`.
 
 Certificate inspection shells out to `openssl` with list arguments, so the
 script adds no Python dependency. `self-test` exercises the validation on
@@ -48,13 +36,10 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.api import load_api_key  # noqa: E402
-from scripts.utils.telegram_notify import notify, own_targets  # noqa: E402
 from scripts.utils.user_agent import user_agent  # noqa: E402
 
 API = "https://api.porkbun.com/api/json/v3"
 TIMEOUT_S = 30
-SSH_TIMEOUT_S = 120
-ALERT_DAYS = 20
 
 
 class PorkbunError(RuntimeError):
@@ -202,13 +187,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _setting(name: str, given: str | None) -> str:
-    value = given or load_api_key(name, required=False)
-    if not value:
-        raise SystemExit(f"porkbun: {name} is not set; pass it as an argument or put it in .env")
-    return value
-
-
 def cmd_ping(_args) -> int:
     data = call("ping")
     print(f"SUCCESS, request came from {data.get('yourIp')}")
@@ -277,73 +255,6 @@ def cmd_ssl_show(args) -> int:
     return 0
 
 
-def _ssh(host: str, mode: str, stdin: str = "") -> str:
-    # The server side is a forced command: `mode` arrives as SSH_ORIGINAL_COMMAND
-    # and is checked against a two-word allowlist there.
-    proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host, mode],
-        input=stdin, capture_output=True, text=True, timeout=SSH_TIMEOUT_S,
-    )
-    if proc.returncode != 0:
-        raise PorkbunError(f"ssh {host} {mode}: exit {proc.returncode}: {proc.stderr.strip()[:300]}")
-    return proc.stdout
-
-
-def _server_status(host: str) -> dict:
-    status = {}
-    for line in _ssh(host, "status").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            status[k.strip()] = v.strip()
-    return status
-
-
-def _alarm(subject: str, detail: str) -> None:
-    print(f"porkbun: {subject}\n{detail}", file=sys.stderr)
-    text = f"HEADING OS certificate: {subject}\n\n{detail}"
-    delivered = sum(1 for t in sorted(own_targets()) if notify(t, text))
-    if not delivered:
-        print("porkbun: NO NOTIFICATION SENT, no operator sink is configured or the"
-              " transport refused.", file=sys.stderr)
-
-
-def cmd_ssl_push(args) -> int:
-    domain = _setting("PORKBUN_CERT_DOMAIN", args.domain)
-    host = _setting("PORKBUN_CERT_HOST", args.host)
-    name = _setting("PORKBUN_CERT_NAME", args.name)
-    now = _now()
-    try:
-        bundle = call(f"ssl/retrieve/{domain}")
-        chain, key = bundle.get("certificatechain", ""), bundle.get("privatekey", "")
-        leaf = validate_bundle(chain, key, name, now)
-        installed = _server_status(host)
-        if installed.get("fingerprint") == leaf.fingerprint:
-            left = leaf.days_left(now)
-            print(f"up to date: {leaf.fingerprint[:23]}..., {left:.0f} days left")
-            if left < ALERT_DAYS:
-                _alarm(f"{name} expires in {left:.0f} days",
-                       f"Porkbun has not issued a newer certificate for {domain} yet; the"
-                       f" installed one ends {leaf.not_after:%Y-%m-%d}.")
-                return 1
-            return 0
-        if installed.get("not_after") and not args.force:
-            current_end = datetime.fromisoformat(installed["not_after"])
-            if leaf.not_after <= current_end:
-                raise CertError(
-                    f"Porkbun's certificate ends {leaf.not_after:%Y-%m-%d}, not later than the"
-                    f" installed one ({current_end:%Y-%m-%d}); refusing to downgrade (--force)"
-                )
-        print(_ssh(host, "install", stdin=chain.rstrip("\n") + "\n" + key).strip())
-        after = _server_status(host)
-        if after.get("fingerprint") != leaf.fingerprint:
-            raise PorkbunError(f"server reports {after.get('fingerprint')} after install")
-        print(f"installed: {leaf.fingerprint[:23]}..., valid to {leaf.not_after:%Y-%m-%d}")
-        return 0
-    except (PorkbunError, CertError, ValueError, subprocess.TimeoutExpired) as exc:
-        _alarm(f"push to {name} failed", str(exc))
-        return 1
-
-
 # ------------------------------------------------------------------- self-test
 
 def _make_cert(key: str, cn: str, san: str, days: int) -> str:
@@ -392,7 +303,7 @@ def cmd_self_test(_args) -> int:
 # ------------------------------------------------------------------------- main
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Porkbun API and certificate delivery.")
+    p = argparse.ArgumentParser(description="Porkbun API: DNS records and the issued certificate.")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("ping").set_defaults(fn=cmd_ping)
     sub.add_parser("self-test").set_defaults(fn=cmd_self_test)
@@ -411,11 +322,6 @@ def main(argv: list[str] | None = None) -> int:
 
     ssl = sub.add_parser("ssl").add_subparsers(dest="ssl_cmd", required=True)
     s = ssl.add_parser("show"); s.add_argument("domain"); s.set_defaults(fn=cmd_ssl_show)
-    s = ssl.add_parser("push"); s.add_argument("domain", nargs="?")
-    s.add_argument("--host", help="ssh alias of the server (PORKBUN_CERT_HOST)")
-    s.add_argument("--name", help="FQDN the certificate must cover (PORKBUN_CERT_NAME)")
-    s.add_argument("--force", action="store_true", help="install even if not newer")
-    s.set_defaults(fn=cmd_ssl_push)
 
     args = p.parse_args(argv)
     try:

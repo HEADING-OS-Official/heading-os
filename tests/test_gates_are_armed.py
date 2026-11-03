@@ -393,7 +393,8 @@ _OUTBOUND_MCP_TOOLS = ("mcp__claude_ai_Gmail__send_message",
                        "mcp__lific__delete",
                        "mcp__hindsight-main__delete_document",
                        "mcp__drive__batchShareDocument",
-                       "mcp__x__sendMessage")
+                       "mcp__x__sendMessage",
+                       "mcp__claude_ai_Google_Calendar__create_event")
 
 
 def test_every_platform_template_routes_outbound_mcp_tools_to_the_dispatcher():
@@ -402,7 +403,9 @@ def test_every_platform_template_routes_outbound_mcp_tools_to_the_dispatcher():
     MEASURED 2026-10-31 on main before HOS-272: in all three templates the
     Gmail, Drive and Lific tools matched no dispatcher matcher, so the wall could
     not see them; the Hindsight delete reached it only through the Hindsight
-    matcher, where nothing gated it.
+    matcher, where nothing gated it. MEASURED 2026-11-02 before HOS-324: the
+    Google Calendar connector's `create_event` matched no matcher either, so a
+    calendar invitation reached no wall.
     """
     templates = sorted((ROOT / ".claude").glob("settings.local.*.json"))
     assert len(templates) >= 2, (

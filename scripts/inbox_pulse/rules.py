@@ -37,6 +37,7 @@ the CRM cards and the business threads through `data_read("crm-contacts")` and
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,6 +48,8 @@ import yaml
 from scripts.utils.crm import pipeline_path as _pipeline_path
 from scripts.utils.data_path import data_read
 from scripts.utils.markdown import split_frontmatter
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from scripts.inbox_pulse.overrides import RulesEngine
@@ -147,6 +150,11 @@ class CheapClassifier:
         self.account = account
         self.my_email = my_email
         self._crm_index: Optional[dict] = None
+        # Calendar items whose Windows zone ID exchangelib does not know are
+        # read in the configured zone and named once per instance by a hash
+        # of their id (HOS-299, scripts/utils/exchange_tz.py). Built on first
+        # use, so a classifier with no account never resolves a zone.
+        self._zones = None
 
     def _crm_by_email(self) -> dict:
         """Lower-cased address to merged contact record, built once per instance.
@@ -523,20 +531,30 @@ class CheapClassifier:
             end = now + timedelta(days=_CALENDAR_WINDOW_DAYS)
             sender_lower = sender_email.lower()
 
-            for event in self.account.calendar.view(start=start, end=end):
-                attendees = (event.required_attendees or []) + (
-                    event.optional_attendees or []
-                )
-                for att in attendees:
-                    addr = (
-                        (att.mailbox.email_address or "").lower()
-                        if att.mailbox
-                        else ""
+            if self._zones is None:
+                from scripts.utils.exchange_tz import UnknownZones
+                from scripts.utils.workspace import get_default_tz_name
+                self._zones = UnknownZones(get_default_tz_name())
+            try:
+                for event in self._zones.read(self.account.calendar.view(start=start, end=end)):
+                    attendees = (event.required_attendees or []) + (
+                        event.optional_attendees or []
                     )
-                    if addr == sender_lower:
-                        return 1
-            return 0
-        except Exception:  # noqa: BLE001
+                    for att in attendees:
+                        addr = (
+                            (att.mailbox.email_address or "").lower()
+                            if att.mailbox
+                            else ""
+                        )
+                        if addr == sender_lower:
+                            return 1
+                return 0
+            finally:
+                message = self._zones.report()
+                if message:
+                    _log.warning(message)
+        except Exception as exc:  # noqa: BLE001 - calendar is enrichment, never blocking
+            _log.debug("calendar signal skipped: %s", type(exc).__name__)
             return 0
 
 

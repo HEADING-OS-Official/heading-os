@@ -2,7 +2,7 @@
 """Skip a test file only when nothing it can read has changed.
 
 The operator's question, 2026-09-04: "if something is already
-built, passed every test and works, why run the tests every time" (translated).
+built, passed every test and works, why run the tests every time".
 
 The answer this module implements: because most of the suite reads the engine
 checkout and nothing else, so when the checkout has not changed, most of the

@@ -63,6 +63,7 @@ from scripts.utils import daemon_heartbeat  # noqa: E402
 from scripts.utils import telegram_notify  # noqa: E402
 from scripts.utils import tracing  # noqa: E402
 from scripts.utils.healthchecks import ping as hc_ping  # noqa: E402
+from scripts.utils.exchange_tz import UnknownZones  # noqa: E402
 from scripts.utils.html_text import email_body_text  # noqa: E402
 from scripts.utils.llm_fallback import ClaudeStopped, call_anthropic_with_fallback  # noqa: E402
 from scripts.utils.observability import observe  # noqa: E402
@@ -589,6 +590,9 @@ class EmailSource:
         self.state = state
         self.logger = logger
         self.account = None
+        # An invite among the unread parses its zone fields too (HOS-299,
+        # scripts/utils/exchange_tz.py); each item is named once per process.
+        self._zones = UnknownZones(get_default_tz_name())
 
     def connect(self):
         from exchangelib import Account, Configuration, Credentials, DELEGATE
@@ -650,7 +654,7 @@ class EmailSource:
                                 f"reading the newest {max_count} only")
             unread_total = None
 
-        items = list(unread.order_by("-datetime_received")[:max_count])
+        items = list(self._zones.read(unread.order_by("-datetime_received")[:max_count]))
         if unread_total is not None and unread_total > max_count:
             # Walk from the OLDEST end, skipping what this daemon has already
             # handled, until `max_count` genuinely-unseen items are in hand.
@@ -664,7 +668,7 @@ class EmailSource:
             # reached 100 of 120 and stopped; this reaches all 120.
             seen_ids = {it.id for it in items}
             backlog, scanned = [], 0
-            for older in unread.order_by("datetime_received"):
+            for older in self._zones.read(unread.order_by("datetime_received")):
                 scanned += 1
                 if scanned > BACKLOG_SCAN_CAP:
                     self.logger.warning(
@@ -683,6 +687,10 @@ class EmailSource:
             self.logger.info(
                 f"Email: {unread_total} unread on the server; reading the "
                 f"newest {max_count} and {len(backlog)} unseen from the backlog")
+
+        message = self._zones.report()
+        if message:
+            self.logger.warning(message)
 
         new_items = []
         for email_item in items:
@@ -801,6 +809,7 @@ def _addresses(recipients) -> list:
             if r is not None and getattr(r, "email_address", None)]
 
 
+# Russian on purpose: Russian reply and forward prefixes stripped from subjects.
 _SUBJECT_PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|ответ|отв|пересл)\s*(\[\d+\])?\s*:\s*)+", re.I)
 
 
@@ -876,6 +885,15 @@ class MeetingInviteSource:
         self.state = state
         self.logger = logger
         self.account = None  # Shared from EmailSource
+        # Invites and calendar items whose Windows zone ID exchangelib does not
+        # know are read in the configured zone; each is named once per process
+        # by a hash of its id (HOS-299, scripts/utils/exchange_tz.py).
+        self._zones = UnknownZones(get_default_tz_name())
+
+    def _log_unknown_zones(self) -> None:
+        message = self._zones.report()
+        if message:
+            self.logger.warning(message)
 
     def check_new_invites(self) -> list:
         """Fetch unprocessed MeetingRequest items from inbox."""
@@ -895,7 +913,7 @@ class MeetingInviteSource:
         now = datetime.now(tz=UTC)
 
         new_invites = []
-        for invite in invites:
+        for invite in self._zones.read(invites):
             invite_id = str(invite.message_id or invite.id)
             if self.state.is_invite_processed(invite_id):
                 continue
@@ -952,6 +970,7 @@ class MeetingInviteSource:
                 "is_recurring": is_recurring,
             })
 
+        self._log_unknown_zones()
         self.logger.info(f"Meeting invites: {len(new_invites)} new")
         return new_invites
 
@@ -974,7 +993,8 @@ class MeetingInviteSource:
 
         events = []
         try:
-            for item in self.account.calendar.view(start=ews_start, end=ews_end):
+            for item in self._zones.read(
+                    self.account.calendar.view(start=ews_start, end=ews_end)):
                 if not hasattr(item.start, "hour"):
                     continue  # Skip all-day events
                 events.append({
@@ -984,6 +1004,7 @@ class MeetingInviteSource:
                 })
         except Exception as e:
             self.logger.error(f"Failed to fetch calendar events: {e}")
+        self._log_unknown_zones()
 
         return events
 
@@ -2438,12 +2459,24 @@ Respond ONLY in this JSON format (no markdown, no code fences):
         if self.client is None:
             import anthropic
             api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
+            if api_key:
+                self.client = anthropic.Anthropic(api_key=api_key, default_headers={"User-Agent": user_agent()})
+                return self.client
+            # No API key: a Claude subscription through the local CLIProxyAPI,
+            # which serves the Anthropic messages API (scripts/server/cliproxy-update.py
+            # posts to /v1/messages through it). The SDK appends /v1 itself, so the
+            # base URL drops it. HOS-309; UNVERIFIED on a subscription until HOS-312.
+            from scripts.utils.api import load_api_key
+            from scripts.utils.proxy_transport import PROXY_BASE_URL
+            proxy_key = load_api_key("CLIPROXY_API_KEY", required=False)
+            if not proxy_key:
                 raise ValueError(
-                    "ANTHROPIC_API_KEY not found in .env. "
-                    "Get one at console.anthropic.com and add to .env"
+                    "Neither ANTHROPIC_API_KEY nor CLIPROXY_API_KEY is set in .env. "
+                    "Set CLIPROXY_API_KEY (the installer's CLIProxyAPI step, signed in to Claude), "
+                    "or an API key from console.anthropic.com as ANTHROPIC_API_KEY"
                 )
-            self.client = anthropic.Anthropic(api_key=api_key, default_headers={"User-Agent": user_agent()})
+            self.client = anthropic.Anthropic(base_url=PROXY_BASE_URL.removesuffix("/v1"), api_key=proxy_key,
+                                              default_headers={"User-Agent": user_agent()})
         return self.client
 
     def _format_item_prompt(self, item: dict, index: int = None) -> str:
@@ -3147,7 +3180,7 @@ class Sentinel:
         # `telegram.enabled: false` still had connect() called, and connect()
         # raises ValueError on absent credentials with no handler here -- so
         # email-only monitoring could not boot at all.
-        if self.config.telegram.get("enabled", True):
+        if self.config.telegram.get("enabled", False):
             await self.telegram_source.connect()
 
         # Connect Exchange
@@ -3166,7 +3199,7 @@ class Sentinel:
         try:
             while self._running:
                 # Reconnect Telegram at cycle start (was disconnected after last cycle)
-                if self.config.telegram.get("enabled", True):
+                if self.config.telegram.get("enabled", False):
                     try:
                         if not self.telegram_source.client or not self.telegram_source.client.is_connected():
                             await self.telegram_source.connect()
@@ -3183,7 +3216,7 @@ class Sentinel:
                 hc_ping("STEWARD_HC_SENTINEL")
 
                 # Disconnect Telegram during sleep to release SQLite session lock
-                if self.config.telegram.get("enabled", True):
+                if self.config.telegram.get("enabled", False):
                     try:
                         await self.telegram_source.disconnect()
                         self.logger.debug("Telegram disconnected (releasing session lock for sleep)")
@@ -3262,7 +3295,7 @@ class Sentinel:
                 self.logger.error(f"Meeting invite check failed: {e}")
 
         # --- Telegram check (with sqlite3 DB lock retry) ---
-        if self.config.telegram.get("enabled", True):
+        if self.config.telegram.get("enabled", False):
             tg_success = False
             for tg_attempt in range(1, 4):  # up to 3 attempts
                 try:
@@ -4068,7 +4101,7 @@ Since the last digest: {by_source.get('email', 0)} email, {by_source.get('telegr
                         invite_id, "the dry-run")
                     continue
 
-            elif decision == "accept" and self.config.calendar.get("auto_accept", True):
+            elif decision == "accept" and self.config.calendar.get("auto_accept", False):
                 try:
                     self.invite_source.accept_invite(invite["item"])
                     await self._notify_invite_decision(invite, "ACCEPTED", reasons)
@@ -4080,7 +4113,7 @@ Since the last digest: {by_source.get('email', 0)} email, {by_source.get('telegr
                             invite_id, "the failed-accept")
                         continue
 
-            elif decision == "decline" and self.config.calendar.get("auto_decline", True):
+            elif decision == "decline" and self.config.calendar.get("auto_decline", False):
                 alternative = result.get("proposed_alternative")
                 decline_msg = select_decline_message(
                     result.get("is_tribe", False),

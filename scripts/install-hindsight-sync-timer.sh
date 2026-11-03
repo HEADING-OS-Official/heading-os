@@ -16,9 +16,9 @@
 # It also renders and enables hindsight-capture-check.{service,timer} (HOS-200): once a
 # day, `hindsight-sync.py capture-check` asks the bank whether every interactive session
 # of the last 25 hours has its conversation document, and fails the unit on a miss.
-# Operator decision, 2026-10-05, on the daily check: "yes" (translated).
+# Operator decision, 2026-10-05, on the daily check: "yes".
 #
-# Operator approval: 2026-09-30, "start" (translated) on the whole-workspace Hindsight plan
+# Operator approval: 2026-09-30, "start" on the whole-workspace Hindsight plan
 # (prompt archive hindsight-whole-workspace-memory), archives excluded.
 #
 # For unattended boot:  loginctl enable-linger "$USER"  (done automatically below)
@@ -90,7 +90,7 @@ mkdir -p "$DEST_DIR"
 
 STATE="$(cd "$WORKSPACE" && "$PYTHON" scripts/data-path.py path runtime:hindsight-sync/state)"
 mkdir -p "$STATE"
-# 200 and 80 since 2026-09-30 (operator decision: "yes, do it", translated): with 12 parallel extraction calls the
+# 200 and 80 since 2026-09-30 (operator decision: "yes, do it"): with 12 parallel extraction calls the
 # server retained about 98 documents an hour and sat idle at 0 pending, so 100 files per
 # 15 min behind a 40-operation gate fed it too little.
 LIMIT="${HINDSIGHT_SYNC_LIMIT:-200}"

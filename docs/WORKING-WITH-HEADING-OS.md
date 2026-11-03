@@ -110,7 +110,7 @@ HEADING OS remembers in layers:
 
 - **Your records.** Contacts, threads, notes, briefs and reviews are files in the data repository. Skills read them before they write anything. `/recall <question>` searches them and answers only from what it finds, with the file it came from, or says that nothing was found.
 - **Memories.** A fact a later session will need (a decision, a preference, a correction) is saved as one small file in the registry name `auto-memory`. When an answer settles something like that, Claude ends it with one line, `Remember: <the memory in one sentence>?`. Say yes and it writes the file; say no and the offer is dropped. You can also ask it to remember something at any time.
-- **Long-term memory server (optional).** Hindsight keeps every conversation and every record searchable by meaning, so the assistant remembers what you decided weeks ago. Setup and daily use: `HINDSIGHT.md`.
+- **Long-term memory server.** Hindsight keeps every conversation and every record searchable by meaning, so the assistant remembers what you decided weeks ago. Setup and daily use: `HINDSIGHT.md`.
 
 One rule governs all three: a recalled snippet is a pointer, not a fact. Before Claude acts on a number, a date, a promise or a decision, it opens the record the snippet came from.
 
@@ -122,7 +122,7 @@ One rule governs all three: a recalled snippet is a pointer, not a fact. Before 
 .venv/bin/python scripts/thread.py list
 ```
 
-**Lific (optional)** is a local issue tracker. When you say "don't forget to do this" or "we'll do this after the Northwind renewal", Claude records it as an issue in your inbox status, `backlog`. Only you move an issue to `todo`, which means "approved, ready to work on". `/prime` shows the board. Setup, the five statuses and daily use: `LIFIC.md`.
+**Lific** is a local issue tracker. When you say "don't forget to do this" or "we'll do this after the Northwind renewal", Claude records it as an issue in your inbox status, `backlog`. Only you move an issue to `todo`, which means "approved, ready to work on". `/prime` shows the board. Setup, the five statuses and daily use: `LIFIC.md`.
 
 `/dossier <ID>` gathers everything about one issue: the saved prompts, handoffs, briefs, comments and commits that mention it.
 
@@ -235,4 +235,4 @@ A data repository created with `--local-data` has no remote. `INSTALL.md`, "Back
 - `RULES-AND-PROTECTIONS.md`: the rules and the checks that refuse an action.
 - `WHATS-NEW.md`: what changed in each release.
 - `INSTALL.md`: installing and updating.
-- The optional tools: `HINDSIGHT.md`, `LIFIC.md`, `HERDR.md`, `YARDS.md`, `CLIPROXY.md`, `AGENTVIEW.md`.
+- The modules: `HINDSIGHT.md`, `LIFIC.md`, `HERDR.md`, `YARDS.md`, `CLIPROXY.md`, `AGENTVIEW.md`.

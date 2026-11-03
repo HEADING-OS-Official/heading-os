@@ -16,6 +16,7 @@ directories typed by hand:
     engine's default is the one that answers.
   * The `services:` block of the registry, copied from the engine's template.
   * The `.schema-version` stamp.
+  * The thread homes, every address `thread_homes` in `scripts/utils/data_homes.py` names, each holding a `.gitkeep`, so the push wall's real-entity denylist finds a thread home on the first push (HOS-322, 2026-11-01).
 
 History, kept short. Until 2026-09-25 this file typed the pre-move layout by
 hand. From then until 2026-10-13 it created one directory per HEADING OS 2
@@ -55,7 +56,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.paths import (DATA_SCHEMA_VERSION, engine_siblings_root,
                                  get_workspace_root)
 from scripts.utils.atomic import atomic_write_text
-from scripts.utils.data_path import example_names_path, template_names
+from scripts.utils.data_homes import thread_homes
+from scripts.utils.data_path import (INSTALLED_KEY, example_names_path,
+                                     installer_address_problems,
+                                     template_installer_placed,
+                                     template_names)
 from scripts.utils.registry_bootstrap import subject_roots_from_files
 from scripts.utils.runtime_dir import example_services_path, seed_services
 
@@ -63,6 +68,40 @@ from scripts.utils.runtime_dir import example_services_path, seed_services
 #: names legitimately address: the automatic memory records and the archives of
 #: them taken before a move. Anything else outside the subject roots refuses.
 MEMORY_TOP_LEVEL = ("auto-memory", "memory-archive")
+
+#: The addresses this installer places for the names the engine's default lists
+#: by name only (`installer_placed:`), each as the SEGMENTS of a path under the
+#: new tree plus its one-line description. Operator decision 2026-11-01
+#: (HOS-298): the public default carries no address for `threads-personal`, and
+#: the installer writes it into the executive's own registry, so the
+#: personal-threads wall stays as it is. Held as segments, joined only when the
+#: registry row is written into the new data repository; no engine file spells
+#: the joined address. The first segment must be a subject root.
+INSTALLER_ADDRESSES: dict[str, tuple[tuple[str, ...], str]] = {
+    "threads-personal": (("personal", "threads"),
+                         "the personal threads (CEO-only); never under an account"),
+}
+
+
+def installed_block() -> str:
+    """The `installed_names:` block a new tree's registry gets, or a refusal.
+
+    The installer's names and the default's `installer_placed:` list must be the
+    same set: a listed name with no address would refuse on every fresh tree,
+    and an address for an unlisted name is a row nobody declared.
+    """
+    listed = set(template_installer_placed())
+    placed = set(INSTALLER_ADDRESSES)
+    if listed != placed:
+        raise SystemExit(
+            f"Refusing to scaffold: {example_names_path()} lists "
+            f"{sorted(listed) or 'no name'} under `installer_placed:` and this "
+            f"installer places {sorted(placed) or 'no name'}; the two must match.")
+    lines = [f"{INSTALLED_KEY}:"]
+    for name in sorted(placed):
+        segments, what = INSTALLER_ADDRESSES[name]
+        lines += [f"  {name}:", f'    what: "{what}"', f"    path: {'/'.join(segments)}"]
+    return "\n".join(lines) + "\n"
 
 
 def scaffold_roots() -> tuple[str, ...]:
@@ -74,6 +113,10 @@ def scaffold_roots() -> tuple[str, ...]:
     """
     roots = subject_roots_from_files(None, get_workspace_root())
     allowed = set(roots) | set(MEMORY_TOP_LEVEL)
+    problems = installer_address_problems(INSTALLER_ADDRESSES, roots)
+    if problems:
+        raise SystemExit("Refusing to scaffold: an address this installer places "
+                         "cannot be written: " + "; ".join(problems) + ".")
     stray = sorted({f"{name} ({e['path']})"
                     for name, e in template_names().items()
                     # A single-segment path is a FILE at the data root, which
@@ -102,6 +145,7 @@ def init_data(target: Path) -> int:
         print(f"Refusing to scaffold: {target} exists and is not empty.")
         return 1
     roots = scaffold_roots()
+    block = installed_block()
     for root in roots:
         (target / root).mkdir(parents=True, exist_ok=True)
     # A writer of this marker. migrate-data.py goes through atomic_write_text
@@ -110,10 +154,25 @@ def init_data(target: Path) -> int:
     # silently skips every migration the overlay still needs.
     atomic_write_text(target / ".schema-version", f"{DATA_SCHEMA_VERSION}\n")
     registry = seed_services(target)
+    # The rows the public default may not carry (HOS-298), written into this
+    # tree's own registry. `target` was empty a moment ago, so the registry is
+    # the one `seed_services` just wrote and holds no such block yet.
+    atomic_write_text(registry, registry.read_text(encoding="utf-8") + "\n" + block)
+    # HOS-322: without a thread home on disk the push wall's denylist harvest
+    # refuses, so every home the registry names is created, `.gitkeep` inside
+    # so git carries it to a second machine.
+    homes_made: list[str] = []
+    for name, home in thread_homes(target):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".gitkeep").write_text("", encoding="utf-8")
+        homes_made.append(name)
     print(f"Initialized data folder at {target} (schema v{DATA_SCHEMA_VERSION}): "
           f"{len(roots)} subject roots ({', '.join(roots)}).")
     print(f"Seeded the data-address registry at {registry} "
           f"from {example_services_path()}.")
+    print(f"It carries the `{INSTALLED_KEY}:` rows the installer places: "
+          f"{', '.join(sorted(INSTALLER_ADDRESSES))}.")
+    print(f"Created the thread homes: {', '.join(homes_made) or 'none'}.")
     print(f"Its `names:` block is not seeded and does not need to be: the "
           f"engine answers every data-address name from {example_names_path()} "
           f"until this root carries a `names:` block of its own, which then "

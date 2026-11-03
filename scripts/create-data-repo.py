@@ -10,7 +10,7 @@ steps:
 
   1. Scaffold the empty data tree + schema stamp (delegates to init-data.py, the
      single source of truth for the directory layout).
-  2. Drop a .gitignore (rebuildable indexes, secrets, runtime state) and a README.
+  2. Drop a .gitignore (rebuildable indexes, secrets, runtime state) and an ABOUT.md.
   3. git init + first commit.
   4. Create a PRIVATE GitHub repo via `gh` and wire it as origin (no push yet).
   5. Verified first push via the supervised_push primitive — bounded by
@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.clone_guard import require_main_clone
 from scripts.utils.colors import BOLD, CYAN, GRAY, GREEN, RED, RESET, YELLOW
+from scripts.utils.data_homes import thread_homes
 from scripts.utils.git_push import supervised_push
 from scripts.utils.paths import DataRootError
 from scripts.utils.venv_guard import venv_python
@@ -145,6 +146,9 @@ __pycache__/
 .DS_Store
 """
 
+# A data-root file at a path the engine also carries makes the engine push refuse it (`data-in-engine`, scripts/utils/workspace.py `_engine_destination`), so never README.md (HOS-321).
+DATA_ABOUT_NAME = "ABOUT.md"
+
 DATA_README = """\
 # HEADING OS: private data repository
 
@@ -222,16 +226,16 @@ def scaffold(target: Path, dry_run: bool) -> int:
 
 
 def write_repo_files(target: Path, dry_run: bool) -> None:
-    """Drop the .gitignore and README that make this a self-describing repo.
+    """Drop the .gitignore and ABOUT.md that make this a self-describing repo.
 
     Never overwrites. Now that `scaffold` resumes an interrupted bootstrap, this
     runs a second time on a tree the operator may have edited, and a .gitignore
     they widened is not something to silently replace with the default.
     """
     if dry_run:
-        print(f"{YELLOW}[dry-run]{RESET} would write .gitignore and README.md")
+        print(f"{YELLOW}[dry-run]{RESET} would write .gitignore and {DATA_ABOUT_NAME}")
         return
-    for name, body in ((".gitignore", DATA_GITIGNORE), ("README.md", DATA_README)):
+    for name, body in ((".gitignore", DATA_GITIGNORE), (DATA_ABOUT_NAME, DATA_README)):
         path = target / name
         if path.exists():
             print(f"{GRAY}kept existing{RESET} {name}")
@@ -267,6 +271,17 @@ def is_repo_root(target: Path) -> bool:
     return Path(toplevel).resolve() == Path(target).resolve()
 
 
+def _seed_identity(target: Path) -> None:
+    # A fresh repo on a machine with no *global* git identity fails the first commit
+    # with "Author identity unknown". Seed a local identity from the workspace's git
+    # config (the engine/data clones set it locally), with a safe fallback.
+    root = get_workspace_root()
+    name = run(["git", "config", "user.name"], root, check=False).stdout.strip() or "HEADING OS"
+    email = run(["git", "config", "user.email"], root, check=False).stdout.strip() or "noreply@users.noreply.github.com"
+    run(["git", "config", "user.name", name], target)
+    run(["git", "config", "user.email", email], target)
+
+
 def git_init_commit(target: Path, dry_run: bool) -> int:
     """Initialise the repo on main and create the first commit."""
     if dry_run:
@@ -284,14 +299,7 @@ def git_init_commit(target: Path, dry_run: bool) -> int:
     # Idempotent: skip init only when `target` is the root of its OWN repository.
     if not is_repo_root(target):
         run(["git", "init", "-b", "main"], target)
-    # A fresh repo on a machine with no *global* git identity fails the first commit
-    # with "Author identity unknown". Seed a local identity from the workspace's git
-    # config (the engine/data clones set it locally), with a safe fallback.
-    root = get_workspace_root()
-    name = run(["git", "config", "user.name"], root, check=False).stdout.strip() or "HEADING OS"
-    email = run(["git", "config", "user.email"], root, check=False).stdout.strip() or "noreply@users.noreply.github.com"
-    run(["git", "config", "user.name", name], target)
-    run(["git", "config", "user.email", email], target)
+    _seed_identity(target)
     run(["git", "add", "-A"], target)
     # Nothing to commit is fine on a re-run.
     status = run(["git", "status", "--short"], target).stdout.strip()
@@ -301,6 +309,164 @@ def git_init_commit(target: Path, dry_run: bool) -> int:
         print(f"{GREEN}committed{RESET} {head}: initialize private data overlay")
     else:
         print(f"{GRAY}no changes to commit (already initialized){RESET}")
+    return 0
+
+
+def _scaffolded(target: Path) -> bool:
+    return target.is_dir() and (target / ".schema-version").is_file()
+
+
+def _in_head(target: Path, rel: str) -> bool:
+    return run(["git", "cat-file", "-e", f"HEAD:{rel}"], target, check=False).returncode == 0
+
+
+def _in_index(target: Path, rel: str) -> bool:
+    return run(["git", "ls-files", "--error-unmatch", "--", rel], target, check=False).returncode == 0
+
+
+def _pending_commit(target: Path) -> tuple[bool, list[str]]:
+    """(has a HEAD, the layout paths whose state in HEAD, index or tree is unfinished).
+
+    Each path is judged by where it is in all three, never by HEAD alone and
+    never by what this run touched (HOS-320 review rounds 1 and 2):
+
+    * README.md must be gone. It is pending while the tree lacks it and HEAD or
+      the index still holds it: an unstaged deletion, or a rename not committed.
+    * ABOUT.md and each thread home's `.gitkeep` must be committed. Each is
+      pending while it is in the tree and HEAD or the index lacks it: never
+      committed, or a deletion staged under a marker the repair restored.
+
+    Only a path's existence is judged, never its content, so an edit the
+    operator is making to ABOUT.md is never swept into a repair commit.
+    `(False, [])` outside a repository root.
+    """
+    if not is_repo_root(target):
+        return False, []
+    require_outside_engine_clone(target, "the data repo target")
+    has_head = run(["git", "rev-parse", "--verify", "-q", "HEAD"], target, check=False).returncode == 0
+
+    def in_head(rel: str) -> bool:
+        return has_head and _in_head(target, rel)
+
+    pending = []
+    if not (target / "README.md").exists() and (in_head("README.md")
+                                               or _in_index(target, "README.md")):
+        pending.append("README.md")
+    wanted = [DATA_ABOUT_NAME] + [(home / ".gitkeep").relative_to(target).as_posix()
+                                  for _name, home in thread_homes(target)]
+    for rel in wanted:
+        if (target / rel).is_file() and not (in_head(rel) and _in_index(target, rel)):
+            pending.append(rel)
+    return has_head, pending
+
+
+def layout_problems(target: Path) -> list[str]:
+    """What stands between this data repository and the engine push checks.
+
+    A README.md at the root makes every engine push refuse the engine's own
+    README (HOS-321); a missing or empty thread home makes the push wall's
+    real-entity denylist degraded (HOS-322); a repair whose rename or `.gitkeep`
+    is not yet committed is unfinished. `[]` for a tree not scaffolded yet,
+    which has no registry to resolve the thread homes against.
+    """
+    if not _scaffolded(target):
+        return []
+    problems = []
+    if (target / "README.md").exists():
+        problems.append("README.md is at the data root; the engine carries a README.md, "
+                        "so every engine push refuses it (HOS-321).")
+    for name, home in thread_homes(target):
+        if home.exists() and not home.is_dir():
+            problems.append(f"the thread home {name} is not a folder.")
+        elif not home.is_dir():
+            problems.append(f"the thread home {name} does not exist (HOS-322).")
+        elif not any(home.iterdir()):
+            problems.append(f"the thread home {name} is empty, so git does not carry it (HOS-322).")
+    # Only once the repository has a first commit: before it, the bootstrap's
+    # own first commit takes everything.
+    has_head, pending = _pending_commit(target)
+    if has_head:
+        problems += [f"{rel} is repaired but not committed; an earlier repair did not finish."
+                     for rel in pending]
+    return problems
+
+
+def repair_layout(target: Path, dry_run: bool, commit: bool) -> int:
+    """Rename a root README.md to ABOUT.md, create the missing thread homes, commit them.
+
+    Every refusal is checked before anything changes, so a refused tree is left
+    exactly as it was. With `commit`, only the layout paths whose state is not
+    in HEAD are staged and committed, which also finishes an interrupted repair;
+    whatever else the operator has staged or modified stays as it was. Nothing
+    is pushed.
+    """
+    if not _scaffolded(target):
+        return 0
+    if not layout_problems(target):
+        print(f"{GRAY}data repository layout already as the push checks expect; "
+              f"nothing repaired{RESET}")
+        return 0
+    readme, about = target / "README.md", target / DATA_ABOUT_NAME
+    homes = [(name, home) for name, home in thread_homes(target)
+             if not home.is_dir() or not any(home.iterdir())]
+    refused = False
+    if readme.exists() and about.exists():
+        print(f"{RED}both README.md and {DATA_ABOUT_NAME} are at the data root; README.md "
+              f"stops every engine push (HOS-321); move its text into {DATA_ABOUT_NAME} "
+              f"and delete README.md, then run this again.{RESET}")
+        refused = True
+    for name, home in homes:
+        if home.exists() and not home.is_dir():
+            print(f"{RED}{home} exists and is not a folder; the thread home {name} must be "
+                  f"a folder. Move it aside, then run this again.{RESET}")
+            refused = True
+    if refused:
+        return 1
+    if dry_run:
+        if readme.exists():
+            print(f"{YELLOW}[dry-run]{RESET} would rename README.md to {DATA_ABOUT_NAME}")
+        for name, _home in homes:
+            print(f"{YELLOW}[dry-run]{RESET} would create the thread home {name} with .gitkeep")
+        if commit:
+            for rel in _pending_commit(target)[1]:
+                print(f"{YELLOW}[dry-run]{RESET} would commit {rel}")
+        return 0
+    repo = is_repo_root(target)
+    if repo:
+        require_outside_engine_clone(target, "the data repo target")
+    if readme.exists():
+        # In the index (committed or only staged): move the index entry too.
+        tracked = repo and run(["git", "ls-files", "--error-unmatch", "README.md"],
+                               target, check=False).returncode == 0
+        if tracked:
+            run(["git", "mv", "README.md", DATA_ABOUT_NAME], target)
+        else:
+            readme.rename(about)
+        print(f"{GREEN}renamed{RESET} README.md to {DATA_ABOUT_NAME}")
+    for name, home in homes:
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".gitkeep").write_text("", encoding="utf-8")
+        print(f"{GREEN}created{RESET} the thread home {name}")
+    if commit and repo:
+        pathspec = _pending_commit(target)[1]
+        if not pathspec:
+            return 0
+        _seed_identity(target)
+        # `git add` takes a path only where the tree or the index holds it, which
+        # stages a deletion too; a path in neither is refused as matching nothing.
+        # Never an empty list: `git add -A --` alone stages the whole tree.
+        addable = [p for p in pathspec if (target / p).exists() or _in_index(target, p)]
+        if addable:
+            run(["git", "add", "-A", "--", *addable], target)
+        # `git commit --` matches only what HEAD or the index holds now: a
+        # README.md that was only staged, then deleted, is in neither.
+        pathspec = [p for p in pathspec if _in_index(target, p) or _in_head(target, p)]
+        if pathspec and run(["git", "diff", "--cached", "--quiet", "--", *pathspec],
+               target, check=False).returncode == 1:
+            run(["git", "commit", "-m", "chore: data repository layout repaired for the "
+                 "engine push checks (HOS-321, HOS-322)", "--", *pathspec], target)
+            head = run(["git", "rev-parse", "--short", "HEAD"], target).stdout.strip()
+            print(f"{GREEN}committed{RESET} {head}: data repository layout repaired")
     return 0
 
 
@@ -374,6 +540,13 @@ def main() -> int:
     ap.add_argument("--no-remote", action="store_true",
                     help="local scaffold + git only; do not create a GitHub repo or push")
     ap.add_argument("--dry-run", action="store_true", help="show what would happen; make no changes")
+    layout = ap.add_mutually_exclusive_group()
+    layout.add_argument("--check-layout", action="store_true",
+                        help="report what in the data repository's layout stops the push "
+                             "checks; exit 1 when anything does, 0 when nothing does")
+    layout.add_argument("--repair-layout", action="store_true",
+                        help="rename a root README.md to ABOUT.md, create the missing thread "
+                             "homes and commit only those changes; no remote is touched")
     args = ap.parse_args()
 
     # Resolved to absolute, because two different working directories consume
@@ -402,6 +575,17 @@ def main() -> int:
         print(f"{RED}REFUSING:{RESET} {exc}")
         return 2
 
+    if args.check_layout or args.repair_layout:
+        if not _scaffolded(target):
+            print(f"{target} is not a HEADING OS data repository yet; nothing to check.")
+            return 2
+        if args.repair_layout:
+            return repair_layout(target, args.dry_run, commit=True)
+        problems = layout_problems(target)
+        for problem in problems:
+            print(problem)
+        return 1 if problems else 0
+
     repo_name = args.repo_name or target.name.lstrip(".")
     private = not args.public
 
@@ -424,6 +608,8 @@ def main() -> int:
             return 2
 
     if scaffold(target, args.dry_run) != 0:
+        return 1
+    if repair_layout(target, args.dry_run, commit=False) != 0:
         return 1
     write_repo_files(target, args.dry_run)
     if git_init_commit(target, args.dry_run) != 0:

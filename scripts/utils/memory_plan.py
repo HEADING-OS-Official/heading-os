@@ -93,6 +93,7 @@ HEADER_TEMPLATE_VERSION = "1"
 #: header, and its `.txt` history neither held nor deleted.
 SENT_AS_ITSELF = frozenset({".md", ".txt", ".csv", ".yaml", ".yml"})
 
+# Russian on purpose: the version summary text written into Hindsight; doc-versions.py self-tests assert it.
 _UNKNOWN_DATE = "дата неизвестна"
 
 #: The deletion guard of one pass: at most this many ids, and at most this
@@ -150,6 +151,7 @@ def header_for(fam: vr.Family, dates: dict[str, str]) -> str:
     actual = fam.members[fam.actual]
     earlier = sorted((dates.get(aid, _UNKNOWN_DATE), m.path)
                      for aid, m in fam.members.items() if aid != fam.actual)
+    # Russian on purpose: the version summary text, asserted by doc-versions.py self-tests.
     listed = "; ".join(f"{d} {p}" for d, p in earlier) or "нет"
     summary = _latest_summary(fam) or "не описаны"
     return (f"Актуальная версия от {dates.get(actual.artifact_id, _UNKNOWN_DATE)}. "

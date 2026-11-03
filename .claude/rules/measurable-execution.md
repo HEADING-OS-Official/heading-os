@@ -1,9 +1,9 @@
 # Measurable Execution - Loop / Goal / Metrics Pre-flight
 
-Last Updated: 2026-10-29
+Last Updated: 2026-11-02
 Last Verified: 2026-09-04
 
-Always-active rule. Whenever a task is expanded under Phase 1 of `prompt-refinement.md`, agree the metric that defines "done ideally" before the work, and assess whether the task fits the native harnesses `/goal` and `/loop`. This block is the last part of that expansion, so it fires exactly when the expansion fires and inherits its escape valves verbatim (both owned by `prompt-refinement.md`); no separate threshold. Rendered in the operator's working language (Russian: Замер / Метрики / Loop / Goal); the field labels below are canonical English.
+Always-active rule. Whenever a task is expanded under Phase 1 of `prompt-refinement.md`, agree the metric that defines "done ideally" before the work, and assess whether the task fits the native harnesses `/goal` and `/loop`. This block is the last part of that expansion, so it fires exactly when the expansion fires and inherits its escape valves verbatim (both owned by `prompt-refinement.md`); no separate threshold. Rendered in the operator's working language; the field labels below are canonical English.
 
 ## The three checks
 

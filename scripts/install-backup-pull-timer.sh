@@ -16,7 +16,8 @@
 # HINDSIGHT_BACKUP_CIPHER_FILE (and optionally HINDSIGHT_BACKUP_KEEP,
 # HINDSIGHT_PGBACKREST) in .env, and run `backup-pull.py pull` once by hand.
 # Operator approval for this timer: 2026-09-29, the Hindsight deployment plan v2
-# ("backups go to the laptop, the laptop pulls them itself", translated), approved with his "Go" that day.
+# ("backups go to the laptop, the laptop pulls them itself"), approved with his
+# "Go" that day.
 #
 # For unattended boot:  loginctl enable-linger "$USER"  (done automatically below)
 

@@ -1,0 +1,23 @@
+# heading-os-service-layer: written by scripts/utils/schedule.py (HOS-312). A
+# hindsight-control-plane.service without this line was written by someone else, and
+# the service layer adopts it: install and remove leave it untouched.
+[Unit]
+Description=Hindsight web console for HEADING OS (127.0.0.1:9999)
+After=hindsight-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# The key the console sends to the Hindsight server, mode 600 (scripts/utils/install_hindsight.py).
+EnvironmentFile=%h/.config/heading-os/hindsight/console.env
+# bin/cli.js starts its server with the `node` it finds on PATH, so this install's Node comes first.
+Environment=PATH={{NODE_BIN_DIR}}:/usr/local/bin:/usr/bin:/bin
+ExecStart={{NODE_BIN}} {{HINDSIGHT_CONSOLE_DIR}}/bin/cli.js --hostname 127.0.0.1 --port 9999 --api-url http://127.0.0.1:8888
+UMask=0077
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

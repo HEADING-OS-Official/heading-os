@@ -248,6 +248,82 @@ def is_engine_tree(root: Path | None = None) -> bool:
     return (root / ENGINE_TREE_MARKER).is_file()
 
 
+#: The data repository's folder name beside an engine clone, in the layout this
+#: workspace has always used.
+DATA_SIBLING_NAME = ".heading-os-data"
+
+#: The executive layout (HOS-313, operator decision 2026-11-01): an engine
+#: checkout in a folder named `engine` finds its data in the folder `data`
+#: beside it, and only when that folder carries the data repository's stamp.
+ENGINE_FOLDER_NAME = "engine"
+DATA_FOLDER_NAME = "data"
+DATA_SCHEMA_STAMP = ".schema-version"
+
+
+def sibling_data_root(engine: Path) -> Path | None:
+    """The data repository beside the checkout ``engine``, or None.
+
+    The ONE sibling rule. Every resolver and every structural guard that looks
+    for the data repository beside an engine clone calls this, never a copy:
+    `get_data_root()` below, `_structural_overlay_root()` in
+    `overlay_write_guard.py` (which loads this file by path), the watched stores
+    of `runtime_write_guard.py`, `_yard_data_roots()` in `.claude/hooks/_dispatch.py`,
+    `scripts/overlay-writer-census.py` and the yard bootstrap. First hit wins:
+
+      1. ``<parent>/.heading-os-data`` when it is a directory, today's layout,
+         unchanged.
+      2. ``<parent>/data`` when ``engine`` is a folder named ``engine`` AND
+         ``data/.schema-version`` is a file holding an integer. The stamp is the
+         gate: a folder that merely happens to be called ``data`` beside an
+         ``engine`` is not the data repository, and claiming it would point every
+         guard and every write at a stranger's tree. A stamp that exists but
+         cannot be read or decoded counts as stamped, so a guard never takes a
+         broken stamp for an absent overlay; a readable stamp that is not an
+         integer still answers None.
+
+    Asked of the directory the caller hands in and of nothing else, so it moves
+    nothing a caller did not already decide: `get_data_root()` passes its own
+    checkout, the guards pass the main clone. A YARD therefore resolves rule 2
+    exactly as it resolves rule 1, through whichever root its caller asks about.
+    Standard library only, because a `.pth` loads it during `site.py`. Reading
+    the stamp is decided here, and logged, because every caller must give the
+    same answer for it; any other filesystem error propagates, and each caller
+    decides at its call site (K008).
+    """
+    parent = Path(engine).parent
+    legacy = parent / DATA_SIBLING_NAME
+    if legacy.is_dir():
+        return legacy.resolve()
+    if Path(engine).name != ENGINE_FOLDER_NAME:
+        return None
+    stamp = parent / DATA_FOLDER_NAME / DATA_SCHEMA_STAMP
+    if not stamp.is_file():
+        return None
+    try:
+        text = stamp.read_bytes().decode("utf-8-sig")
+    except FileNotFoundError:
+        _log.warning("sibling_data_root(): %s vanished while it was read; "
+                     "no data repository beside %s", stamp, engine)
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        # The stamp EXISTS but cannot be read (mode 000) or decoded (UTF-16).
+        # That is the data repository with a broken stamp, never "no data
+        # repository": answering None, or letting a decode error escape to the
+        # `.pth`'s silent handler, let every guard treat the overlay as absent
+        # and a write land (HELM review of 09658a62, MEASURED 2026-11-01).
+        # Fail toward the guard. `utf-8-sig` also drops a BOM, which `strip()`
+        # keeps and `int()` refuses.
+        _log.warning("sibling_data_root(): the stamp %s exists but cannot be "
+                     "judged (%s: %s); treating %s as the data repository",
+                     stamp, type(exc).__name__, exc, stamp.parent)
+        return stamp.parent.resolve()
+    try:
+        int(text.strip())
+    except ValueError:
+        return None
+    return stamp.parent.resolve()
+
+
 def get_data_root() -> Path:
     """Resolve the private-data root. First hit wins:
 
@@ -256,7 +332,9 @@ def get_data_root() -> Path:
          ``env_data_root``); it is never ignored and never falls through to the
          rules below, because on an operator machine the next rule to match is
          the live private overlay.
-      2. Sibling ``../.heading-os-data`` (the dedicated data repo).
+      2. The data repository beside this checkout, by ``sibling_data_root``:
+         ``../.heading-os-data``, or ``../data`` beside a folder named
+         ``engine`` when it carries the ``.schema-version`` stamp.
       3. Demo mode: ``<workspace_root>/examples``, a SENTINEL meaning "no data
          repository". The engine shipped a small invented tree there until
          HOS-131 (2026-09-25) made the engine hold only the engine; nothing is
@@ -282,9 +360,9 @@ def get_data_root() -> Path:
             "get_data_root(): %s is an engine tree carrying a crm/contacts or "  # leak-guard: ok (the marker directories this warning looks for)
             "knowledge directory; ignoring it as a data root. Move that data to "
             "the data repository.", root)
-    sibling = root.parent / ".heading-os-data"
-    if sibling.is_dir():
-        return sibling.resolve()
+    sibling = sibling_data_root(root)
+    if sibling is not None:
+        return sibling
     return (root / "examples").resolve()
 
 

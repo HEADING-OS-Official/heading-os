@@ -210,11 +210,6 @@ def settle_carried(session: str, confirmed: list[str], dropped: list[str], rel_p
               file=sys.stderr)
 
 
-def tasks_for_session(session: str | None = None, project: Path | None = None) -> list[str]:
-    """The confirmed task list in `session`'s checkpoint state (this session when None). Never raises."""
-    return session_tasks(session_state(session, project))
-
-
 def find_ids(text: str, keys: set[str] | frozenset[str]) -> list[str]:
     """Issue ids in `text` whose project key is a known Lific project, in order, unique."""
     seen: list[str] = []
@@ -223,6 +218,35 @@ def find_ids(text: str, keys: set[str] | frozenset[str]) -> list[str]:
         if m.group("key") in keys and ident not in seen:
             seen.append(ident)
     return seen
+
+
+def record_ids(text: str, keys: set[str] | frozenset[str] | None = None) -> list[str]:
+    """The ids a record's own text names: its targets (HOS-330).
+
+    The script-written header lines `Task:` and `Carried ...` are skipped, since
+    they carry the session's old list rather than anything the record says.
+    """
+    body = "\n".join(ln for ln in (text or "").splitlines()
+                     if not ln.startswith(("Task:", "Carried ")))
+    return find_ids(body, project_keys() if keys is None else keys)
+
+
+def prompt_ids(prompt: str, keys: set[str] | frozenset[str] | None = None) -> list[str]:
+    """The ids one input turn binds (HOS-330).
+
+    A yard brief binds its first `Task:` line, an operator's message every id it
+    names, and every form the harness submits on its own (a `<task-notification>`,
+    hook feedback, a system reminder, and any form `provenance` adds later) none.
+    """
+    from scripts.utils import provenance
+    keys = project_keys() if keys is None else keys
+    form = provenance.classify(prompt)
+    if form == "brief":
+        line = next((ln for ln in (prompt or "").splitlines() if ln.startswith("Task:")), "")
+        return find_ids(line, keys)
+    if form == provenance.OPERATOR:
+        return find_ids(prompt, keys)
+    return []
 
 
 def task_header(ids: list[str]) -> str:

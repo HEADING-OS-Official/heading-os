@@ -269,6 +269,17 @@ SERVICES_KEY = "services"
 GROUPS_KEY = "groups"
 GROUP_KEYS = frozenset({"what", "names"})
 
+#: Names whose address the public engine may not ship, so the shipped default
+#: lists them by NAME only (`installer_placed:`, a list) and `scripts/init-data.py`
+#: writes each one's address into a new tree's registry (`installed_names:`, a
+#: mapping of ordinary entries). Operator decision 2026-11-01 (HOS-298), first
+#: for `threads-personal`, whose address the personal-threads wall refuses in
+#: every engine file. On a tree with no `names:` block the installed rows are
+#: answered beside the shipped default; a tree with its own `names:` block is
+#: answered from that block alone, as before.
+INSTALLER_PLACED_KEY = "installer_placed"
+INSTALLED_KEY = "installed_names"
+
 
 class DataPathError(RuntimeError):
     """Base for every refusal here.
@@ -397,7 +408,17 @@ def _parse_document(text: str, path: Path) -> dict[str, dict]:
     # never give. A present-but-empty block is already refused above, so `None`
     # here is the only way absence can arrive.
     parsed_names = _parse_names(names or {}, path)
+    installed = data.get(INSTALLED_KEY)
+    if installed is not None and (not isinstance(installed, dict) or not installed):
+        raise _reject(path, f"`{INSTALLED_KEY}:` is present and is not a non-empty mapping")
+    placed = data.get(INSTALLER_PLACED_KEY)
+    if placed is not None and (not isinstance(placed, list) or not placed
+                               or not all(isinstance(n, str) and n for n in placed)):
+        raise _reject(path, f"`{INSTALLER_PLACED_KEY}:` is present and is not a "
+                            f"non-empty list of names")
     return {
+        INSTALLED_KEY: _parse_names(installed, path) if installed else None,
+        INSTALLER_PLACED_KEY: tuple(placed) if placed else None,
         NAMES_KEY: parsed_names,
         SERVICES_KEY: dict(services) if services is not None else None,
         STORE_KEY: store,
@@ -805,7 +826,8 @@ def _cache_read(entry: Path) -> dict | None:
             raise _Uncacheable("its format or key does not match its name")
         doc = _decode(held["document"])
         if type(doc) is not dict or set(doc) != {NAMES_KEY, SERVICES_KEY, STORE_KEY,
-                                                 SUBJECT_ROOTS_KEY, GROUPS_KEY}:
+                                                 SUBJECT_ROOTS_KEY, GROUPS_KEY,
+                                                 INSTALLED_KEY, INSTALLER_PLACED_KEY}:
             raise _Uncacheable("it does not hold a registry document")
         return doc
     except (ValueError, KeyError, AttributeError, TypeError) as exc:
@@ -943,11 +965,13 @@ def template_names(cached: bool = True) -> dict[str, dict]:
     **What that file may hold is a boundary, not a preference.** It goes to the
     public repository, so it carries the HEADING OS 2 structure -- families,
     leaves, and the generic sub-addresses inside them, which are identical in
-    every workspace -- and nothing belonging to one operator. Two names the
-    engine's own code asks for are deliberately absent: one addresses a dated
-    one-off directory and one a particular workbook file, and neither is
-    structure. Both still refuse on a tree with no registry, which is the honest
-    outcome; a caller that needs them is running on a tree that names them.
+    every workspace -- and nothing belonging to one operator. The names the
+    engine's own code asks for that are deliberately absent (a dated one-off
+    directory, an operator's own document or image) are listed with their
+    reasons in `EXEMPT` in `scripts/check-engine-data-names.py`, which refuses
+    any OTHER name the engine asks for and this file cannot answer (HOS-298).
+    They still refuse on a tree with no registry, which is the honest outcome;
+    a caller that needs them is running on a tree that names them.
 
     Refuses rather than returning `{}` when the file is unreadable or empty:
     an empty default is the `load_exec_registry` failure shape (an absent
@@ -984,7 +1008,10 @@ def load_registry(data_root: Path | None = None) -> dict[str, dict]:
        bundled demo tree and a data root `scripts/init-data.py` has just
        scaffolded both legitimately have none --
        that script seeds from the services template, which carries no `names:`
-       block, so a data repository is BORN without one.
+       block, so a data repository is BORN without one. Since HOS-298
+       (2026-11-01) such a tree is also answered from its own
+       `installed_names:` block, the addresses `scripts/init-data.py` placed for
+       the names the shipped default lists without one (`installer_placed:`).
 
     Until 2026-09-22 case 3 returned `{}` and every bare name raised
     `UnknownDataPath` on those trees, which is what held 49 call sites on the
@@ -993,7 +1020,55 @@ def load_registry(data_root: Path | None = None) -> dict[str, dict]:
     """
     doc = load_registry_document(data_root)
     names = dict(doc[NAMES_KEY]) if doc is not None else {}
-    return names or template_names()
+    if names:
+        return names
+    # Case 3, plus the rows the installer placed in THIS tree (HOS-298): the
+    # names the shipped default lists without an address.
+    installed = dict(doc[INSTALLED_KEY] or {}) if doc is not None else {}
+    return {**template_names(), **installed}
+
+
+def installer_address_problems(addresses: dict, roots) -> list[str]:
+    """Why each installer-placed address could not be written into a new tree; [] when all can.
+
+    ONE rule for both of its readers (HOS-298 review, 2026-11-01):
+    `scripts/init-data.py` refuses to scaffold on any problem, and
+    `scripts/check-engine-data-names.py` counts a placed name as answered only
+    when this finds none, so the guard never approves a default the installer
+    then refuses. `addresses` is `{name: (segments, description)}`; each segment
+    is one path component, the first a subject root, and the description is one
+    line the installer can write between double quotes. The joined address is
+    never spelled in a message.
+    """
+    problems = []
+    for name, entry in sorted(addresses.items()):
+        if not (isinstance(entry, tuple) and len(entry) == 2):
+            problems.append(f"{name}: not a (segments, description) pair")
+            continue
+        segments, what = entry
+        if not (isinstance(segments, tuple) and segments and all(
+                isinstance(seg, str) and seg and seg not in (".", "..")
+                and not any(c in seg for c in "/\\\n") for seg in segments)):
+            problems.append(f"{name}: its segments are not single path components")
+            continue
+        if not (isinstance(what, str) and what.strip()
+                and not any(c in what for c in '"\\\n')):
+            problems.append(f"{name}: its description is not one plain line")
+            continue
+        if segments[0] not in roots:
+            problems.append(f"{name}: its first segment {segments[0]!r} is not one of "
+                            f"the subject roots {', '.join(roots)}")
+    return problems
+
+
+def template_installer_placed() -> tuple[str, ...]:
+    """The names the engine's default lists without an address, for the installer to place."""
+    path = example_names_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _reject(path, f"the engine's default registry is unreadable ({exc})") from exc
+    return tuple(_template_document_cached(str(path), text)[INSTALLER_PLACED_KEY] or ())
 
 
 def template_groups() -> dict[str, tuple[str, ...]]:
@@ -1037,7 +1112,7 @@ def store_dirname(data_root: Path | None = None) -> str:
     otherwise the engine's default file does, which declares `runtime-junk`, so a
     tree with no entry resolves exactly as it did while the name was the engine
     constant `runtime_dir.STORE_DIRNAME` (operator's ruling 2026-09-14, reversed
-    by him 2026-09-25: "yes, move it", translated). The default file carrying no key is a
+    by him 2026-09-25: "yes, move it"). The default file carrying no key is a
     refusal, never a guess: a guessed store is a store nobody's ignore rules
     cover.
 
@@ -1779,10 +1854,10 @@ __all__ = [
     "EXAMPLE_NAMES_REL", "MissingRequiredSource", "NAMES_KEY",
     "ParameterMismatch", "REGISTRY_REL", "RECORD_SCHEME", "RUNTIME_SCHEME",
     "RegistryMalformed", "SCHEMA_VERSION", "SERVICES_KEY", "STORE_KEY", "UnknownDataPath",
-    "GROUP_SCHEME", "addresses_in", "config_names", "data_path", "data_read",
+    "GROUP_SCHEME", "INSTALLED_KEY", "INSTALLER_PLACED_KEY", "addresses_in", "config_names", "data_path", "data_read",
     "data_read_required", "data_write_dir", "data_write_file", "deprecated_config_path",
     "example_names_path", "invalidate_cache", "known_names", "load_registry",
     "load_registry_document", "registry_path", "store_dirname", "template_names",
-    "template_store_dirname",
+    "installer_address_problems", "template_installer_placed", "template_store_dirname",
     "validate_address",
 ]

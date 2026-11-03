@@ -91,3 +91,5 @@ services:
   daemon-watchdog: "daemon-watchdog.py: the watchdog's restart counters"
   daemon-config: "the per-user daemon config layer and its history, read by alert.py and the watchdog"
   data-path: "scripts/utils/data_path.py: the parsed registry, one JSON entry per registry text and parser build, rebuildable"
+  settings-backup: "merge-platform-settings.py: the copy of .claude/settings.local.json it takes before each merge"
+  admin-console: "the admin console page scripts/heading-console.py builds: index.html and the rendered guides"

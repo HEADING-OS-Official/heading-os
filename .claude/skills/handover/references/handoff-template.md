@@ -10,6 +10,7 @@ the real address before the file operation, and use what it answers. An unknown
 name refuses rather than resolving to a plausible directory, and a path written
 out here goes stale the day the directory moves.
 
+<!-- Russian on purpose: the Russian offer literal the handoff collects. -->
 Last Updated: 2026-10-14 (the unanswered «Запомнить?» offers, HOS-244)
 
 ---
@@ -20,6 +21,7 @@ Pass this text on stdin to `.venv/bin/python scripts/checkpoint-paths.py --write
 MUST contain these sections in this order. Keep the prose concise - this is for
 resume, not a report.
 
+<!-- Russian on purpose: the Russian offer literal in the template below is what /handover collects. -->
 ```markdown
 # Handoff - manual checkpoint
 

@@ -1,6 +1,6 @@
 # Hindsight: the memory server
 
-This guide takes you from nothing to daily use of Hindsight with HEADING OS. It assumes you have never seen Hindsight before. Hindsight is optional. HEADING OS runs without it, and every part that uses it stays silent until you finish section 5.1.
+This guide takes you from nothing to daily use of Hindsight with HEADING OS. It assumes you have never seen Hindsight before. Hindsight is part of every HEADING OS install. Every part that uses it stays silent until section 5.1 is done.
 
 Every command, flag, file name, port and default here was checked against the Hindsight CLI 1.1.0 (its own `--help`), Hindsight's upstream documentation for version 1.1, the README of the coding-agents plugin 0.8.2, or the HEADING OS engine source. Where something could not be checked, the guide says so.
 

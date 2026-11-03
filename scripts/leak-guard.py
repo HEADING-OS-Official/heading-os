@@ -51,7 +51,6 @@ DATA_PATH_TOKENS = [
     "knowledge/odin-brain",  # leak-guard: ok (the forbidden token itself; compared against source text, never joined)
     "outputs/",  # leak-guard: ok (the forbidden token itself; compared against source text, never joined)
     "threads/",  # leak-guard: ok (the forbidden token itself; compared against source text, never joined)
-    "datastore/operations/tribe/fireside-state",  # leak-guard: ok (the forbidden token itself; compared against source text, never joined)
 ] + [f"{fam}/" for fam in (*family_roots(), *subject_roots())]
 
 

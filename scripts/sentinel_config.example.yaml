@@ -42,7 +42,9 @@ email:
     - "notifications@*"
 
 telegram:
-  enabled: true
+  # Off until you connect Telegram (TELEGRAM_API_ID and TELEGRAM_API_HASH in
+  # .env and a signed-in session); then set it to true.
+  enabled: false
   check_personal_dms: true
   max_messages_per_chat: 30
 
@@ -77,8 +79,11 @@ notification:
 
 calendar:
   enabled: true
-  auto_accept: true            # Auto-accept policy-compliant invites
-  auto_decline: true           # Auto-decline policy-violating invites (non-VIP)
+  # Both ship OFF: an accept or a decline is a reply sent to the organiser,
+  # and nothing leaves without your yes. Set true only if you want Sentinel to
+  # answer invites by itself.
+  auto_accept: false           # Auto-accept policy-compliant invites
+  auto_decline: false          # Auto-decline policy-violating invites (non-VIP)
   use_llm_for_theme: true      # Use LLM to classify meeting topic for theme-day matching
   # Empty -> the built-in default sentence in scripts/sentinel.py.
   decline_message: ""

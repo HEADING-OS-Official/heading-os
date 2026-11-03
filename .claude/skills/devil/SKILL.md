@@ -86,6 +86,7 @@ If the inline form is detected but the inline claim is empty (e.g.,
 
 ### 1.2 Set the honesty-floor label
 
+<!-- Russian on purpose: the honesty-floor label for a Russian message. -->
 No tool call. The label follows the language of the user's preceding
 message: `Моя честная оценка` for Russian, `My honest assessment` for
 English.
@@ -245,6 +246,7 @@ Whatever the user replies next is normal-posture conversation:
 
 ## Voice rules
 
+<!-- Russian on purpose: the honesty-floor label for a Russian message. -->
 - Single hyphens `-` in prose, never `--`.
 - No em-dashes in any prose this skill generates.
 - Bilingual: if the user's preceding message is in Russian, respond in

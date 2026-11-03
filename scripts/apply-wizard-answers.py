@@ -5,11 +5,15 @@ The full contract is section 8 of the 2026-04-24 setup-wizard design spec, in
 the data repository under the registry name `spec-docs`.
 
 Where answers land. A rich answer renders into the data record its `output`
-names. A placeholder or list answer substitutes its `{TOKEN}` into every file
-its `files` entries name: a glob is matched under the workspace root, and an
-entry spelled as a data-registry name (`business-info`) is that record in the
-data repository. A rich record rendered after such an answer is substituted with
-it too, so the order in which questions are answered does not matter.
+names. A placeholder answer substitutes its `{TOKEN}` into every file its
+`files` entries name: a glob is matched under the workspace root, and an entry
+spelled as a data-registry name (`business-info`) is that record in the data
+repository. A placeholder or list answer, or a skipped one, re-renders from its
+template every answered rich record its `files` name, and substitutes its
+`{TOKEN}` only into the rest. A rich record rendered after such an answer is
+substituted with it too, so the order in which questions are answered does not
+matter. In a rendered record, an unanswered, skipped or empty placeholder or
+list reads `not set yet` in place of its `{TOKEN}`.
 
 Coverage: none live since the 2026-09-21 test-suite split. The contract in that
 spec is still the contract; nothing fails when this file stops keeping it.
@@ -25,6 +29,7 @@ import sys
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -33,7 +38,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # reads appends a duplicate instead of replacing it. `parse_env_line` is pure
 # (no path resolution, no I/O), so importing it resolves nothing outside the
 # workspace this script was pointed at.
-from scripts.utils.paths import parse_env_line  # noqa: E402
+from scripts.utils.paths import parse_env_line, read_env_value  # noqa: E402
+
+# The one `.env` writer, shared with `scripts/heading-secrets.py` since
+# 2026-11-01 (HOS-302). It lived here until then; its history is in its comments.
+from scripts.utils.env_file import is_valid_env_var_name, upsert_env_value  # noqa: E402
 
 # The workspace's one definition of a word (`.claude/rules/hidden-chars.md`).
 # `_display_value` counted `len(draft.split())`, which has no alnum filter, so
@@ -42,6 +51,7 @@ from scripts.utils.paths import parse_env_line  # noqa: E402
 # old count, 2 by this one. The figure is a display label only, so nothing
 # downstream moves - see the comment at its call site.
 from scripts.utils.sanitize_text import word_count  # noqa: E402
+from scripts.utils import install_answers  # noqa: E402 - the one accessor of the intake's answers (HOS-312)
 
 # ============================================================
 # Constants / Exit Codes
@@ -126,7 +136,7 @@ def _git_rel(workspace_root: Path, path: Path) -> str:
     refused in exactly the state the wizard creates -- the same always-failing
     gate the comment above that check says was fixed on 2026-08-23, reached
     again through the path separator. Windows is supported here; the `icacls`
-    branch in `_upsert_env_line` exists for it.
+    branch in `scripts/utils/env_file.py` exists for it.
 
     Resolved, not lexical. `_resolve_output_path` returns the UNRESOLVED join,
     so a bank output of `docs/../notes.md` stays `docs/../notes.md` through
@@ -245,7 +255,7 @@ def is_ceo_master(workspace_root: Path) -> bool:
 # KeyError while planning, which is what showed the gap was unintended.
 _TARGET_FIELDS = {
     "placeholder": ("files", "placeholder"),
-    "list": ("files", "placeholders"),
+    "list": ("files", "placeholder"),
     "rich": ("template", "output"),
     "secret": ("env_var",),
 }
@@ -414,8 +424,9 @@ def _template_context(answers: dict) -> dict:
     and `_plan_question`, and a fix landing in one of two copies is a shape this
     repository keeps finding.
 
-    A secret answer is stored under `value` as its `_mask_secret` stub, and that
-    stub carries the credential's REAL last four characters. Copying it into the
+    A secret answer written before 2026-11-01 (HOS-302) is stored under `value`
+    as a masked stub, and that stub carries the credential's REAL last four
+    characters; a newer one carries no value at all. Copying it into the
     render context put those four into the rendered document under the secret's
     own question id, and unlike `.env` that document is a tracked file that gets
     committed and pushed. Reaching it needs only a question bank whose secret id
@@ -432,7 +443,7 @@ def _template_context(answers: dict) -> dict:
         if aentry.get("env_written"):
             continue
         if isinstance(aentry.get("value"), str):
-            ctx[aid] = aentry["value"]
+            ctx[aid] = aentry["value"].strip()
         if aentry.get("draft"):
             ctx[f"{aid}_draft"] = aentry["draft"]
     return ctx
@@ -474,140 +485,34 @@ def _unquote_porcelain_path(raw: str) -> str:
 
 
 def _is_valid_env_var_name(name: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z_][A-Z0-9_]*", name))
+    return is_valid_env_var_name(name)
 
 
-# Every character `str.splitlines()` breaks a line on, plus NUL. `_upsert_env_line`
-# reads the existing file with `splitlines()`, so this is the exact set that can
-# turn one written `KEY=...` into two on the next read.
-#
-# The guard listed `\r`, `\n` and `\x00` alone until 2026-09-02 while its
-# docstring promised that a control character was refused. The other seven split
-# a line just as effectively: a value holding `\x0b` was written verbatim as one
-# line, and the next `_upsert_env_line` read it back as `KEY=abc` plus an orphan
-# `def` that then sat in the operator's `.env` forever. Verified against CPython:
-# `"a\x0bb".splitlines()` is `["a", "b"]`.
-#
-# A tab is deliberately NOT here. It is a control character and the docstring no
-# longer claims otherwise, but `splitlines()` keeps it inside the line, so
-# refusing it would reject a legitimate paste for no corruption it can cause.
-#
-# Written as escapes, never as literals: `.claude/rules/hidden-chars.md` bans
-# invisible Unicode in generated text, and the PostToolUse scanner refuses
-# this file outright when U+2028 and U+2029 appear in it as themselves.
-_ENV_LINE_BREAKERS = "\r\n\x00\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+def _placeholder_env(q: dict, value) -> tuple[str, str] | None:
+    """The `.env` line a placeholder answer also writes, as (name, value), or None.
 
-
-def _upsert_env_line(env_path: Path, key: str, value: str) -> None:
-    """Set `key=value` in `.env`, atomically and with no readable window.
-
-    A LINE-SPLITTING character in `value`, or a NUL, is REFUSED; the full set is
-    `_ENV_LINE_BREAKERS` above. The value arrives as JSON on stdin, where
-    `"\\n"` is an ordinary character, and this function wrote `f"{key}={value}"`
-    verbatim until 2026-08-23: one paste with a trailing newline, or a
-    multi-line PEM, split into extra `KEY=...` lines that silently defined
-    variables nobody asked for and corrupted the file for every later reader.
-    Refusing is right here rather than escaping, because a secret with an
-    embedded newline is far more likely a paste accident than an intent.
+    A placeholder target may carry an optional `env_var`, whose value must be
+    a time zone `zoneinfo` accepts; no question uses it now. `company_timezone`
+    wrote HEADING_OS_TZ until the installer's intake took that answer over
+    (HOS-312), so its `env_var` line left config/wizard-questions.yaml. The zone is stripped
+    first and the stripped name is what is validated and returned, never the
+    raw answer (HOS-309 review round 1). Raises SchemaError before anything is
+    written, so a refused answer writes neither `.env` nor a file.
     """
-    if any(ch in value for ch in _ENV_LINE_BREAKERS):
-        raise SchemaError(
-            f"the value for {key} contains a line break or NUL. A .env line "
-            "cannot carry one: it would split into extra KEY=... lines. Strip "
-            "it and pass the value again."
-        )
-    lines = []
-    if env_path.exists():
-        lines = _read_text(env_path).splitlines()
-    updated = False
-    new_line = f"{key}={value}"
-    for i, line in enumerate(lines):
-        # `parse_env_line`, not `startswith`: the reader side strips the line
-        # first, so `  KEY=old` assigns KEY to every reader in the workspace and
-        # was invisible to this writer. The secret was appended as a second
-        # line, and `load_env` (setdefault, FIRST line wins) then handed every
-        # caller the OLD value while the wizard reported the new one written.
-        pair = parse_env_line(line)
-        if pair is not None and pair[0] == key:
-            lines[i] = new_line
-            updated = True
-            break
-    if not updated:
-        lines.append(new_line)
-    tmp = env_path.with_suffix(env_path.suffix + ".tmp")
-    body = "\n".join(lines) + "\n"
-    # Mode BEFORE the rename. Setting it afterwards left the new .env at umask
-    # defaults -- commonly 0644 -- for the gap between the two calls, on a file
-    # that exists to hold credentials.
-    #
-    # And mode before the WRITE, which is the half that was still open until
-    # 2026-09-01. `tmp.write_text(...)` creates `.env.tmp` at 0666 & ~umask, so
-    # the secret sat in a world-readable file for the gap between that call and
-    # the `os.chmod` below it. Same window, same directory, same bytes; only the
-    # filename differed, and nothing reads a filename before deciding whether it
-    # may open a file. The `chmod` was moved above `os.replace` on 2026-08-23 and
-    # the temp file's own creation mode was left behind -- one of two writes
-    # fixed, which is the shape this repository keeps finding.
-    #
-    # `os.open` with an explicit mode, then `fchmod` on the same descriptor: the
-    # mode argument only applies when O_CREAT actually creates the file, so a
-    # `.env.tmp` left behind by a previous crashed run would otherwise keep
-    # whatever mode it had. The fchmod lands before any byte of `body` is
-    # written, and on the descriptor rather than the path, so nothing can be
-    # swapped underneath it in between.
-    #
-    # The finally is the same cleanup the three output writers got on
-    # 2026-09-02, and this is the site where leaving the temp file behind costs
-    # the most: `.env.tmp` holds the credential itself. A write that dies
-    # partway used to leave it on disk, and the `os.open` comment above already
-    # records finding exactly such a leftover from a previous crashed run.
+    env_var = q["target"].get("env_var") if q["type"] == "placeholder" else None
+    if env_var is None:
+        return None
+    if not isinstance(env_var, str) or not _is_valid_env_var_name(env_var):
+        raise SchemaError(f"Question {q['id']!r}: invalid env_var name {env_var!r}")
+    zone = value.strip() if isinstance(value, str) else value
     try:
-        if os.name == "posix":
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                os.fchmod(handle.fileno(), 0o600)
-                handle.write(body)
-        else:
-            tmp.write_text(body, encoding="utf-8")
-        os.replace(tmp, env_path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    if os.name == "nt":
-        # Best-effort ACL restriction on Windows: remove inheritance, grant the
-        # current user only. Reported, not swallowed: the comment here promised
-        # "failures are logged" above a bare `except: pass` and an unread exit
-        # code, so an inherited ACL on .env left no signal anywhere.
-        try:
-            import getpass
-            import subprocess as _subprocess
-            acl = _subprocess.run(
-                ["icacls", str(env_path), "/inheritance:r", "/grant:r",
-                 f"{getpass.getuser()}:F"],
-                check=False, capture_output=True, text=True,
-            )
-            if acl.returncode != 0:
-                print(f"WARNING: could not restrict ACLs on {env_path}: "
-                      f"{(acl.stderr or acl.stdout or '').strip()[:200]}",
-                      file=sys.stderr)
-        except OSError as e:
-            print(f"WARNING: could not restrict ACLs on {env_path}: {e}",
-                  file=sys.stderr)
-
-
-def _mask_secret(value: str) -> str:
-    """A display stub for `.setup/answers.json`. Keeps the last four and nothing else.
-
-    It kept `value[:10]` as well until 2026-08-23, so fourteen characters of
-    every real credential were persisted. `save_answers` chmods the file 0600
-    now; this paragraph claimed it had "no mode of its own", which described
-    the pre-2026-08-23 state as though it were current and would have misled
-    the next reader weighing whether the mask is still needed. `_display_value` is the only reader and it renders
-    `val[-4:]`, so the prefix served nobody; and a verified prefix plus suffix
-    lets whoever steals this file confirm a candidate key.
-    """
-    if len(value) <= 8:
-        return "****"
-    return "*" * 12 + value[-4:]
+        if not zone:
+            raise ValueError("empty")
+        ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError, TypeError, OSError):
+        raise SchemaError(f"{value!r} is not a time zone name (IANA, for example Europe/Berlin); "
+                          "nothing was written") from None
+    return env_var, zone
 
 
 def _log(workspace_root: Path, message: str) -> None:
@@ -698,25 +603,89 @@ def _resolve_record(name: str, described: str) -> Path:
     return _require_inside(data_root, target, described)
 
 
-def _answered_token_mapping(bank: list[dict], answers: dict) -> dict:
-    """Every `{TOKEN}` an answered placeholder or list question fills.
+def _answered_token_mapping(bank: list[dict], answers: dict, workspace_root: Path) -> dict:
+    """Every `{TOKEN}` a placeholder or list question fills, whatever its status.
 
     Applied to a rich record as it is rendered, so a record written after its
     placeholders were answered carries their values rather than the bare tokens.
+    Every placeholder and list question in the bank is mapped. Answered, a
+    placeholder maps to `_placeholder_text` of its value and a list to its items
+    joined by `_list_text`; skipped, pending or absent, either maps to `NOT_SET`,
+    so the record never shows its token. Rich and secret questions map nothing.
+
+    `{TIMEZONE}`, when no question maps it, is the installer's intake answer
+    HEADING_OS_TZ read from the workspace's own `.env` (never the process
+    environment), else `UTC` (HOS-312: the wizard no longer asks for it).
     """
     mapping: dict = {}
     for q in bank:
+        if q["type"] not in ("list", "placeholder"):
+            continue
         entry = answers.get(q["id"]) or {}
         if entry.get("status") != "answered":
-            continue
-        if q["type"] == "placeholder" and isinstance(entry.get("value"), str):
-            mapping[q["target"]["placeholder"]] = entry["value"]
-        elif q["type"] == "list" and isinstance(entry.get("value"), list):
-            slots = q["target"]["placeholders"]
-            mapping.update({ph: (entry["value"][i] if i < len(entry["value"]) else "")
-                            for i, ph in enumerate(slots)})
+            mapping[q["target"]["placeholder"]] = NOT_SET
+        elif q["type"] == "list":
+            mapping[q["target"]["placeholder"]] = _list_text(entry.get("value"))
+        else:
+            mapping[q["target"]["placeholder"]] = _placeholder_text(entry.get("value"))
+    mapping.setdefault("{TIMEZONE}", install_answers.timezone(workspace_root, environ=False) or "UTC")
     _reject_token_values(mapping)
     return mapping
+
+
+#: What a list or placeholder question's token reads when the question is
+#: skipped, unanswered or empty, in place of the bare `{TOKEN}` (HOS-323,
+#: HOS-327).
+NOT_SET = "not set yet"
+
+
+def _list_text(value) -> str:
+    """A list answer as one line: items stripped, empties dropped, `", "` joined."""
+    if not isinstance(value, list):
+        return NOT_SET
+    items = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    return ", ".join(items) if items else NOT_SET
+
+
+def _placeholder_text(value) -> str:
+    """A placeholder answer stripped, or `NOT_SET` when empty or not a string."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return NOT_SET
+
+
+def _rerender_records(workspace_root: Path, q: dict, answers: dict,
+                      bank: list[dict]) -> tuple[int, set]:
+    """Re-render every answered rich record a list or placeholder question's `files` name.
+
+    A rendered record no longer holds the list's token once filled, so a later
+    list answer or skip could not reach it by substitution; rendering it again
+    from its template can. Returns (records written, every record path rendered,
+    written or already equal).
+    """
+    written = 0
+    rendered_paths: set = set()
+    for rq in bank:
+        if rq["type"] != "rich" or rq["target"]["output"] not in q["target"]["files"]:
+            continue
+        rentry = answers.get(rq["id"]) or {}
+        if rentry.get("status") != "answered":
+            continue
+        for _, out_path, rendered in _plan_question(workspace_root, rq, rentry,
+                                                    answers, bank):
+            rendered_paths.add(out_path)
+            if out_path.exists() and _text_or_none(out_path) == rendered:
+                continue
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+            # See `_apply_placeholder_substitution` for why the finally is here.
+            try:
+                tmp.write_text(rendered, encoding="utf-8")
+                os.replace(tmp, out_path)
+            finally:
+                tmp.unlink(missing_ok=True)
+            written += 1
+    return written, rendered_paths
 
 
 def _substitute(text: str, mapping: dict) -> str:
@@ -1102,6 +1071,8 @@ def _display_value(q: dict, entry: dict) -> str:
         return "(skipped)"
     if q["type"] == "secret":
         val = entry.get("value", "")
+        if not val and entry.get("env_written"):
+            return "[set in .env]"
         if len(val) > 4:
             return "************" + val[-4:]
         return "****"
@@ -1157,28 +1128,58 @@ def cmd_question(args) -> int:
     answers = state.setdefault("answers", {})
 
     if q["type"] == "placeholder":
-        if getattr(args, "check", False):
+        check = getattr(args, "check", False)
+        if check and not args.value_from_stdin:
             print(json.dumps({"dry_run": True, "applied": []}))
             return EXIT_OK
         value = payload.get("value", "")
         if not isinstance(value, str):
             print("ERROR: placeholder value must be a string", file=sys.stderr)
             return EXIT_SCHEMA_ERROR
-        files_changed = 0
         try:
+            env_write = _placeholder_env(q, value)
+        except SchemaError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return EXIT_SCHEMA_ERROR
+        if env_write:
+            value = env_write[1]  # the validated, stripped zone fills the placeholder too
+        env_path = workspace_root / ".env"
+        if check:
+            dry = {"dry_run": True, "applied": []}
+            if env_write:
+                dry["env"] = f"would write {env_write[0]}={env_write[1]} to {env_path}"
+            print(json.dumps(dry))
+            return EXIT_OK
+        if env_write:
+            try:
+                upsert_env_value(env_path, *env_write)
+            except ValueError as e:
+                print(f"ERROR: {env_write[0]} not written to {env_path}: {e}", file=sys.stderr)
+                return EXIT_FILE_WRITE_ERROR
+        answers[q["id"]] = {"value": value, "status": "answered",
+                             "answered_at": _now_iso()}
+        mapping = {q["target"]["placeholder"]: _placeholder_text(value)}
+        try:
+            # A rendered record no longer holds the token: re-render it so a
+            # later answer still reaches it (HOS-327).
+            files_changed, rendered_paths = _rerender_records(
+                workspace_root, q, answers, bank)
             matching, files_skipped = _collect_matching_files(workspace_root, q["target"]["files"])
             for path in matching:
-                if _apply_placeholder_substitution(path, {q["target"]["placeholder"]: value}):
+                if path in rendered_paths:
+                    continue
+                if _apply_placeholder_substitution(path, mapping):
                     files_changed += 1
         except SchemaError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return EXIT_SCHEMA_ERROR
-        answers[q["id"]] = {"value": value, "status": "answered",
-                             "answered_at": _now_iso()}
         state["applied_at"] = _now_iso()
         save_answers(workspace_root, state)
-        print(json.dumps({"files_updated": files_changed, "files_skipped": files_skipped,
-                          "errors": [], "applied": [q["id"]]}))
+        done = {"files_updated": files_changed, "files_skipped": files_skipped,
+                "errors": [], "applied": [q["id"]]}
+        if env_write:
+            done["env_updated"] = [env_write[0]]
+        print(json.dumps(done))
         return EXIT_OK
 
     if q["type"] == "list":
@@ -1189,32 +1190,27 @@ def cmd_question(args) -> int:
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             print("ERROR: list value must be an array of strings", file=sys.stderr)
             return EXIT_SCHEMA_ERROR
-        placeholders = q["target"]["placeholders"]
-        warnings = []
-        if len(value) > len(placeholders):
-            warnings.append(
-                f"list overflow: {len(value)} items given, only {len(placeholders)} slots - extras dropped"
-            )
-            value = value[:len(placeholders)]
-        mapping = {}
-        for i, ph in enumerate(placeholders):
-            mapping[ph] = value[i] if i < len(value) else ""
-        files_changed = 0
+        value = [v.strip() for v in value if v.strip()]
+        answers[q["id"]] = {"value": value, "status": "answered",
+                             "answered_at": _now_iso()}
+        mapping = {q["target"]["placeholder"]: _list_text(value)}
         try:
+            files_changed, rendered_paths = _rerender_records(
+                workspace_root, q, answers, bank)
             matching, files_skipped = _collect_matching_files(workspace_root, q["target"]["files"])
             for path in matching:
+                if path in rendered_paths:
+                    continue
                 if _apply_placeholder_substitution(path, mapping):
                     files_changed += 1
         except SchemaError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return EXIT_SCHEMA_ERROR
-        answers[q["id"]] = {"value": value, "status": "answered",
-                             "answered_at": _now_iso()}
         state["applied_at"] = _now_iso()
         save_answers(workspace_root, state)
         print(json.dumps({
             "files_updated": files_changed, "files_skipped": files_skipped,
-            "errors": [], "warnings": warnings,
+            "errors": [], "warnings": [],
             "applied": [q["id"]],
         }))
         return EXIT_OK
@@ -1260,7 +1256,7 @@ def cmd_question(args) -> int:
         ctx[f"{q['id']}_draft"] = draft
 
         rendered = _substitute(render_template(template_text, ctx),
-                               _answered_token_mapping(bank, answers))
+                               _answered_token_mapping(bank, answers, workspace_root))
 
         out_rel = q["target"]["output"]
         out_path = _resolve_output_path(workspace_root, out_rel)
@@ -1292,32 +1288,43 @@ def cmd_question(args) -> int:
         return EXIT_OK
 
     if q["type"] == "secret":
-        if getattr(args, "check", False):
-            print(json.dumps({"dry_run": True, "applied": []}))
-            return EXIT_OK
-        value = payload.get("value", "")
-        if not isinstance(value, str) or not value:
-            print("ERROR: secret value must be a non-empty string", file=sys.stderr)
+        # A secret never passes through this script, and so never through the
+        # chat that drives it (HOS-302, 2026-11-01). Until then the wizard asked
+        # for the key in the conversation and piped it here as `{"value": ...}`,
+        # which put the credential into the session transcript. The executive
+        # now types it into a hidden terminal prompt, `scripts/heading-secrets.py
+        # set NAME`, and this branch only confirms the name is set in `.env`.
+        if "value" in payload:
+            print("ERROR: a secret is never passed to the wizard. Run "
+                  f"`.venv/bin/python scripts/heading-secrets.py set "
+                  f"{q['target']['env_var']}` in a terminal, then answer with "
+                  '{"env_set": true}.', file=sys.stderr)
+            return EXIT_SCHEMA_ERROR
+        if payload.get("env_set") is not True:
+            print('ERROR: a secret answer is {"env_set": true}, sent after '
+                  "heading-secrets.py has set the name", file=sys.stderr)
             return EXIT_SCHEMA_ERROR
         env_var = q["target"]["env_var"]
         if not _is_valid_env_var_name(env_var):
             print(f"ERROR: invalid env_var name {env_var!r}", file=sys.stderr)
             return EXIT_SCHEMA_ERROR
         env_path = workspace_root / ".env"
-        try:
-            _upsert_env_line(env_path, env_var, value)
-        except OSError as e:
-            print(f"ERROR: cannot write .env: {e}", file=sys.stderr)
-            return EXIT_FILE_WRITE_ERROR
-        masked = _mask_secret(value)
+        if not read_env_value(env_path, env_var, default=""):
+            print(f"ERROR: {env_var} is not set in {env_path}. Run "
+                  f"`.venv/bin/python scripts/heading-secrets.py set {env_var}` "
+                  "in a terminal first.", file=sys.stderr)
+            return EXIT_SCHEMA_ERROR
+        if getattr(args, "check", False):
+            print(json.dumps({"dry_run": True, "applied": []}))
+            return EXIT_OK
         answers[q["id"]] = {
-            "value": masked, "env_written": True,
+            "env_written": True,
             "status": "answered", "answered_at": _now_iso(),
         }
         state["applied_at"] = _now_iso()
         save_answers(workspace_root, state)
-        _log(workspace_root, f"{env_var}: [written, len={len(value)}]")
-        print(json.dumps({"files_updated": 1, "errors": [], "applied": [q["id"]]}))
+        _log(workspace_root, f"{env_var}: [confirmed set in .env]")
+        print(json.dumps({"files_updated": 0, "errors": [], "applied": [q["id"]]}))
         return EXIT_OK
 
     # Defensive fallback: load_questions validates type is in VALID_TYPES, so
@@ -1334,17 +1341,29 @@ def cmd_skip(args) -> int:
     except SchemaError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return EXIT_SCHEMA_ERROR
-    if not any(q["id"] == args.skip for q in bank):
+    q = next((x for x in bank if x["id"] == args.skip), None)
+    if q is None:
         print(f"ERROR: unknown question id {args.skip!r}", file=sys.stderr)
         return EXIT_UNKNOWN_ID
     state = load_answers(workspace_root)
-    state.setdefault("answers", {})[args.skip] = {
+    answers = state.setdefault("answers", {})
+    answers[args.skip] = {
         "value": None,
         "status": "skipped",
         "skipped_at": _now_iso(),
     }
+    result = {"applied": [args.skip], "status": "skipped"}
+    if q["type"] in ("list", "placeholder"):
+        # A rendered record holds the question's text, not its token: re-render
+        # it so the skip reads `NOT_SET` there too (HOS-323, HOS-327).
+        try:
+            result["files_updated"], _ = _rerender_records(
+                workspace_root, q, answers, bank)
+        except SchemaError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return EXIT_SCHEMA_ERROR
     save_answers(workspace_root, state)
-    print(json.dumps({"applied": [args.skip], "status": "skipped"}))
+    print(json.dumps(result))
     return EXIT_OK
 
 
@@ -1371,10 +1390,23 @@ def cmd_all(args) -> int:
     #   ("write", path, new_bytes)     -- for rich questions (self-contained rendered content)
     journal: list[tuple] = []
     warnings = []
+    env_writes: list[tuple[str, str]] = []
+    refused: list[str] = []
     for q in visible:
         entry = answers.get(q["id"])
         if not entry or entry.get("status") != "answered":
             continue
+        # A placeholder answer that also writes `.env` is validated first; a
+        # refused one is skipped whole and reported, the others apply as before.
+        try:
+            env_write = _placeholder_env(q, entry.get("value"))
+        except SchemaError as e:
+            print(f"ERROR: {q['id']!r} refused: {e}", file=sys.stderr)
+            refused.append(q["id"])
+            continue
+        if env_write:
+            env_writes.append(env_write)
+            entry = {**entry, "value": env_write[1]}
         try:
             plans = _plan_question(workspace_root, q, entry, answers, bank)
             journal.extend(plans)
@@ -1432,8 +1464,11 @@ def cmd_all(args) -> int:
                           # is printed whole; everything else stays relative.
                           "planned": [str(p.relative_to(workspace_root))
                                       if p.is_relative_to(workspace_root) else str(p)
-                                      for p, _ in merged_journal]}))
-        return EXIT_OK
+                                      for p, _ in merged_journal],
+                          "env": [f"would write {k}={v} to {workspace_root / '.env'}"
+                                  for k, v in env_writes],
+                          "refused": refused}))
+        return EXIT_SCHEMA_ERROR if refused else EXIT_OK
 
     files_changed = 0
     for path, new_bytes in merged_journal:
@@ -1458,10 +1493,22 @@ def cmd_all(args) -> int:
             }))
             return EXIT_FILE_WRITE_ERROR
 
+    env_path = workspace_root / ".env"
+    for name, value in env_writes:
+        try:
+            upsert_env_value(env_path, name, value)
+        except ValueError as e:
+            print(f"ERROR: {name} not written to {env_path}: {e}", file=sys.stderr)
+            print(json.dumps({"files_updated": files_changed,
+                              "errors": [{"file": str(env_path), "reason": str(e)}],
+                              "warnings": warnings, "refused": refused}))
+            return EXIT_FILE_WRITE_ERROR
+
     state["applied_at"] = _now_iso()
     save_answers(workspace_root, state)
-    print(json.dumps({"files_updated": files_changed, "errors": [], "warnings": warnings}))
-    return EXIT_OK
+    print(json.dumps({"files_updated": files_changed, "errors": [], "warnings": warnings,
+                      "env_updated": [k for k, _ in env_writes], "refused": refused}))
+    return EXIT_SCHEMA_ERROR if refused else EXIT_OK
 
 
 # Shared warnings list populated during --all planning. cmd_all consumes and emits.
@@ -1482,15 +1529,11 @@ def _plan_question(workspace_root, q, entry, all_answers, bank):
     """
     plans = []
     if q["type"] == "placeholder":
-        value = entry["value"]
-        mapping = {q["target"]["placeholder"]: value}
+        mapping = {q["target"]["placeholder"]: _placeholder_text(entry["value"])}
         for path in _iter_matching_files(workspace_root, q["target"]["files"]):
             plans.append(("subst", path, mapping))
     elif q["type"] == "list":
-        placeholders = q["target"]["placeholders"]
-        value = entry["value"] or []
-        value = value[:len(placeholders)]
-        mapping = {ph: (value[i] if i < len(value) else "") for i, ph in enumerate(placeholders)}
+        mapping = {q["target"]["placeholder"]: _list_text(entry["value"])}
         for path in _iter_matching_files(workspace_root, q["target"]["files"]):
             plans.append(("subst", path, mapping))
     elif q["type"] == "rich":
@@ -1498,7 +1541,7 @@ def _plan_question(workspace_root, q, entry, all_answers, bank):
             resolve_read_path(workspace_root, q["target"]["template"]))
         ctx = _template_context(all_answers)
         rendered = _substitute(render_template(template_text, ctx),
-                               _answered_token_mapping(bank, all_answers))
+                               _answered_token_mapping(bank, all_answers, workspace_root))
         out_rel = q["target"]["output"]
         # `_resolve_output_path`, not a bare join. `cmd_question` routed the
         # single-question path through the guard and this planning path did
@@ -1520,7 +1563,7 @@ def _plan_question(workspace_root, q, entry, all_answers, bank):
         env_path = workspace_root / ".env"
         if entry.get("env_written"):
             env_content = _read_text(env_path) if env_path.exists() else ""
-            # Key-anchored, like the writer `_upsert_env_line`. A substring
+            # Key-anchored, like the writer `upsert_env_value`. A substring
             # test let `OTHER_API_KEY=x` satisfy a check for `API_KEY`, so the
             # "marked written but missing" warning never fired. It reads through
             # the shared grammar so this check, the writer, and `load_env` agree

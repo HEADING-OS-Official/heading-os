@@ -15,4 +15,4 @@ This repository carries no personal data and, apart from the authors credited ab
 
 Nothing in this repository is legal, financial, tax, security or other professional advice.
 
-Third-party software: HEADING OS installs its Python dependencies from PyPI through uv (see pyproject.toml and uv.lock); each keeps its own license. The optional tools the guides in docs/ describe (Hindsight, Herdr, Lific, CLIProxyAPI, and others) are separate projects under their own licenses and are not distributed here.
+Third-party software: HEADING OS installs its Python dependencies from PyPI through uv (see pyproject.toml and uv.lock); each keeps its own license. The modules the guides in docs/ describe (Hindsight, Herdr, Lific, CLIProxyAPI, and others) are separate projects under their own licenses and are not distributed here.

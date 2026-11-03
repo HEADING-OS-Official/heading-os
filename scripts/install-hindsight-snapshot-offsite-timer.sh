@@ -15,7 +15,7 @@
 # Without them every fire fails and says so.
 #
 # Operator decision: 2026-10-07, HOS-210: Google Drive may hold it, a script makes the
-# daily copy, to his personal Gmail (translated). Installing it is HELM's, after the merge.
+# daily copy, to his personal Gmail. Installing it is HELM's, after the merge.
 #
 # For unattended boot:  loginctl enable-linger "$USER"  (done automatically below)
 

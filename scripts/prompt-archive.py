@@ -142,10 +142,9 @@ def entries(session: str | None = None) -> list[Path]:
     """Every archived prompt, oldest first; one session's when named.
 
     `None` means no filter. An EMPTY STRING is refused rather than treated as
-    None, the operator's requirement of 2026-09-20: *"it matters that a handoff takes
-    only the prompts of its own session, not everything lying on disk"*
-    (translated). A caller with no session gets an error, never another session's
-    prompts.
+    None, the operator's requirement of 2026-09-20: *"it matters that a handoff
+    takes only the prompts of its own session, not everything lying on disk"*.
+    A caller with no session gets an error, never another session's prompts.
     """
     if session is not None and not session.strip():
         raise PromptArchiveError(
@@ -229,8 +228,7 @@ def save(original: str, expanded: str, *, slug: str,
     # verbatim half confirms the ones it names, and the rest are dropped.
     state = dossier.session_state(session)
     confirmed, dropped = dossier.settle_plan(state, original)
-    tasks = dossier.session_tasks(state)
-    tasks += [t for t in confirmed if t not in tasks]
+    tasks = dossier.record_ids(original + "\n" + expanded)
     rel_path = dossier.rel(path)
     carried = "".join(f"\n{dossier.dropped_line(t, rel_path)}" for t in dropped)
 

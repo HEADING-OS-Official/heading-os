@@ -387,22 +387,56 @@ def transcripts(project_dir: Path) -> list[Path]:
         return []
 
 
-def carries(paths: list[Path], token: str) -> bool:
-    """Whether any of those transcripts contains `token`."""
+def transcript_sizes(projects_root: Path) -> dict[Path, int]:
+    """The byte size of every transcript under `projects_root`, taken before a send.
+
+    For `carries(..., since=)`: a bare relayed word (`scripts/herdr-relay.py`)
+    carries no unique id, and the same word already sits in older records of the
+    same transcripts (MEASURED 2026-11-01: `"content":"commit"` in three yards'
+    transcripts), so only the bytes written after the send can prove delivery.
+    """
+    sizes: dict[Path, int] = {}
+    try:
+        directories = [p for p in projects_root.iterdir() if p.is_dir()]
+    except OSError:
+        return sizes
+    for directory in directories:
+        for path in transcripts(directory):
+            try:
+                sizes[path] = path.stat().st_size
+            except OSError:
+                continue
+    return sizes
+
+
+def carries(paths: list[Path], token: str,
+            since: dict[Path, int] | None = None) -> bool:
+    """Whether any of those transcripts contains `token`.
+
+    With `since`, only the bytes after each file's recorded size are read; a
+    file absent from it is new and read whole.
+    """
     needle = token.encode("utf-8")
     for path in paths:
         try:
             with path.open("rb") as handle:
+                if since is not None:
+                    handle.seek(since.get(path, 0))
+                # The last len(needle)-1 bytes ride into the next read, so a
+                # token split across two reads is still found (HOS-296 review).
+                tail = b""
                 while chunk := handle.read(1 << 20):
-                    if needle in chunk:
+                    window = tail + chunk
+                    if needle in window:
                         return True
+                    tail = window[-(len(needle) - 1):] if len(needle) > 1 else b""
         except OSError:
             continue
     return False
 
 
-def landed_elsewhere(projects_root: Path, token: str,
-                     target: Path) -> list[str]:
+def landed_elsewhere(projects_root: Path, token: str, target: Path,
+                     since: dict[Path, int] | None = None) -> list[str]:
     """Every project directory OTHER than the target whose transcript has it.
 
     This is the half that turned a silent misdelivery into a named one: on
@@ -417,28 +451,43 @@ def landed_elsewhere(projects_root: Path, token: str,
     for directory in candidates:
         if directory == target:
             continue
-        if carries(transcripts(directory), token):
+        if carries(transcripts(directory), token, since):
             found.append(directory.name)
     return found
 
 
 def verify_delivery(target: Path, token: str, projects_root: Path,
-                    timeout: float = DELIVERY_TIMEOUT) -> int:
+                    timeout: float = DELIVERY_TIMEOUT,
+                    since: dict[Path, int] | None = None,
+                    session: str | None = None) -> int:
     """Poll the ADDRESSED session's own transcript for the brief's id.
 
     Returns 0 when the text arrived there. Non-zero otherwise, having said where
-    it went if it can find out.
+    it went if it can find out. `since` (from `transcript_sizes`, taken before
+    the send) limits every search to what was written after it. `session`
+    limits the target to that one session's `<session>.jsonl`: a token that is
+    not unique (a bare relayed word) could otherwise be matched by another
+    session sharing the checkout.
     """
+    def own() -> list[Path]:
+        # Re-listed on every poll when no session is named: the receiving
+        # session may create its transcript after polling starts, and a file
+        # first seen here is absent from `since`, so it is read from offset 0.
+        return [target / f"{session}.jsonl"] if session else transcripts(target)
+
     deadline = time.monotonic() + timeout
     while True:
-        if carries(transcripts(target), token):
+        if carries(own(), token, since):
             print(f"{GREEN}Delivery verified in {target.name}.{RESET}")
             return 0
         if time.monotonic() >= deadline:
             break
         time.sleep(DELIVERY_POLL)
 
-    strays = landed_elsewhere(projects_root, token, target)
+    strays = landed_elsewhere(projects_root, token, target, since)
+    if session and carries([p for p in transcripts(target) if p not in own()],
+                           token, since):
+        strays.insert(0, f"{target.name} (another session)")
     print(f"{RED}herdr-brief: DELIVERY NOT VERIFIED after {timeout:.0f}s.{RESET}",
           file=sys.stderr)
     print(f"  The brief does not appear in the transcript of the workspace it "

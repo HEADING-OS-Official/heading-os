@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Pin an item verbatim for this session: "закрепи: ..." or `/pin ...`.
 
+Russian on purpose: the summary line names the Russian pin trigger the operator types.
+
 A pin is a sentence the operator wants carried word for word across compaction
 and /clear. It is appended to this session's pins file in the handoff runtime
 state, beside the session's pointer pair, and from there it reaches two

@@ -20,7 +20,7 @@ Assistant:  Previous session handoff, generated 2026-11-03 18:40. Next: finish t
             What are we working on today?
 ```
 
-**What it needs.** Your records in the data repository. Panels for optional parts (Hindsight, Lific, the mail and calendar sync) stay quiet or report a problem when those parts are not set up; see `HINDSIGHT.md` and `LIFIC.md`. The session hooks must be armed by `bash scripts/setup-platform.sh`, as `INSTALL.md` shows; the first panel tells you if they are not.
+**What it needs.** Your records in the data repository. Panels for the modules (Hindsight, Lific, the mail and calendar sync) stay quiet or report a problem when those modules are not set up; see `HINDSIGHT.md` and `LIFIC.md`. The session hooks must be armed by `bash scripts/setup-platform.sh`, as `INSTALL.md` shows; the first panel tells you if they are not.
 
 **When not to use it.** In the middle of a session, to ask what comes next, use `/next`. For the daily one-page briefing alone, use `/dashboard`.
 
@@ -103,7 +103,7 @@ Assistant:  Continuity: 2 of 3 priorities done; the Northwind Logistics proposal
             Saved: 2026-11-02-weekly-review.md under `weekly-reviews`. 3 context files need refreshing; want me to draft updates?
 ```
 
-**What it needs.** Your current-data, pipeline, strategy, people and operational-state records, plus the LinkedIn and newsletter archives if you keep them. The `weekly-reviews` location must exist; if it does not, the skill stops and says so. Hindsight is optional (`HINDSIGHT.md`).
+**What it needs.** Your current-data, pipeline, strategy, people and operational-state records, plus the LinkedIn and newsletter archives if you keep them. The `weekly-reviews` location must exist; if it does not, the skill stops and says so. Hindsight (`HINDSIGHT.md`) supplies the standing rules that came up that week.
 
 **When not to use it.** For the daily briefing, use `/dashboard`. For overdue actions only, use `/radar`.
 

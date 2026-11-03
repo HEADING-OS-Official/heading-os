@@ -142,7 +142,7 @@ def request_reset(kind: str) -> None:
         state["reset_requested_kind"] = kind
 
 
-def _sealed(text: str, paths: dict) -> tuple[str, str, str, list[str]]:
+def _sealed(text: str, paths: dict, tasks: list[str]) -> tuple[str, str, str, list[str]]:
     """`text` with the script-owned header lines and the pins section. Idempotent.
 
     `Master instruction:` and `Compacted before this handoff:` go under the
@@ -156,7 +156,7 @@ def _sealed(text: str, paths: dict) -> tuple[str, str, str, list[str]]:
     compacted_line = f"{CP.COMPACTED_PREFIX} {paths['compacted']}"
     state = CP.read_json(CP.state_path(CP.project_root(), paths["session_slug"]))
     unattended_line = CP.unattended_line(state)
-    task_line = dossier.task_header(dossier.session_tasks(state))
+    task_line = dossier.task_header(tasks)
     text = CP.set_header_lines(text, [master_line, compacted_line, unattended_line])
     # Not through `set_header_lines`, which drops a matching line ANYWHERE in the
     # body: a handoff may well say "Task: ..." in its own prose.
@@ -185,8 +185,12 @@ def seal(archive: str) -> int:
         print(f"checkpoint-paths: refused. {target} does not exist; write the "
               f"archive first, then seal it.", file=sys.stderr)
         return 1
+    text = target.read_text(encoding="utf-8")
+    scanned = text
+    for heading in SCRIPT_SECTIONS + (CP.PINS_HEADING,):
+        scanned = CP.drop_section(scanned, heading)
     text, master_line, compacted_line, pins = _sealed(
-        target.read_text(encoding="utf-8"), paths)
+        text, paths, dossier.record_ids(scanned))
     CP.write_text_atomic(target, text)
     missing = []
     for key in ("summary_pointer", "prompt_pointer",
@@ -239,7 +243,7 @@ def write(kind: str, text: str) -> int:
     body = text
     for heading in SCRIPT_SECTIONS:
         body = CP.drop_section(body, heading)
-    tasks = dossier.session_tasks(state)
+    tasks = dossier.record_ids(CP.drop_section(body, CP.PINS_HEADING))
     owned = (f"## Continuation prompt\n\n{CP.continuation_prompt(archive_ref)}\n"
              f"{CP.prompts_section(prompts, refusal)}")
     others = CP.task_prompts_section(tasks, prompts, project, CP.prompt_archive_tool(root))
@@ -251,7 +255,7 @@ def write(kind: str, text: str) -> int:
         body = "\n".join(lines) + "\n\n" + owned
     else:
         body = "\n".join(lines[:note]).rstrip("\n") + "\n\n" + owned + "\n" + "\n".join(lines[note:]) + "\n"
-    body, master_line, compacted_line, pins = _sealed(body, paths)
+    body, master_line, compacted_line, pins = _sealed(body, paths, tasks)
 
     archive = _resolve(paths, "archive")
     CP.write_text_atomic(archive, body)

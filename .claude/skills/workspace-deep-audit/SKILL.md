@@ -231,7 +231,7 @@ Append a log entry to the active audit thread (or open one if none exists) at `{
 
 ## Voice Rules
 
-- Bilingual Russian/English mix is acceptable when matching v1/v2 precedent (audit-register Russian works alongside English technical terms)
+- Write the report in the operator's working language; the template is English.
 - Direct, evidence-backed claims only. Every claim cites a count, a commit hash, a Context7-validated pin, or a live-run output.
 - Explicit before/after deltas in `--vs` mode. Never paper over a regression.
 - No marketing language. Engineering audit register: "Workspace v2 added 2 PreToolUse checks. State is now 7 checks." Not "Workspace v2 substantially enhances the workspace's security posture with cutting-edge guardrails."

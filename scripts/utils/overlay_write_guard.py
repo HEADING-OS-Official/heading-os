@@ -257,16 +257,42 @@ def _structural_overlay_root():
     this guard drives it against a pretend overlay, so it never saw the real
     depth either. Count the parents by hand when you move this file.
 
-    Only `.heading-os-data` is returned. Other repositories beside it are not
-    watched but refused outright by `_foreign_roots()` (2026-09-23), because no
-    write from this workspace into somebody else's tree is allowed at all.
+    Only the data repository is returned, by the one sibling rule
+    `sibling_data_root()` in `paths.py` (HOS-313): `.heading-os-data`, or `data`
+    beside a main clone named `engine` when it carries the `.schema-version`
+    stamp. Other repositories beside it are not watched but refused outright by
+    `_foreign_roots()` (2026-09-23), because no write from this workspace into
+    somebody else's tree is allowed at all.
     """
     engine = _main_clone_root(Path(__file__).resolve().parents[2])
-    sibling = engine.parent / ".heading-os-data"
     try:
-        return sibling.resolve() if sibling.is_dir() else None
-    except OSError:
+        return _shared_paths().sibling_data_root(engine)
+    except (OSError, ValueError) as exc:
+        # ValueError too: the `.pth` that arms this swallows anything that
+        # escapes, so an unforeseen parse error must at least be said here.
+        print(f"overlay-write-guard: no data repository resolved beside {engine} "
+              f"({type(exc).__name__}: {exc}); the overlay is not watched",
+              file=sys.stderr)
         return None
+
+
+def _shared_paths():
+    """`scripts/utils/paths.py`, loaded BY PATH, for the same reason and in the
+    same way as `_shared_exclusions` above: the `.pth` imports this module during
+    `site.py`, and binding the name `scripts` there breaks every venv process.
+    `paths.py` imports only the standard library, so loading it here is safe.
+    """
+    import importlib.util
+
+    key = "_heading_os_paths"
+    module = sys.modules.get("scripts.utils.paths") or sys.modules.get(key)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            key, Path(__file__).resolve().parent / "paths.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[key] = module   # only once loaded, so a failure is retried
+    return module
 
 
 def _main_clone_root(engine):
@@ -423,7 +449,7 @@ def _foreign_roots():
     trees that are not his to change. Operator instruction 2026-09-23, on the
     work then running: the two repositories named below are the whole subject,
     "no other repository (not corporate, not other executives') is
-    concerned, and nothing there may change" (translated). That sentence is the one this
+    concerned, and nothing there may change". That sentence is the one this
     function exists to turn into a mechanism, because a prohibition given as
     words is a guard nobody has seen refuse.
 

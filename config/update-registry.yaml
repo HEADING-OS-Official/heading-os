@@ -427,6 +427,19 @@ components:
       via: github_release
       repo: vectorize-io/hindsight
 
+  hindsight-control-plane:
+    # The Hindsight web console (HOS-312), unpacked from its npm package by
+    # scripts/utils/install_hindsight_console.py; exactly one version folder exists.
+    tier: observed
+    display: Hindsight web console
+    current:
+      via: shell
+      cmd: "cat $HOME/.local/share/heading-os/hindsight-control-plane/*/package.json"
+      regex: '"version":\s*"([^"]+)"'
+    latest:
+      via: npm
+      package: "@vectorize-io/hindsight-control-plane"
+
   hindsight-coding-agents:
     # The Claude Code plugin behind the memory banner. Current is its own
     # package.json, which also names the npm package and the repository.

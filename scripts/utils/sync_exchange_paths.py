@@ -25,6 +25,7 @@ stopped BEFORE the code that reads the new address is deployed, then started.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -106,4 +107,85 @@ def last_job_ok(log: Path) -> datetime | None:
     return last_ts
 
 
-__all__ = ["DaemonFiles", "daemon_files", "last_job_ok"]
+# The two failure records `JobDispatcher.dispatch` writes in
+# `scripts/sync-exchange-daemon.py` (read 2026-11-01):
+#   "job-fail sync-exchange exit=%d stderr=%s"   the job's stderr tail, may span lines
+#   "job-fail sync-exchange (exception)"         followed by a traceback
+#   "job-timeout sync-exchange after %ds"
+_JOB_FAIL = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ \w+ (?:\[[0-9a-f]+\] )?"
+    r"(job-fail|job-timeout) sync-exchange(.*)$"
+)
+_RECORD_START = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+ ")
+_REASON_MAX = 200
+
+
+def _failure_reason(kind: str, first: str, continuation: list[str]) -> str:
+    """One line a reader can act on, from one failure record.
+
+    The last non-empty line of the record is the one that says what broke: the
+    final line of a traceback, or the `[ERROR]`/JSON line `optdeps.require`
+    prints for a missing extra, which names the `uv sync --extra` command.
+    """
+    if kind == "job-timeout":
+        return f"timed out {first.strip()}".strip()
+    head = first.split("stderr=", 1)[1] if "stderr=" in first else first
+    lines = [ln.strip() for ln in [head, *continuation] if ln.strip()]
+    reason = lines[-1] if lines else first.strip()
+    if reason.startswith("{"):
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            reason = str(json.loads(reason).get("error") or reason)
+    if len(reason) > _REASON_MAX:
+        reason = reason[: _REASON_MAX - 3] + "..."
+    return reason
+
+
+def last_job_fail(log: Path) -> tuple[datetime, str] | None:
+    """The newest failed Exchange sync logged AFTER the last success, and why.
+
+    None when the newest job outcome in the log is a success, or no failure is
+    logged. "After" is LOG ORDER, never a timestamp comparison: the log stamps
+    whole seconds plus milliseconds the parsers drop, so a job-ok and a later
+    job-fail in the same second compare equal by time (HOS-294 review). Same
+    files, newest first, and zone as `last_job_ok`. A failure record may run
+    over several lines (a stderr tail or a traceback), so the lines after it up
+    to the next timestamped record belong to it.
+    """
+    tz = datetime.now().astimezone().tzinfo
+    for path in [log] + [log.with_name(f"{log.name}.{n}") for n in (1, 2, 3)]:
+        if not path.exists():
+            continue
+        # (stamp, kind, rest, continuation); kind "job-ok" marks a success.
+        records: list[tuple[str, str, str, list[str]]] = []
+        try:
+            with path.open(encoding="utf-8", errors="replace") as f:
+                current: tuple[str, str, str, list[str]] | None = None
+                for line in f:
+                    m = _JOB_FAIL.match(line)
+                    if m:
+                        current = (m.group(1), m.group(2), m.group(3), [])
+                        records.append(current)
+                    elif (ok := _JOB_OK.match(line)):
+                        current = None
+                        records.append((ok.group(1), "job-ok", "", []))
+                    elif _RECORD_START.match(line):
+                        current = None
+                    elif current is not None:
+                        current[3].append(line)
+        except OSError:
+            continue
+        for stamp, kind, first, cont in reversed(records):
+            try:
+                ts = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+            except ValueError:
+                # A truncated write at a rotating log's tail: `last_job_ok`
+                # skips it too, so skip it here and keep looking.
+                continue
+            if kind == "job-ok":
+                return None
+            return ts, _failure_reason(kind, first, cont)
+        # Neither outcome in this file: an older rotation may hold one.
+    return None
+
+
+__all__ = ["DaemonFiles", "daemon_files", "last_job_fail", "last_job_ok"]

@@ -2,6 +2,11 @@
   "_what": "Outbound call sites that deliberately do not send the workspace User-Agent (config/user-agent.txt). Read by scripts/check-user-agent.py, which refuses an entry that matches no site. Every entry says why; the operator's rule of 2026-09-27 is one value everywhere the workspace talks to the outside world, so an entry here must be a call that is NOT the outside world or one where the value would do harm.",
   "exemptions": [
     {
+      "path": "reference/install-agent.md",
+      "function": "HEADING-OS-Official/heading-os/<tag>/install.sh",
+      "reason": "The install runbook: bootstrap: the one-line download of the installer, before the engine exists, so config/user-agent.txt does not exist yet."
+    },
+    {
       "path": "scripts/browser.py",
       "function": "attach",
       "reason": "Attaches over CDP to the operator's own dedicated Brave. That browser already sends a real Chrome-family User-Agent with matching client hints; overriding only the string creates a mismatch that marks automation."
@@ -115,6 +120,26 @@
       "path": "scripts/server/cliproxy-update.py",
       "function": "local",
       "reason": "Runs standalone on the memory server; calls the proxy on loopback to verify an update, no third-party site."
+    },
+    {
+      "path": "official/overlay/install.sh",
+      "function": "command -v curl",
+      "reason": "Not a request: checks that curl is installed before the uv bootstrap."
+    },
+    {
+      "path": "official/overlay/install.sh",
+      "function": "astral.sh/uv",
+      "reason": "Bootstrap: installs uv before the engine is cloned, so config/user-agent.txt does not exist yet."
+    },
+    {
+      "path": "official/overlay/docs/INSTALL.md",
+      "function": "HEADING-OS-Official/heading-os/main/install.sh",
+      "reason": "The official install guide: bootstrap: the one-line download of the installer, before the engine exists, so config/user-agent.txt does not exist yet."
+    },
+    {
+      "path": "official/overlay/README.md",
+      "function": "HEADING-OS-Official/heading-os/main/install.sh",
+      "reason": "The official README: bootstrap: the one-line download of the installer, before the engine exists, so config/user-agent.txt does not exist yet."
     }
   ]
 }

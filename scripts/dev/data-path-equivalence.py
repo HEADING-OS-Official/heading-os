@@ -958,22 +958,22 @@ def cmd_plan(args: argparse.Namespace) -> int:
 #: is the shape this tool exists to catch.
 #:
 #: § 6, translated: "remove the live seam, the fallback to old addresses,
-#: the migration redirects and the wrappers no longer needed." Three of the seven ARE
-#: that fallback in the literal sense: each takes an address as the pre-migration
+#: the migration redirects and the wrappers no longer needed." Three of the
+#: seven ARE that fallback in the literal sense: each takes an address as the pre-migration
 #: tree spelled it and answers with the address the tree has now. When no
 #: pre-migration address is left, they answer nothing.
 FALLBACK_HELPERS = ("moved_home", "moved_file", "moved_homes")
 
 #: § 3, translated: "The engine must have one small mechanism for finding the
-#: repository roots and loading the registry." That mechanism is this one name, and § 3
-#: requires it to exist, so its 89 sites are not debt under any reading. The
+#: repository roots and loading the registry." That mechanism is this one
+#: name, and § 3 requires it to exist, so its 89 sites are not debt under any reading. The
 #: registry says where things are INSIDE the root; it cannot name the root.
 ROOT_MECHANISM = ("get_data_root",)
 
 #: The remainder. Each answers a data address without going through the
 #: registry, which § 4's "there must be no second implementation of the logic"
-#: argues against, and each is a candidate for § 6's "wrappers no longer needed". (translated) That
-#: was an open decision until the operator's word of 2026-09-25, "old way should
+#: argues against, and each is a candidate for § 6's "wrappers no longer
+#: needed". That was an open decision until the operator's word of 2026-09-25, "old way should
 #: go out and do not stay in the workspace", which puts them in § 6. The
 #: objection that had held it open was `get_runtime_dir` creating the store root
 #: at 0700, which `data_path` does not do and must not; it was answered the same

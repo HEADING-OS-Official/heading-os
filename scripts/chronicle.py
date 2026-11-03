@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""chronicle.py - the Conversation Chronicle (Хроника) builder.
+"""chronicle.py - the Conversation Chronicle builder.
 
 Reads past Claude Code session transcripts for THIS workspace and writes one
 short, dated "what this was about" entry per non-trivial conversation. Entries
@@ -15,6 +15,8 @@ history, and a negative `--limit` that truncated and said nothing. All three
 are fixed and the fixes are in the code below. Since the 2026-09-21 test-suite
 split nothing goes red if one of them returns, so they rest on whoever edits
 this file.
+
+Russian on purpose: the personal tag below is the word the Chronicle writes and /recall reads.
 
   chronicle-business -> indexed, recallable via /recall, ranked BELOW the brain
   chronicle-personal -> tagged "Личное", and since 2026-09-12 indexed too, as
@@ -201,6 +203,7 @@ TRIVIAL_TEXT_CHARS = 200
 
 DEFAULT_WINDOW_DAYS = 14  # default lookback when no marker exists
 
+# Russian on purpose: Russian keywords the personal pre-filter matches in transcripts.
 # Fail-toward-personal keyword pre-filter. A hit forces "personal" regardless of
 # what the model returns - the model can only ADD personal flags, never remove
 # one the keywords caught. STRONG markers only: proper nouns and terms from the
@@ -554,6 +557,7 @@ def dominant_language(body: str) -> str:
     cyrillic = latin = 0
     for char in body:
         lowered = char.lower()
+        # Russian on purpose: the Cyrillic letter range detects a Russian conversation.
         if "а" <= lowered <= "я" or lowered == "ё":
             cyrillic += 1
         elif "a" <= lowered <= "z":
@@ -569,6 +573,7 @@ def dominant_language(body: str) -> str:
     return "mixed"
 
 
+# Russian on purpose: a Russian conversation gets a Russian directive, so its entry is Russian.
 _DIRECTIVES = {
     "ru": "ВАЖНО: разговор шёл по-русски. Пиши все поля JSON по-русски. "
           "Ничего не переводи на английский.",
@@ -607,6 +612,7 @@ def opening_subject(body: str) -> str:
     return ""
 
 
+# Russian on purpose: a Russian conversation gets a Russian directive, so its entry is Russian.
 # The opening turn is transcript text, so it is quoted inside its own <opening>
 # tag with the same data-not-instructions note the <transcript> wrapper carries.
 # Until 2026-09-27 it was quoted bare in this directive, AFTER </transcript>, so
@@ -970,6 +976,7 @@ def render_entry(session_id: str, session_date: str, session_path: str, summary:
     lines.append(f"# {title}")
     lines.append("")
     if personal:
+        # Russian on purpose: the personal tag the entries carry and /recall reads.
         lines.append("> Личное - historical record, not a current fact.")
         lines.append("")
     lines.append(gist)
@@ -1112,6 +1119,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             newest_processed = max(newest_processed or sdate, sdate)
             continue
 
+        # Russian on purpose: the personal tag, printed as the entries carry it.
         tag = f"{RED}Личное{RESET}" if summary["personal"] else f"{GREEN}business{RESET}"
         dest = entry_path(sdate, path.stem, summary["personal"])
         if args.dry_run:
@@ -1295,6 +1303,8 @@ _FRONT_RE = re.compile(r"^(\w[\w-]*):\s*(.*)$")
 def _personal_gist(body: str) -> str:
     """The summary paragraph of a rendered personal entry.
 
+    Russian on purpose: the banner named below is the Russian personal tag the entries carry.
+
     Structural, not positional, because `render_entry` adds optional sections
     after the gist. Walk the blocks in order and return the first one that is not the `# `
     title, not the `> Личное` banner, not a `## ` section heading, and not the
@@ -1418,6 +1428,7 @@ def cmd_personal_recall(args: argparse.Namespace) -> int:
         print(f"  {GRAY}no match (best {best:.3f} < {floor}){RESET}")
         return 0
     for s, e in hits:
+        # Russian on purpose: the personal tag, printed as the entries carry it.
         print(f"  {RED}[Личное {e['date']}]{RESET} ({s:.3f})  {e['gist'][:120]}")
         print(f"       {GRAY}{e['path']}{RESET}")
     return 0

@@ -78,10 +78,12 @@ Targets: `@username` for a direct message, `~channel-name`, a channel's display 
 
 ## Sending: draft first, his word second
 
+<!-- Russian on purpose: the Russian send and yes words the release gate tells apart. -->
 1. Write the draft as plain text in the chat, with the exact target, and stop.
 2. Send only after the operator replies in words that ask for it ("отправь", "send"). "go", "ок" or "да" alone do not.
 3. Long or multi-line text goes through `--body-file` from the checkout's scratch directory (`.venv/bin/python scripts/data-path.py scratch`), never inline in a double-quoted argument.
 
+<!-- Russian on purpose: the Russian refusal words the release gate matches. -->
 The release gate in `.claude/hooks/_dispatch.py` enforces step 2. It refuses `send` and `reply` unless his newest typed prompt has a send word and no refusal ("не отправляй", "не надо"). A refusal is the gate working; show him the draft again and wait. The gate reads this client's command line only: never post through a hand-made request to the server to get past it.
 
 ## Untrusted content

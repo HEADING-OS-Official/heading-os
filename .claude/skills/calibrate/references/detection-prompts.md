@@ -56,6 +56,7 @@ prose" is a preference - include.
 
 **Worked example:**
 
+<!-- Russian on purpose: the Russian footer label the detector looks for in transcripts. -->
 - Source quote: "always present clarifying questions as a numbered list with
   lettered options and a Моя рекомендация footer"
 - Category: preference
@@ -142,6 +143,7 @@ from success too - this category enforces it.
 worked - lock it in."
 
 **Worked example:**
+<!-- Russian on purpose: the Russian footer label the detector looks for in transcripts. -->
 - Assistant turn: presented options as a numbered list with `Моя рекомендация`
   footer plus a summary table.
 - Next user turn: "C" (accepted option C without pushback on format).

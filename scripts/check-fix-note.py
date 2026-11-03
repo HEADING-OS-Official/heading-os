@@ -10,7 +10,7 @@ function. It then requires:
 WHY: since 2026-09-21 a fix ships WITHOUT a regression test unless the defect
 is failure A or B (`.claude/rules/development-standards.md` Phase 5), and this
 line keeps the record a test used to carry. Operator decision 2026-09-21, in his
-own words: **"Knowledge is not lost!"** (translated) It is greppable for good
+own words: **"Knowledge is not lost!"** It is greppable for good
 (`git log --grep 'Fix-Note:'`).
 
 WHAT THIS DOES NOT HOLD, SAID PLAINLY RATHER THAN IMPLIED BY SILENCE. It reads

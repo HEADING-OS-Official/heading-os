@@ -83,6 +83,7 @@ template's self-check. If `$ARGUMENTS` is not empty, put it under `## User note`
 Two sections are required here and the hook refuses to send anything without
 the first:
 
+<!-- Russian on purpose: the Russian resume lines the operator reads after /clear. -->
 - `## Safe resume`: the three lines the template gives, `none` where a line has
   nothing. List open tasks from the task list under `Next action` or `## Next
   steps`, because `/clear` loses the task list.
@@ -90,6 +91,7 @@ the first:
   after `/clear` before he types anything. When he writes Russian, open with
   "Продолжаю с того места, где остановились: ...". No paths, no pinned items.
 
+<!-- Russian on purpose: the Russian resume lines the operator reads after /clear. -->
 ```bash
 .venv/bin/python scripts/checkpoint-paths.py --write --kind second-wind <<'HANDOFF'
 # Handoff - second-wind
@@ -115,6 +117,12 @@ or `/compact`, and says which and why. If it says `NOT sent`, it names what is
 missing or what changed, and nothing was lost. If it says "now type /clear" or
 "now type /compact", this session is not reachable through HERDR and the
 operator types it.
+
+When the only reason it says `NOT sent` is that the operator typed, the hook
+tries again at the next quiet pause (HOS-315). It sends while the handoff is
+still fresh. A stale handoff (3 events or 60 minutes of work) is rewritten
+first: Steps 1 and 2, without the cold read. After three such
+refusals in a row it stops and says so.
 
 ## NEVER
 

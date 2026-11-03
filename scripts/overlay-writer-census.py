@@ -46,6 +46,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.colors import BOLD, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
+from scripts.utils.paths import sibling_data_root  # noqa: E402
 from scripts.utils.repo_files import git_index_paths  # noqa: E402
 from scripts.utils.resolver_closure import (  # noqa: E402
     ENGINE_ROOT,
@@ -81,11 +82,11 @@ MIN_FILES_SWEPT = 300
 def _overlay_root() -> Path | None:
     """The private DATA overlay beside the engine, if it is there.
 
-    Derived structurally, like the guard's own resolver, so no environment
-    variable can move this census onto a different tree than the guard watches.
+    Derived structurally, by the guard's own sibling rule (`sibling_data_root`),
+    so no environment variable can move this census onto a different tree than
+    the guard watches.
     """
-    sibling = ENGINE_ROOT.parent / ".heading-os-data"
-    return sibling if sibling.is_dir() else None
+    return sibling_data_root(ENGINE_ROOT)
 
 
 def _repos() -> list[Path]:

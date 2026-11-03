@@ -8,7 +8,7 @@
     "and the operator removed both on sight, for a reason worth writing down so",
     "that nobody restores them as a convenience: 'nothing in the system should know",
     "where the old tests are, or something could go and run them by itself, and we",
-    "do not want that' (translated). A path in a manifest is not documentation, it is an",
+    "do not want that'. A path in a manifest is not documentation, it is an",
     "instruction something will eventually follow. A number is not.",
     "",
     "So: nothing in this repository resolves, locates, enumerates or runs a",

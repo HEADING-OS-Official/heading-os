@@ -23,7 +23,7 @@ engine and an outbound call site that does not read this one.
 
 THE VALUE. Chrome on Windows, chosen by the operator on 2026-09-27 from the
 options HELM put to him ("For now, make the User Agent value as
-written in No. 3, Chrome on Windows.", translated). It replaces a design, proposed by HELM the
+written in No. 3, Chrome on Windows."). It replaces a design, proposed by HELM the
 same day and never committed, that sent `heading-os/<version> (<tool>)`.
 
 WHY A VALUE IS SENT AT ALL. urllib's default is "Python-urllib/x.y", and some

@@ -1415,6 +1415,7 @@ def set_first_line(text: str, line: str) -> str:
 # Pins: items the operator fixed verbatim during the session
 # ============================================================
 #
+# Russian on purpose: the Russian pin trigger the operator types.
 # A pin is a sentence the operator wants kept word for word across compaction
 # and /clear: "закрепи: ..." or `/pin ...` (operator decision 2026-09-27). It
 # lives in a file, because a request to a summariser is not a guarantee.
@@ -1422,6 +1423,7 @@ def set_first_line(text: str, line: str) -> str:
 
 PINS_FILENAME = "pins.md"
 PINS_HEADING = "## Pinned items"
+# Russian on purpose: the lead names the Russian pin trigger the operator types.
 PINS_LEAD = ("Pinned by the operator with /pin or \"закрепи:\". Each item is the "
              "operator's own words: keep it verbatim, never reword or translate it.")
 # A longer text is refused rather than cut, because a cut pin is not verbatim.

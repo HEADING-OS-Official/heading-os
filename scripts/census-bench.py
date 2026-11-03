@@ -477,8 +477,8 @@ def _fmt_ceiling(value: float) -> str:
 
 
 def print_table(results: list[QuestionResult]) -> None:
-    print(f"\n{BOLD}{'id':<8} {'группа':<10} {'класс':<13} "
-          f"{'|истина|':>8} {'пул':>5} {'потолок':>8} {'k_full':>7} {'сек':>6}{RESET}")
+    print(f"\n{BOLD}{'id':<8} {'group':<10} {'class':<13} "
+          f"{'|truth|':>8} {'pool':>5} {'ceiling':>8} {'k_full':>7} {'sec':>6}{RESET}")
     for r in results:
         k_full = str(r.k_min_full) if r.k_min_full is not None else "-"
         flag = f" {RED}UNMEASURABLE{RESET}" if not r.measurable else ""
@@ -537,31 +537,31 @@ def build_report(results: list[QuestionResult], state: dict,
 def render_markdown(report: dict) -> str:
     state = report["run_state"]
     lines = [
-        "# Приёмочный бенчмарк /census: базовая линия",
+        "# /census acceptance benchmark: baseline",
         "",
-        f"Дата прогона: {state['today']}",
-        f"Вердикт: **{report['verdict']}**",
+        f"Run date: {state['today']}",
+        f"Verdict: **{report['verdict']}**",
         "",
         f"> {report['verdict_rule']}",
         "",
-        "## Состояние прогона",
+        "## Run state",
         "",
-        "Сравнение с другим прогоном действительно, только если совпадают все четыре.",
+        "A comparison with another run is valid only if all four match.",
         "",
-        "| Величина | Значение |",
+        "| Quantity | Value |",
         "| --- | --- |",
-        f"| SHA корпуса | `{state['corpus_sha'][:12]}`{' (дерево грязное)' if state['corpus_dirty'] else ''} |",
-        f"| Дата прогона | {state['today']} |",
-        f"| sha256 конфига индекса | `{state['index_config_sha256']}` |",
-        f"| Сборка индекса | {state['index_built']} |",
+        f"| Corpus SHA | `{state['corpus_sha'][:12]}`{' (dirty tree)' if state['corpus_dirty'] else ''} |",
+        f"| Run date | {state['today']} |",
+        f"| Index config sha256 | `{state['index_config_sha256']}` |",
+        f"| Index build | {state['index_built']} |",
         "",
-        "## Результаты",
+        "## Results",
         "",
-        "`потолок` это доля истины, которую выдача физически способна донести на "
-        "глубине насыщения. Это верхняя граница: модель поверх неё может только "
-        "ухудшить, процитировать невиданное она не может.",
+        "`ceiling` is the share of the truth that the results can physically deliver at "
+        "saturation depth. It is an upper bound: a model on top of it can only "
+        "make it worse; it cannot cite what it never saw.",
         "",
-        "| id | группа | класс | мощность истины | пул | потолок | k_full | сек |",
+        "| id | group | class | truth cardinality | pool | ceiling | k_full | sec |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for q in report["questions"]:
@@ -578,34 +578,34 @@ def render_markdown(report: dict) -> str:
     by_class = report.get("aggregate_mean_by_class", {})
     lines += [
         "",
-        f"Среднее по измеримым агрегирующим: **{agg if agg is not None else 'n/a'}**  ",
-        f"Среднее по контрольным: **{ctl if ctl is not None else 'n/a'}**  ",
-        f"Исключено как UNMEASURABLE: **{report['unmeasurable_count']}**",
+        f"Mean over measurable aggregate questions: **{agg if agg is not None else 'n/a'}**  ",
+        f"Mean over control questions: **{ctl if ctl is not None else 'n/a'}**  ",
+        f"Excluded as UNMEASURABLE: **{report['unmeasurable_count']}**",
         "",
-        "### По классам вопроса",
+        "### By question class",
         "",
-        "Вердикт считается по общему среднему, как записано до прогона. Но два "
-        "класса ведут себя противоположно, и одно среднее по ним обоим прячет "
-        "именно то, ради чего замер затевался.",
+        "The verdict is computed on the overall mean, as written down before the run. But the two "
+        "classes behave in opposite ways, and a single mean over both of them hides "
+        "exactly what the measurement was undertaken for.",
         "",
-        "| класс | среднее |",
+        "| class | mean |",
         "| --- | --- |",
         *[f"| {cls} | {value} |" for cls, value in sorted(by_class.items())],
         "",
-        "## Базовая линия латентности",
+        "## Latency baseline",
         "",
-        f"Медиана {lat['median']} с, максимум {lat['max']} с на вопрос. "
-        "Сравнивать не с чем, пока нет движка; число фиксируется здесь, чтобы "
-        "приёмке шага 2 было с чем сравнивать.",
+        f"Median {lat['median']} s, maximum {lat['max']} s per question. "
+        "There is nothing to compare against until the engine exists; the number is recorded here so that "
+        "the step 2 acceptance has something to compare against.",
         "",
-        "## Как читать класс вопроса",
+        "## How to read the question class",
         "",
-        "- `traversal` - ответ требует обойти много файлов. Потолок ниже 1.0 это "
-        "доказательство, что топ-K не доносит ответ.",
-        "- `cross_source` - ответ это отношение между двумя небольшими плотными "
-        "файлами. Потолок будет около 1.0 и говорит лишь то, что узкое место не "
-        "в извлечении. Неверный ответ при потолке 1.0 локализует отказ в "
-        "рассуждении, а там SRLM предупреждает, что примитив обхода ВРЕДИТ.",
+        "- `traversal` - the answer requires walking many files. A ceiling below 1.0 is "
+        "proof that the top-K does not deliver the answer.",
+        "- `cross_source` - the answer is a relation between two small dense "
+        "files. The ceiling will be about 1.0 and says only that the bottleneck is not "
+        "in retrieval. A wrong answer at ceiling 1.0 localises the failure in "
+        "reasoning, and there SRLM warns that the traversal primitive HURTS.",
         "",
     ]
     return "\n".join(lines)
@@ -617,7 +617,7 @@ def render_markdown(report: dict) -> str:
 
 def mode_show_truth(questions: list[dict], corpus: CorpusPaths, today: date) -> int:
     truth = load_truth(questions, corpus, today)
-    print(f"{BOLD}{'id':<8} {'группа':<10} {'вид':<7} {'|paths|':>8} {'value':>7}  пример{RESET}")
+    print(f"{BOLD}{'id':<8} {'group':<10} {'kind':<7} {'|paths|':>8} {'value':>7}  example{RESET}")
     for question in questions:
         answer = truth[question["id"]]
         sample = sorted(answer.paths)[0] if answer.paths else ""
@@ -625,7 +625,7 @@ def mode_show_truth(questions: list[dict], corpus: CorpusPaths, today: date) -> 
             sample = "..." + sample[-49:]
         print(f"{question['id']:<8} {question['group']:<10} {answer.kind:<7} "
               f"{answer.cardinality:>8} {str(answer.value):>7}  {GRAY}{sample}{RESET}")
-    print(f"\n{GREEN}Все {len(questions)} истин непустые.{RESET}")
+    print(f"\n{GREEN}All {len(questions)} truths are non-empty.{RESET}")
     return 0
 
 
@@ -637,8 +637,8 @@ def mode_baseline(questions: list[dict], corpus: CorpusPaths, root: Path,
     # The store hangs off the DATA root, not off the corpus root (2026-09-14).
     index_db = data_path("runtime:memory-index/cache") / "index.db"
     if not index_db.exists():
-        print(f"{RED}Индекс не собран:{RESET} {index_db} отсутствует. "
-              f"Запусти `python3 scripts/memory-index.py build`.", file=sys.stderr)
+        print(f"{RED}Index not built:{RESET} {index_db} is missing. "
+              f"Run `python3 scripts/memory-index.py build`.", file=sys.stderr)
         return 2
 
     results: list[QuestionResult] = []
@@ -646,7 +646,7 @@ def mode_baseline(questions: list[dict], corpus: CorpusPaths, root: Path,
         try:
             results.append(measure_question(root, question, truth[question["id"]]))
         except QUERY_FAILURES as exc:
-            print(f"{RED}Запрос не удался на {question['id']}:{RESET} {exc!r}", file=sys.stderr)
+            print(f"{RED}Query failed on {question['id']}:{RESET} {exc!r}", file=sys.stderr)
             return 3
 
     print_table(results)
@@ -659,13 +659,13 @@ def mode_baseline(questions: list[dict], corpus: CorpusPaths, root: Path,
 
     verdict_name, rule = verdict(agg_mean, ctl_mean, len(agg))
 
-    print(f"\n{BOLD}Среднее по измеримым агрегирующим:{RESET} "
+    print(f"\n{BOLD}Mean over measurable aggregate questions:{RESET} "
           f"{agg_mean if agg_mean is None else f'{agg_mean:.3f}'} "
-          f"{GRAY}({len(agg)} из {sum(1 for r in results if r.group == 'aggregate')}){RESET}")
-    print(f"{BOLD}Среднее по контрольным:{RESET} "
+          f"{GRAY}({len(agg)} of {sum(1 for r in results if r.group == 'aggregate')}){RESET}")
+    print(f"{BOLD}Mean over control questions:{RESET} "
           f"{ctl_mean if ctl_mean is None else f'{ctl_mean:.3f}'}")
-    print(f"{BOLD}Исключено как UNMEASURABLE:{RESET} {n_unmeasurable}")
-    print(f"\n{BOLD}ВЕРДИКТ: {CYAN}{verdict_name}{RESET}")
+    print(f"{BOLD}Excluded as UNMEASURABLE:{RESET} {n_unmeasurable}")
+    print(f"\n{BOLD}VERDICT: {CYAN}{verdict_name}{RESET}")
     print(f"{GRAY}{rule}{RESET}")
 
     report = build_report(results, state, verdict_name, rule, agg_mean, ctl_mean, n_unmeasurable)
@@ -675,7 +675,7 @@ def mode_baseline(questions: list[dict], corpus: CorpusPaths, root: Path,
         atomic_write_text(out_dir / f"{stem}.json",
                           json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         atomic_write_text(out_dir / f"{stem}.md", render_markdown(report))
-        print(f"\n{GREEN}Отчёт:{RESET} {out_dir / (stem + '.md')}")
+        print(f"\n{GREEN}Report:{RESET} {out_dir / (stem + '.md')}")
 
     if verdict_name in (VERDICT_FIX_RECALL, FLAG_RECALL_BROKEN):
         return 1
@@ -794,16 +794,16 @@ def score_answers(answers_path: str, today: date | None = None) -> dict:
     # real benchmark verdict, so a harness reading exit codes scores the crash
     # as a result. This is the acceptance gate; it refuses, it does not guess.
     if not isinstance(payload, dict):
-        raise ValueError(f"файл ответов должен быть объектом, "
-                         f"получено {type(payload).__name__}")
+        raise ValueError(f"the answers file must be an object, "
+                         f"got {type(payload).__name__}")
     records = payload.get("answers", [])
     if not isinstance(records, list):
-        raise ValueError(f"поле answers должно быть списком, "
-                         f"получено {type(records).__name__}")
+        raise ValueError(f"the answers field must be a list, "
+                         f"got {type(records).__name__}")
     malformed = [i for i, a in enumerate(records) if not isinstance(a, dict)]
     if malformed:
-        raise ValueError(f"записи ответов должны быть объектами; не объекты "
-                         f"на позициях {malformed}")
+        raise ValueError(f"answer records must be objects; not objects "
+                         f"at positions {malformed}")
     # A dict comprehension keeps the LAST record per id, so an answers file
     # assembled by merging two runs silently discarded one of them and the
     # verdict turned on file order. This module's own principle is that a
@@ -817,18 +817,18 @@ def score_answers(answers_path: str, today: date | None = None) -> dict:
     unusable = sorted(i for i, qid in enumerate(ids)
                       if not isinstance(qid, str) or not qid)
     if unusable:
-        raise ValueError(f"у записей ответов нет question_id "
-                         f"на позициях {unusable}")
+        raise ValueError(f"answer records have no question_id "
+                         f"at positions {unusable}")
     duplicated = sorted({qid for qid in ids if ids.count(qid) > 1})
     if duplicated:
-        raise ValueError(f"question_id повторяется: {', '.join(duplicated)}; "
-                         f"один вопрос - одна запись")
+        raise ValueError(f"question_id is repeated: {', '.join(duplicated)}; "
+                         f"one record per question")
     answers = {a["question_id"]: a for a in records}
 
     stated = payload.get("run_state") or {}
     if not isinstance(stated, dict):
-        raise ValueError(f"поле run_state должно быть объектом, "
-                         f"получено {type(stated).__name__}")
+        raise ValueError(f"the run_state field must be an object, "
+                         f"got {type(stated).__name__}")
     graded_today = today or _today_from(stated)
     question_list = load_questions(root)
     truth = load_truth(question_list, corpus, graded_today)
@@ -1064,8 +1064,8 @@ def mode_operating_point(questions: list[dict], corpus: CorpusPaths,
     """
     truth = load_truth(questions, corpus, today)
     rows = []
-    print(f"{BOLD}{'id':<8} {'группа':<10} {'класс':<13} "
-          f"{'потолок@насыщ':>14} {'потолок@раб':>12}{RESET}")
+    print(f"{BOLD}{'id':<8} {'group':<10} {'class':<13} "
+          f"{'ceiling@sat':>14} {'ceiling@op':>12}{RESET}")
     for question in questions:
         qid = question["id"]
         expected = truth[qid].paths
@@ -1075,7 +1075,7 @@ def mode_operating_point(questions: list[dict], corpus: CorpusPaths,
             op, op_pool = best_ceiling_at(root, question, expected,
                                           OPERATING_TOP_K, OPERATING_THRESHOLD)
         except QUERY_FAILURES as exc:
-            print(f"{RED}{qid}: запрос не выполнен: {exc!r}{RESET}", file=sys.stderr)
+            print(f"{RED}{qid}: query failed: {exc!r}{RESET}", file=sys.stderr)
             return 3
         rows.append({"id": qid, "group": question["group"],
                      "question_class": question.get("question_class", ""),
@@ -1089,21 +1089,21 @@ def mode_operating_point(questions: list[dict], corpus: CorpusPaths,
 
     controls = [r for r in rows if r["group"] == "control"]
     full_at_operating = sum(1 for r in controls if r["ceiling_operating"] >= 1.0)
-    print(f"\n  контроль на глубине насыщения: "
+    print(f"\n  controls at saturation depth: "
           f"{sum(1 for r in controls if r['ceiling_saturated'] >= 1.0)}/{len(controls)}")
-    print(f"  контроль на рабочей точке "
+    print(f"  controls at the operating point "
           f"(top_k {OPERATING_TOP_K}, threshold {OPERATING_THRESHOLD}): "
           f"{full_at_operating}/{len(controls)}")
     if full_at_operating < len(controls):
-        print(f"{YELLOW}Разрыв реален: часть контрольных недосягаема там, где "
-              f"/recall работает. «Индекс исправен» этим замером НЕ установлено.{RESET}")
+        print(f"{YELLOW}The gap is real: some control questions are unreachable where "
+              f"/recall operates. 'The index is healthy' is NOT established by this measurement.{RESET}")
 
     out_dir = bench_dir()
     stem = (f"{datetime.now(tz=get_default_tz()).date().isoformat()}"
             "_operating-point_census")
     # `--no-write` reached only `--baseline`; this mode wrote its report anyway.
     if not write:
-        print(f"{GRAY}--no-write: отчёт не записан{RESET}")
+        print(f"{GRAY}--no-write: report not written{RESET}")
         return 0
     atomic_write_text(out_dir / f"{stem}.json", json.dumps({
         "schema_version": 1, "mode": "operating-point",
@@ -1116,7 +1116,7 @@ def mode_operating_point(questions: list[dict], corpus: CorpusPaths,
         "controls_full_at_operating": full_at_operating,
         "controls_total": len(controls),
     }, ensure_ascii=False, indent=2) + "\n")
-    print(f"\n{GREEN}Отчёт:{RESET} {out_dir / (stem + '.json')}")
+    print(f"\n{GREEN}Report:{RESET} {out_dir / (stem + '.json')}")
     return 0
 
 
@@ -1178,14 +1178,14 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
             try:
                 hits = query_at(root, text, OPERATING_TOP_K, OPERATING_THRESHOLD)
             except QUERY_FAILURES as exc:
-                print(f"{RED}{qid}: запрос не выполнен: {exc!r}{RESET}", file=sys.stderr)
+                print(f"{RED}{qid}: query failed: {exc!r}{RESET}", file=sys.stderr)
                 return 3
             shown[qid] = [{"path": h.get("path"), "score": h.get("score", 0)}
                           for h in hits]
             print(f"\n{BOLD}{qid}{RESET} ({question['group']}, "
                   f"{question.get('question_class', '')}) - {text}")
-            print(f"{GRAY}истина: {len(truth[qid].paths)} путь(ей); "
-                  f"выдача /recall на рабочей точке: {len(hits)} хит(ов){RESET}")
+            print(f"{GRAY}truth: {len(truth[qid].paths)} path(s); "
+                  f"/recall results at the operating point: {len(hits)} hit(s){RESET}")
             for hit in hits:
                 print(f"  {hit.get('score', 0):.3f}  {hit.get('path')}")
         # Persisted so the grading pass grades THIS material. See the note on
@@ -1197,12 +1197,12 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
             "top_k": OPERATING_TOP_K, "threshold": OPERATING_THRESHOLD,
             "shown": shown,
         }, ensure_ascii=False, indent=2) + "\n")
-        print(f"\n{YELLOW}Ответьте на эти три вопроса ТОЛЬКО по показанной "
-              f"выдаче, как это делает /recall, и подайте ответы обратно:{RESET}")
+        print(f"\n{YELLOW}Answer these three questions ONLY from the shown "
+              f"results, the way /recall does, and submit the answers back:{RESET}")
         print(f"{GRAY}  --recall-crosscheck --crosscheck-answers FILE{RESET}")
-        print(f'{GRAY}  формат: {{"agg-05": {{"kind": "paths", "paths": [...]}}, ...}}'
-              f' либо {{"agg-05": {{"refused": true}}}}{RESET}')
-        print(f"{GRAY}показанная выдача сохранена: {shown_path}{RESET}")
+        print(f'{GRAY}  format: {{"agg-05": {{"kind": "paths", "paths": [...]}}, ...}}'
+              f' or {{"agg-05": {{"refused": true}}}}{RESET}')
+        print(f"{GRAY}shown results saved: {shown_path}{RESET}")
         return 0
 
     # The ceiling is computed from the hits the PRINT pass showed, never from a
@@ -1211,13 +1211,13 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     # and on a nightly timer. The mode's own falsification rule - at ceiling 0.00
     # the answer must be wrong or a refusal - was then decided by whichever
     # version of the index answered second: a rebuild could manufacture a
-    # РАСХОЖДЕНИЕ out of a correct answer composed from three real hits, or bury
+    # MISMATCH out of a correct answer composed from three real hits, or bury
     # a real one. A harness that exists to falsify an assumption must not itself
     # be falsifiable by an unrelated background job.
     if not shown_path.is_file():
-        print(f"{RED}нет показанной выдачи: {shown_path}{RESET}", file=sys.stderr)
-        print(f"{RED}Сначала запустите --recall-crosscheck без --crosscheck-answers, "
-              f"ответьте по ТОЙ выдаче, затем подайте ответы.{RESET}", file=sys.stderr)
+        print(f"{RED}no shown results: {shown_path}{RESET}", file=sys.stderr)
+        print(f"{RED}First run --recall-crosscheck without --crosscheck-answers, "
+              f"answer from THOSE results, then submit the answers.{RESET}", file=sys.stderr)
         return 2
     record = json.loads(shown_path.read_text(encoding="utf-8"))
     # `json.loads` accepts any JSON value, and `score_answers` says exactly this
@@ -1228,7 +1228,7 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     # mode documents as "the ceiling was contradicted". A corrupt input would
     # have been filed as a falsified benchmark.
     if not isinstance(record, dict):
-        print(f"{RED}показанная выдача повреждена: ожидался объект, получено "
+        print(f"{RED}shown results are corrupted: expected an object, got "
               f"{type(record).__name__}: {shown_path}{RESET}", file=sys.stderr)
         return 2
     shown = record.get("shown")
@@ -1237,13 +1237,13 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
         # below, whose message names the pass to re-run.
         shown = {}
     if not isinstance(shown, dict):
-        print(f"{RED}поле shown должно быть объектом, получено "
+        print(f"{RED}the shown field must be an object, got "
               f"{type(shown).__name__}: {shown_path}{RESET}", file=sys.stderr)
         return 2
     missing = [q for q in CROSSCHECK_QUESTIONS if q not in shown]
     if missing:
-        print(f"{RED}показанная выдача не покрывает {', '.join(missing)}. "
-              f"Перезапустите печатающий проход.{RESET}", file=sys.stderr)
+        print(f"{RED}the shown results do not cover {', '.join(missing)}. "
+              f"Re-run the printing pass.{RESET}", file=sys.stderr)
         return 2
     # The per-question VALUE, checked for the same reason as the record and the
     # `shown` field above it. Key coverage was checked and the value was not, so
@@ -1253,12 +1253,24 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     # ceiling was contradicted". A corrupt handoff file was filed as a falsified
     # benchmark. An EMPTY list is not corrupt: a question whose /recall query
     # returned nothing is the zero-ceiling case this mode exists to measure.
+    #
+    # Each hit's `path` too. A hit object was enough to pass, so `{"path": []}`
+    # or `{"path": {...}}` reached the same comprehension and raised TypeError
+    # (unhashable), exit 1 on a traceback; `{"path": 7}`, `{"path": null}` and
+    # a hit with no `path` matched no truth, so every question graded ceiling 0
+    # and the run printed MISMATCH, exit 1, a corrupt file filed as a falsified
+    # benchmark. A hit that names no document cannot be graded. MEASURED
+    # 2026-11-02 with invented inputs: all five shapes exited 1 before, and
+    # exit 2 with this message after. An empty string is a string and passes.
     bad_shown = sorted(qid for qid in CROSSCHECK_QUESTIONS
                        if not isinstance(shown[qid], list)
-                       or any(not isinstance(h, dict) for h in shown[qid]))
+                       or any(not isinstance(h, dict)
+                              or not isinstance(h.get("path"), str)
+                              for h in shown[qid]))
     if bad_shown:
-        print(f"{RED}поле shown должно хранить список хитов-объектов; "
-              f"повреждено для: {', '.join(bad_shown)}: {shown_path}{RESET}",
+        print(f"{RED}the shown field must hold a list of hit objects, each with "
+              f"a string path; corrupted for: {', '.join(bad_shown)}: "
+              f"{shown_path}{RESET}",
               file=sys.stderr)
         return 2
 
@@ -1267,19 +1279,19 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     if not comparable:
         # Not fatal: the shown hits are still exactly what the answers came
         # from, so the grade stands. But the reader must know the corpus moved.
-        print(f"{YELLOW}Корпус изменился между проходами ({', '.join(diverged)}). "
-              f"Оценка идёт по показанной выдаче, отчёт помечен.{RESET}")
+        print(f"{YELLOW}The corpus changed between passes ({', '.join(diverged)}). "
+              f"Grading uses the shown results; the report is marked.{RESET}")
 
     # Validated like `mode_score` does. A typo'd path used to raise
     # FileNotFoundError -- an OSError, which main() did not catch -- and exit 1
     # on a traceback.
     if not Path(answers_path).is_file():
-        print(f"{RED}файл ответов не найден: {answers_path}{RESET}", file=sys.stderr)
+        print(f"{RED}answers file not found: {answers_path}{RESET}", file=sys.stderr)
         return 2
     given = json.loads(Path(answers_path).read_text(encoding="utf-8"))
     if not isinstance(given, dict):
-        print(f"{RED}файл ответов должен быть объектом "
-              f"{{qid: ответ}}, получено {type(given).__name__}{RESET}", file=sys.stderr)
+        print(f"{RED}the answers file must be an object "
+              f"{{qid: answer}}, got {type(given).__name__}{RESET}", file=sys.stderr)
         return 2
     # The per-question values, checked like the top level above them. This mode
     # is the interactive one: the operator writes this file by hand, hours after
@@ -1290,7 +1302,7 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     wrong_shape = sorted(qid for qid in CROSSCHECK_QUESTIONS
                          if qid in given and not isinstance(given[qid], dict))
     if wrong_shape:
-        print(f"{RED}ответы должны быть объектами; не объекты для: "
+        print(f"{RED}answers must be objects; not objects for: "
               f"{', '.join(wrong_shape)}{RESET}", file=sys.stderr)
         return 2
     # The VALUE inside the container, checked for the same reason. The grading
@@ -1302,12 +1314,21 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     # file was recorded by any exit-code-reading harness as a falsified
     # benchmark. Refused rather than coerced to []: coercion would grade the
     # question "wrong" and manufacture a measurement out of the typo.
+    #
+    # Each item of the list too. `"paths": [["x"]]` reached `set(...)` in the
+    # grading branch and raised TypeError (unhashable), exit 1 on a traceback;
+    # `"paths": [7]` was graded "wrong", a measurement made out of a typo.
+    # MEASURED 2026-11-02 with invented inputs: the first exited 1 on a
+    # traceback and the second graded silently, before; both exit 2 with this
+    # message after.
     bad_paths = sorted(qid for qid in CROSSCHECK_QUESTIONS
                        if isinstance(given.get(qid), dict)
                        and "paths" in given[qid]
-                       and not isinstance(given[qid]["paths"], list))
+                       and (not isinstance(given[qid]["paths"], list)
+                            or any(not isinstance(p, str)
+                                   for p in given[qid]["paths"])))
     if bad_paths:
-        print(f"{RED}поле paths должно быть списком; не список для: "
+        print(f"{RED}the paths field must be a list of strings; not for: "
               f"{', '.join(bad_paths)}{RESET}", file=sys.stderr)
         return 2
     rows = []
@@ -1344,8 +1365,8 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
                      "outcome": outcome, "answered": qid in given,
                      "prediction": predicted, "matched": matched})
         colour = GREEN if matched else RED
-        print(f"{qid:<8} потолок {ceiling:>5.3f}  исход {outcome:<9} "
-              f"{colour}{'совпало' if matched else 'РАСХОЖДЕНИЕ'}{RESET}")
+        print(f"{qid:<8} ceiling {ceiling:>5.3f}  outcome {outcome:<9} "
+              f"{colour}{'match' if matched else 'MISMATCH'}{RESET}")
 
     contradicted = [r for r in rows if not r["matched"]]
     # How many questions could have FALSIFIED the assumption. A question whose
@@ -1354,17 +1375,17 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     # step-1 manual check had, and worth refusing to repeat.
     constrained = [r for r in rows if r["prediction"] == "wrong-or-refused"]
     if contradicted:
-        print(f"\n{RED}Потолок опровергнут на {len(contradicted)} вопросе(ах): "
-              f"модель дала верный ответ там, где выдача его не содержала. "
-              f"Это находка о бенчмарке, а не о примитиве.{RESET}")
+        print(f"\n{RED}Ceiling contradicted on {len(contradicted)} question(s): "
+              f"the model gave a correct answer where the results did not contain it. "
+              f"This is a finding about the benchmark, not about the primitive.{RESET}")
     elif not constrained:
-        print(f"\n{YELLOW}Ничего не проверено: ни у одного из вопросов потолок не "
-              f"равен нулю, поэтому опровергнуть допущение было нечем. "
-              f"Возьмите вопросы с нулевым потолком.{RESET}")
+        print(f"\n{YELLOW}Nothing was tested: none of the questions has a ceiling "
+              f"of zero, so there was nothing that could contradict the assumption. "
+              f"Use questions with a zero ceiling.{RESET}")
     else:
-        print(f"\n{GREEN}Расхождений нет на {len(constrained)} из {len(rows)} "
-              f"вопросов, которые МОГЛИ опровергнуть допущение "
-              f"(потолок 0.000). Остальные его не проверяют.{RESET}")
+        print(f"\n{GREEN}No mismatches on {len(constrained)} of {len(rows)} "
+              f"questions that COULD have contradicted the assumption "
+              f"(ceiling 0.000). The rest do not test it.{RESET}")
 
     # One place, so the `--no-write` branch and the writing branch cannot say
     # different things. A run with nothing `constrained` exits 2, not 0: the
@@ -1390,7 +1411,7 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
     # Only the REPORT is suppressed. The `shown_path` write above is state the
     # grading pass reads back, not a report, so `--no-write` must not skip it.
     if not write:
-        print(f"{GRAY}--no-write: отчёт не записан{RESET}")
+        print(f"{GRAY}--no-write: report not written{RESET}")
         return code
     # Written even when the run refused for having nothing to falsify: the
     # refusal's evidence IS `falsifiable_questions: 0`, and dropping the report
@@ -1407,7 +1428,7 @@ def mode_recall_crosscheck(questions: list[dict], corpus: CorpusPaths,
         "contradictions": len(contradicted),
         "falsifiable_questions": len(constrained),
     }, ensure_ascii=False, indent=2) + "\n")
-    print(f"{GREEN}Отчёт:{RESET} {out_dir / (stem + '.json')}")
+    print(f"{GREEN}Report:{RESET} {out_dir / (stem + '.json')}")
     return code
 
 
@@ -1424,7 +1445,7 @@ def mode_score(path: str, today: date | None = None, write: bool = True) -> int:
 
     report = score_answers(path, today)
 
-    print(f"{BOLD}{'id':<8} {'класс':<13} {'статус':<18} причина{RESET}")
+    print(f"{BOLD}{'id':<8} {'class':<13} {'status':<18} reason{RESET}")
     for row in report["questions"]:
         colour = {STATUS_CORRECT: GREEN, STATUS_CONFIDENTLY_WRONG: RED}.get(
             row["status"], YELLOW)
@@ -1434,17 +1455,17 @@ def mode_score(path: str, today: date | None = None, write: bool = True) -> int:
     print()
     for name, bucket in sorted(report["per_class"].items()):
         acc = bucket["accuracy"]
-        print(f"  {name:<13} {bucket['correct']}/{bucket['n']} верных"
+        print(f"  {name:<13} {bucket['correct']}/{bucket['n']} correct"
               f"{'' if acc is None else f' ({acc:.3f})'}"
-              f"{GRAY}, отказов {bucket['refused']}, "
-              f"уверенно неверных {bucket['confidently_wrong']}{RESET}")
+              f"{GRAY}, refused {bucket['refused']}, "
+              f"confidently wrong {bucket['confidently_wrong']}{RESET}")
 
     # Named, never silent. A question dropped from the grade without a line here
     # is a narrowed measurement that reads like a complete one.
     if report.get("not_scored"):
-        print(f"  {GRAY}не оценивались ({len(report['not_scored'])}): "
-              f"{', '.join(report['not_scored'])} — потолок мерится --baseline, "
-              f"грейд /census не выносится{RESET}")
+        print(f"  {GRAY}not scored ({len(report['not_scored'])}): "
+              f"{', '.join(report['not_scored'])}; the ceiling is measured by --baseline, "
+              f"no /census grade is given{RESET}")
 
     if report["latency_median_s"] is not None:
         base = report["baseline_latency_median_s"]
@@ -1459,18 +1480,18 @@ def mode_score(path: str, today: date | None = None, write: bool = True) -> int:
         if isinstance(base, dict):
             base = base.get("median")
         if isinstance(base, (int, float)):
-            against = f" против {base:.2f} с базовой линии"
+            against = f" against {base:.2f} s at baseline"
         elif base is None:
-            against = f" {GRAY}(базовой линии для сравнения нет){RESET}"
+            against = f" {GRAY}(no baseline to compare against){RESET}"
         else:
-            against = f" {GRAY}(базовая линия непригодна: {base!r}){RESET}"
-        print(f"\n  медиана времени ответа "
-              f"{report['latency_median_s']:.2f} с{against}")
+            against = f" {GRAY}(baseline unusable: {base!r}){RESET}"
+        print(f"\n  median answer time "
+              f"{report['latency_median_s']:.2f} s{against}")
 
     verdict_name = report["verdict"]
     colour = {VERDICT_ACCEPTED: GREEN, VERDICT_REJECTED: RED}.get(verdict_name, YELLOW)
     print(f"\n{colour}{BOLD}{verdict_name}{RESET} {report['verdict_why']}")
-    print(f"{GRAY}Правило: {report['verdict_rule']}{RESET}")
+    print(f"{GRAY}Rule: {report['verdict_rule']}{RESET}")
 
     out_dir = bench_dir()
     stem = (f"{datetime.now(tz=get_default_tz()).date().isoformat()}"
@@ -1480,7 +1501,7 @@ def mode_score(path: str, today: date | None = None, write: bool = True) -> int:
     if write:
         atomic_write_text(out_dir / f"{stem}.json",
                           json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-        print(f"\n{GREEN}Отчёт:{RESET} {out_dir / (stem + '.json')}")
+        print(f"\n{GREEN}Report:{RESET} {out_dir / (stem + '.json')}")
 
     return 0 if verdict_name == VERDICT_ACCEPTED else 1
 
@@ -1543,7 +1564,7 @@ def main() -> int:
     # codes records the crash as a verdict. The wide try below already catches
     # both of these; only this earlier call site was narrow.
     except (KeyError, ValueError, OSError) as exc:
-        print(f"{RED}Набор вопросов не читается:{RESET} {exc}", file=sys.stderr)
+        print(f"{RED}The question set cannot be read:{RESET} {exc}", file=sys.stderr)
         return 2
 
     # INSIDE the try, and carrying `today` and `write`. `--score` used to run
@@ -1574,23 +1595,23 @@ def main() -> int:
     # `threads/` was enough, and a bare clone grading against the bundled
     # `examples/` corpus hits it on the first question.
     except UnreadableCorpus as exc:
-        print(f"{RED}Истину по этому корпусу вычислить нельзя:{RESET} {exc}",
+        print(f"{RED}Truth cannot be computed for this corpus:{RESET} {exc}",
               file=sys.stderr)
         return 2
     except ValueError as exc:
-        print(f"{RED}Прибор отказал:{RESET} {exc}", file=sys.stderr)
+        print(f"{RED}The instrument failed:{RESET} {exc}", file=sys.stderr)
         return 2
     except KeyError as exc:
-        print(f"{RED}Не найден ключ:{RESET} {exc}", file=sys.stderr)
+        print(f"{RED}Key not found:{RESET} {exc}", file=sys.stderr)
         return 2
     except json.JSONDecodeError as exc:
-        print(f"{RED}Файл не читается как JSON:{RESET} {exc}", file=sys.stderr)
+        print(f"{RED}File does not parse as JSON:{RESET} {exc}", file=sys.stderr)
         return 2
     except OSError as exc:
-        print(f"{RED}Файл недоступен:{RESET} {exc}", file=sys.stderr)
+        print(f"{RED}File not accessible:{RESET} {exc}", file=sys.stderr)
         return 2
     except subprocess.SubprocessError as exc:
-        print(f"{RED}Слой поиска не удалось вызвать:{RESET} {exc!r}", file=sys.stderr)
+        print(f"{RED}The search layer could not be called:{RESET} {exc!r}", file=sys.stderr)
         return 3
 
 

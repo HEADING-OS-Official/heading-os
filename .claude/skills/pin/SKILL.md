@@ -1,5 +1,6 @@
 ---
 name: pin
+# Russian on purpose: the description names the Russian pin trigger.
 description: "Pin an item verbatim for this session, so it survives compaction and /clear: the operator writes \"закрепи: ...\" or types /pin <text>. The text is appended word for word to this session's pins file by scripts/pin.py, and from there it reaches every handoff and the injection after /clear, compact and resume. Do NOT use for \"запомни\" (that creates a Lific issue), for Odin's \"remember\", or for a durable cross-session fact (auto-memory)."
 argument-hint: "<text to pin>"
 allowed-tools: "Bash(.venv/bin/python scripts/pin.py:*)"
@@ -11,10 +12,12 @@ x-heading-capability:
   what: >
     Stores one item the operator pinned, verbatim, in this session's pins file,
     so compaction and /clear cannot lose or reword it.
+  # Russian on purpose: the Russian pin trigger the operator types.
   how: >
     Write "закрепи: <text>" or type /pin <text>. The skill runs scripts/pin.py,
     which writes the text under a lock and atomically. /pin with no text lists
     this session's pins.
+  # Russian on purpose: the Russian remember word, which creates a Lific issue instead.
   when: >
     Use for a constraint or a fact that must stay word for word until the work
     ends. For a task to do later use Lific ("запомни"); for a fact that outlives
@@ -22,9 +25,11 @@ x-heading-capability:
 x-heading-routing:
   category: Operations
   label: /pin <text>
+  # Russian on purpose: the Russian pin trigger the router matches.
   triggers:
     - "закрепи: <text>"
     - "/pin <text>"
+  # Russian on purpose: the Russian remember word, routed to a Lific issue.
   exclusions:
     - "запомни -> Lific issue (.claude/rules/lific.md item 2)"
     - "Odin remember -> /odin"
@@ -40,6 +45,7 @@ Pin one item verbatim for this session. The item then reaches two places:
   `/second-wind` and the post-compact handoff);
 - what the session start injects after `/clear`, compact and resume.
 
+<!-- Russian on purpose: the Russian remember word, which creates a Lific issue. -->
 A pin lasts for the work. After `/clear` the next session inherits the pins.
 For a task to do later, "запомни" creates a Lific issue. For a fact that
 outlives the work, write an auto-memory record.
@@ -48,6 +54,7 @@ outlives the work, write an auto-memory record.
 
 ### Step 1 - Take the text exactly
 
+<!-- Russian on purpose: the Russian pin trigger the operator types. -->
 The text is everything after `закрепи:` or after `/pin`, as the operator wrote
 it. Do not reword, shorten, correct or translate it. Line breaks become spaces;
 the script does that.
@@ -75,6 +82,7 @@ looks like a credential stays in `.env`.
 
 ## NEVER
 
+<!-- Russian on purpose: the Russian remember word, which creates a Lific issue. -->
 - Never reword, shorten, correct or translate a pin
 - Never write the pins file yourself; `scripts/pin.py` is the only writer
 - Never pin on "запомни": that phrase creates a Lific issue

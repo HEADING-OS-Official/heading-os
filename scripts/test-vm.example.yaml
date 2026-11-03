@@ -1,0 +1,51 @@
+# Test VM - EXAMPLE / TEMPLATE
+# ============================
+# The shape of the configuration scripts/test-vm.py reads: one Proxmox VM that
+# end-to-end install tests run on, rolled back to a clean snapshot before each.
+#
+# This is the engine-shipped EXAMPLE, empty structure only. The real file is
+# private per-instance DATA: copy it as test-vm.yaml into the directory
+# `python scripts/data-path.py path data-config` prints and fill in every
+# value. test-vm.py refuses to run while a required value is empty.
+
+# SSH alias of the Proxmox host (an entry in ~/.ssh/config); also the jump host.
+host: ""
+
+# The VM on that host.
+vmid: 0
+name: ""
+cores: 0
+memory_mb: 0
+disk_gb: 0
+# Optional: Proxmox storage for the system and EFI disks of a NEW VM. Empty
+# means rebuild picks the active storage with the most available space, never
+# the one on the host's root filesystem; a value naming another storage is
+# refused unless rebuild is given --storage-override.
+disk_storage: ""
+# Proxmox storage holding ISO images.
+iso_storage: ""
+# Directory on the host where iso_storage keeps its ISO files.
+iso_dir: ""
+# Installer ISO file name inside iso_dir (an Ubiquity-based Linux Mint image).
+iso: ""
+bridge: ""
+
+# The guest: static IPv4 address, prefix length, gateway and one DNS server.
+address: ""
+prefix: 0
+gateway: ""
+dns: ""
+hostname: ""
+timezone: ""
+# The sudo user the installer creates, and its full name.
+user: ""
+fullname: ""
+
+# Name of the clean snapshot `reset` rolls back to and `rebuild` retakes.
+snapshot: ""
+
+# Name of the .env key holding the password of the user and of root.
+password_env: ""
+
+# RustDesk release installed by `rebuild`.
+rustdesk_version: ""

@@ -29,7 +29,9 @@ replay_refs() {
 # scripts/install-git-hooks.py (resolved with get_workspace_root()), never
 # guessed from a sibling directory name. A bare `python3` fallback can run the
 # tests green without the pinned dependencies (2026-08-21), hence the warning.
-ENGINE="@@ENGINE_ROOT@@"
+# Stamped already shell-quoted (shlex.quote), so a `$` or `$(...)` in the
+# path is text and never runs when this hook does.
+ENGINE=@@ENGINE_ROOT@@
 if [ -x "$ENGINE/.venv/bin/python" ]; then
     PY="$ENGINE/.venv/bin/python"
 else

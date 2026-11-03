@@ -2,7 +2,7 @@
 
 This guide takes you from a machine with no Herdr on it to a working setup where HEADING OS opens a fresh, safe copy of itself for every task. It covers installing Herdr, setting it up, connecting it to HEADING OS, using it every day, checking that it works, fixing common problems, and updating or removing it.
 
-Herdr is optional. HEADING OS runs without it. You need Herdr only if you want to work on several tasks at the same time, each in its own copy. The way of working that Herdr supports is explained in `YARDS.md`. Read this guide first, then that one.
+Herdr is part of every HEADING OS install. It lets you work on several tasks at the same time, each in its own copy. The way of working that Herdr supports is explained in `YARDS.md`. Read this guide first, then that one.
 
 ## What Herdr is, and why HEADING OS uses it
 

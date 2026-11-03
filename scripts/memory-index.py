@@ -1045,7 +1045,7 @@ def host_fallback_banner(preferred: str | None, resolved: str, *,
     """Loud, red, immediate. None when the preferred host answered.
 
     Operator directive, 2026-08-21: *"if the Windows system (where the GPU is) is
-    unavailable, you say so AT ONCE, loudly, in red"* (translated). Before this the
+    unavailable, you say so AT ONCE, loudly, in red"*. Before this the
     drop was silent by construction -- `resolve_inference_host` returns the winner
     and says nothing about who lost, so a sleeping Windows box simply produced a
     slower run that looked identical to a fast one.
@@ -1238,7 +1238,7 @@ def provenance_mismatch(conn, *, model: str, host: str, digest: str | None = Non
       the operator asked to run on one host and a silent fallback is how that
       stops being true.
     - **digest** -- the one that answers the operator's 2026-08-21 question, "how will
-      sync between the instances work?" (translated). Nothing syncs the two Ollama installs, so an
+      sync between the instances work?". Nothing syncs the two Ollama installs, so an
       auto-update on one host swaps the weights under an unchanged tag: same name
       `bge-m3`, different vectors, and no other field moves. The digest is the
       only evidence that happened.
@@ -2108,7 +2108,7 @@ def _importance_score(meta):
     if (meta.get("ntype") or "").strip().lower() == "episode":
         base *= 0.8
     # HOS-192: a record the distiller wrote yields to one a person wrote. The
-    # operator's decision 2026-10-03, "With a mark" (translated): it keeps writing, marked,
+    # operator's decision 2026-10-03, "With a mark": it keeps writing, marked,
     # and gives way to his direct words. The factor is the episode bias above,
     # reused rather than tuned: no measurement chose it.
     if (meta.get("written_by") or "").strip() in MACHINE_WRITERS:

@@ -132,7 +132,7 @@ BACKUP_DIR="$("$PYTHON" "$SCRIPT_DIR/data-path.py" path runtime:settings-backup/
 if [ -n "$BACKUP_DIR" ]; then
     BACKUP_ARGS=(--backup-dir "$BACKUP_DIR")
 fi
-"$PYTHON" "$SCRIPT_DIR/merge-platform-settings.py" "$TEMPLATE" "$TARGET" "${BACKUP_ARGS[@]}" "$@"
+"$PYTHON" "$SCRIPT_DIR/merge-platform-settings.py" "$TEMPLATE" "$TARGET" ${BACKUP_ARGS[@]+"${BACKUP_ARGS[@]}"} "$@"
 
 # The SECOND thing a clone can be unarmed for (2026-09-20): the private
 # operational layer, wired by hand in the operator's ~/.claude/CLAUDE.md, so a

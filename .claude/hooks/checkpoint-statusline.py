@@ -150,6 +150,24 @@ def autonomy_segment(unattended: bool, ended: bool = False, hard: int | None = N
     return f"{C_DIM}⏸  manual{C_RESET}"
 
 
+def handoff_segment(fresh: dict | None, now: float) -> str:
+    """The handoff's age, from what the Stop hook measured last (HOS-315 part 3).
+
+    Empty when nothing was measured: in a yard, or before this session's first
+    Stop. The minutes are wall-clock since the archive was written, read now;
+    the events are as of the last Stop. Yellow once the handoff went stale.
+    """
+    if not isinstance(fresh, dict):
+        return ""
+    mtime = fresh.get("archive_mtime")
+    if not isinstance(mtime, (int, float)):
+        return f"{C_DIM}handoff: none{C_RESET}"
+    minutes = max(0, int((now - mtime) // 60))
+    age = f"{minutes}m" if minutes < 120 else f"{minutes // 60}h"
+    color = C_YELLOW if fresh.get("due") else C_DIM
+    return f"{color}handoff {age}/{int(fresh.get('events') or 0)}ev{C_RESET}"
+
+
 def build_status_line(
     payload: dict,
     project: Path,
@@ -158,6 +176,7 @@ def build_status_line(
     unattended: bool = False,
     stretch_ended: bool = False,
     hard: int | None = None,
+    handoff: str = "",
 ) -> str:
     parts: list[str] = []
 
@@ -195,6 +214,8 @@ def build_status_line(
         parts.append(f"{color}{bar} {remaining}%{C_RESET}{tail}")
 
     parts.append(autonomy_segment(unattended, stretch_ended, hard))
+    if handoff:
+        parts.append(handoff)
 
     model = (payload.get("model") or {}).get("display_name") or "Claude"
     parts.append(f"{C_DIM}{model}{C_RESET}")
@@ -285,6 +306,7 @@ def apply_render(
         "unattended": unattended,
         "stretch_ended": stretch_ended,
         "hard": cfg["hard"],
+        "handoff": handoff_segment(state.get("handoff_freshness"), CP.utc_now().timestamp()),
     }
 
 
@@ -323,6 +345,7 @@ def main() -> int:
             render["unattended"],
             render["stretch_ended"],
             render["hard"],
+            render["handoff"],
         )
     )
     return 0

@@ -13,7 +13,7 @@ paths:
 
 # Craft Whose Failure Is Silent
 
-Last Updated: 2026-09-15
+Last Updated: 2026-11-02
 Last Verified: 2026-09-15
 
 Path-scoped rule. Eighteen rules about tests, guards, indexes and scheduled
@@ -25,7 +25,7 @@ Nothing announces these. The tree looks fine and the claim is false.
 They left the operator's memory index on 2026-09-15, when it neared the
 harness budget that truncates it from the end. The `paths:` list above is
 deliberately wide, operator instruction that day: **"make it wide. we cannot
-afford rules that do not work."** (translated)
+afford rules that do not work."**
 
 The first seventeen lines below are reproduced VERBATIM from the index, dashes and all, and the
 `voice.md` carve-out for reproduced text governs them. The last one was added on

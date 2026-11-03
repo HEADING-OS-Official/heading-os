@@ -1,8 +1,8 @@
 ---
 name: handover
-description: "Сохранить manual handoff текущей сессии в `handoff-archive` без выполнения /compact (раньше называлась /checkpoint). Используй когда хочешь зафиксировать состояние работы и иметь возможность вернуться позже с чистым контекстом; чтобы сохранить и сразу очистить контекст, есть /clear-handover. Запускается явной командой /handover ИЛИ вызовом снаружи через инструмент Skill. NEVER auto-trigger: обычная фраза скилл не запускает, потому что router стоит в manual и триггеров нет."
+description: "Save a manual handoff of the current session into `handoff-archive` without running /compact (formerly called /checkpoint). Use it when you want to record the state of the work and be able to come back later with a clean context; to save and clear the context at once, there is /clear-handover. Started by the explicit command /handover OR by a call from outside through the Skill tool. NEVER auto-trigger: an ordinary phrase does not start the skill, because its router is manual and it has no triggers."
 allowed-tools: "Read, Bash(date:*), Bash(.venv/bin/python scripts/checkpoint-paths.py:*)"
-argument-hint: "[заметка] | unattended on|off|status"
+argument-hint: "[note] | unattended on|off|status"
 metadata:
   author: Misha Hanin
   email: misha.hanin@headingos.com
@@ -180,6 +180,27 @@ Read `mode-mechanics.md` in the data repository at
 `$(.venv/bin/python scripts/data-path.py path skill-design-references skill=checkpoint)/mode-mechanics.md`.
 The directory keeps the skill's former name.
 A public clone does not have it, and this file is then the whole account.
+
+## Handoff freshness
+
+A second trigger, separate from the menu (HOS-315, approved 2026-11-01): the
+menu stays one showing and a last call. At each Stop in HELM the hook counts
+the events since this session's newest handoff. Four kinds count: merge
+commits on the main clone's `main`, Lific issues this session created or
+moved, prompts it archived, and messages the operator typed. Background-task
+reports, briefs and relayed words are not his. At 3 events or 60 minutes of work, whichever comes
+first, the handoff is stale. A silence counts as at most 5 minutes of work.
+
+- Unattended: the continuation asks for a light `/handover`: Steps 1 and 2
+  without the cold read, kind `manual`, no `/clear`, no `/compact`. At most
+  twice per handoff.
+- Attended: one line, "Handoff is N event(s) / M min old", once per handoff.
+- The status line shows the age: `handoff 42m/3ev`, yellow once stale.
+- Never in a yard (`HEADING_OS_YARD=1`): handoffs there are not HELM's.
+
+A source that cannot be read counts as nothing and is named once. Thresholds:
+`CLAUDE_HANDOFF_FRESH_EVENTS` (default 3) and `CLAUDE_HANDOFF_FRESH_MINUTES`
+(default 60); an invalid value gives the default.
 
 ## Unattended mode
 

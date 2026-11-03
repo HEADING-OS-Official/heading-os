@@ -1,6 +1,6 @@
 # CLIProxyAPI: one door to other AI models
 
-This guide shows you how to install CLIProxyAPI, set it up, sign in to each AI provider HEADING OS uses, connect it to the engine, and use it every day. CLIProxyAPI is optional. The core of HEADING OS runs without it. Without it you lose the features that ask models other than Claude: second opinions, deep research checks and branch reviews.
+This guide shows you how to install CLIProxyAPI, set it up, sign in to each AI provider HEADING OS uses, connect it to the engine, and use it every day. CLIProxyAPI is part of every HEADING OS install. It serves the features that ask models other than Claude: second opinions, deep research checks and branch reviews.
 
 A few words you will see below:
 

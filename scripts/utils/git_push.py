@@ -238,9 +238,9 @@ def _normalize_remote_url(url: str) -> str:
     return f"{head}/{path}".rstrip("/").lower()
 
 
-def _push_url(repo, remote: str = "origin", *,
-              env: Optional[dict] = None) -> Optional[str]:
-    """The URL git would actually PUSH ``repo`` to, or None.
+def _push_urls(repo, remote: str = "origin", *,
+                env: Optional[dict] = None) -> list:
+    """EVERY URL git would PUSH ``repo`` to under ``remote``; empty when none resolves.
 
     ``--push`` is load-bearing: a remote may carry a ``pushurl`` that differs
     from its fetch URL, and the question this wall asks is where a push lands,
@@ -248,21 +248,26 @@ def _push_url(repo, remote: str = "origin", *,
     ``url.<base>.insteadOf`` and ``url.<base>.pushInsteadOf``, and agrees with
     ``git push --dry-run`` in every combination of the three.
 
+    ``--all`` is load-bearing too: ``git push origin`` sends to every pushurl
+    (or every url, when there is no pushurl), and without ``--all`` git prints
+    only the first, so a public second destination went unjudged (MEASURED
+    2026-11-01, HOS-301 review round 3).
+
     ``env`` is the environment the PUSH will run under, and it must be the same
     one. A rewrite pair lives in the environment, so reading the URL in a
     different environment answers a question about a different push.
     """
     try:
         out = subprocess.run(
-            ["git", "-C", str(repo), "remote", "get-url", "--push", remote],
+            ["git", "-C", str(repo), "remote", "get-url", "--push", "--all", remote],
             capture_output=True, text=True, timeout=15, env=env,
         )
     except (subprocess.SubprocessError, OSError) as exc:
         logger.debug("push url unreadable for %s: %s", repo, exc)
-        return None
+        return []
     if out.returncode != 0:
-        return None
-    return out.stdout.strip() or None
+        return []
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
 
 
 def _gh_visibility(normalized: str, *, token: Optional[str] = None) -> Optional[str]:
@@ -338,7 +343,7 @@ def _visibility_cached(normalized: str,
 def _engine_push_urls(engine, *, env: Optional[dict] = None) -> set:
     """Every normalized push URL the ENGINE clone has, under any remote name.
 
-    Deliberately not `_push_url(engine, remote)`. The caller's remote NAME says
+    Deliberately not `_push_urls(engine, remote)`. The caller's remote NAME says
     nothing about what the engine calls its own remotes, and safe-push takes that
     name from the command line. Reading all of them means Check A compares
     identities rather than labels.
@@ -355,8 +360,7 @@ def _engine_push_urls(engine, *, env: Optional[dict] = None) -> set:
         return set()
     urls = set()
     for name in out.stdout.split():
-        url = _push_url(engine, name, env=env)
-        if url:
+        for url in _push_urls(engine, name, env=env):
             urls.add(_normalize_remote_url(url))
     return urls
 
@@ -410,7 +414,7 @@ def remote_objection(repo, *, token: Optional[str] = None,
         # compare. Comparing it to itself would refuse every backup.
         return None
 
-    url = _push_url(repo, remote, env=env)
+    urls = _push_urls(repo, remote, env=env)
     # `remote` may itself BE a location rather than the name of a configured
     # one: `git push <url> <branch>` is valid git and needs no remote at all,
     # so an unconfigured NAME is not evidence that nothing can be pushed. An
@@ -423,7 +427,7 @@ def remote_objection(repo, *, token: Optional[str] = None,
     # A plain remote name normalizes to a bare word, which matches no
     # host/owner/repo URL, so an unconfigured name still raises no objection
     # and `git push` still gets to fail on its own.
-    here = _normalize_remote_url(url if url is not None else remote)
+    heres = [_normalize_remote_url(u) for u in urls] or [_normalize_remote_url(remote)]
 
     engine_urls = _engine_push_urls(engine, env=env)
     # Every string this function RETURNS is a message a caller prints:
@@ -432,65 +436,67 @@ def remote_objection(repo, *, token: Optional[str] = None,
     # default strict UTF-8. `repo.name` and `here` are both derived from
     # filesystem or git bytes and carry surrogates, so escaping happens HERE,
     # once, rather than at every call site that would have to remember.
-    if here in engine_urls:
-        return safe_for_stream(
-            f"{repo.name} pushes to the ENGINE remote ({here}), which is the "
-            f"public code repository. Refusing: this would publish private "
-            f"content.")
+    # Every destination is judged: one refusal refuses the push.
+    for here in heres:
+        if here in engine_urls:
+            return safe_for_stream(
+                f"{repo.name} pushes to the ENGINE remote ({here}), which is the "
+                f"public code repository. Refusing: this would publish private "
+                f"content.")
 
-    visibility, fresh = _visibility_cached(here, token)
-    if visibility == "public" and not (public_ok and _normalize_remote_url(public_ok) == here):
-        return safe_for_stream(
-            f"{repo.name} pushes to {here}, which GitHub reports as PUBLIC. "
-            f"Refusing: only the engine may push to a public repository.")
-    if visibility is None and fresh and token and here.partition("/")[0] == "github.com":
-        # Fail open, loudly. Check A carries the hard guarantee precisely
-        # because it is offline and therefore always available; Check B raises
-        # the ceiling when it can and says so when it cannot.
-        #
-        # Scoped to github.com hosts on purpose. A non-GitHub remote is not a
-        # lookup that failed, it is a question GitHub was never asked, and a
-        # warning that fires on every local bare remote and every self-hosted
-        # host is noise the operator learns to scroll past. That would cost the
-        # warning its meaning on the one occasion it matters, which is a GitHub
-        # remote whose visibility genuinely could not be read.
-        #
-        # Also requires a token. `push-all.py --dry-run` is explicitly supported
-        # with no GH_TOKEN, and a tokenless probe of a private repository always
-        # 404s, which is not a lookup that failed but a question that could not
-        # be asked; warning on every tokenless dry run would teach the operator
-        # to scroll past the one warning that matters.
-        print(safe_for_stream(
-            f"WARNING: could not verify the visibility of {here}. "
-            f"Pushing on the offline check alone."))
-    elif fresh:
-        # A separate signal for the other ways this function reaches "no
-        # objection" without either check having actually evaluated anything:
-        # the engine's own remotes were unreadable (Check A ran against an
-        # empty set), the repository being pushed has no resolvable push URL
-        # under `remote` (only its bare name was compared), or Check B's own
-        # guard never asked GitHub at all (a non-GitHub host, or a path that is
-        # not `owner/repo`). Each of these produces a clean "no objection"
-        # return that reads exactly like a pass on a repository the wall
-        # actually evaluated, and the case above already covers the one
-        # remaining "asked and failed" shape, so this is only the cases it
-        # does not. Gated on the same `fresh` flag as the warning above so a
-        # real push-all run (the precondition, then the chokepoint) prints
-        # this once per repository rather than twice.
-        parts = []
-        if not engine_urls:
-            parts.append("the engine's own push remotes could not be read")
-        if url is None:
-            parts.append(f"'{remote}' does not resolve to a push URL for "
-                          f"{repo.name}, so only its bare name was compared")
-        elif visibility is None:
-            parts.append("GitHub was not asked, or could not answer, whether "
-                          "this remote is public")
-        if parts:
+        visibility, fresh = _visibility_cached(here, token)
+        if visibility == "public" and not (public_ok and _normalize_remote_url(public_ok) == here):
+            return safe_for_stream(
+                f"{repo.name} pushes to {here}, which GitHub reports as PUBLIC. "
+                f"Refusing: only the engine may push to a public repository.")
+        if visibility is None and fresh and token and here.partition("/")[0] == "github.com":
+            # Fail open, loudly. Check A carries the hard guarantee precisely
+            # because it is offline and therefore always available; Check B raises
+            # the ceiling when it can and says so when it cannot.
+            #
+            # Scoped to github.com hosts on purpose. A non-GitHub remote is not a
+            # lookup that failed, it is a question GitHub was never asked, and a
+            # warning that fires on every local bare remote and every self-hosted
+            # host is noise the operator learns to scroll past. That would cost the
+            # warning its meaning on the one occasion it matters, which is a GitHub
+            # remote whose visibility genuinely could not be read.
+            #
+            # Also requires a token. `push-all.py --dry-run` is explicitly supported
+            # with no GH_TOKEN, and a tokenless probe of a private repository always
+            # 404s, which is not a lookup that failed but a question that could not
+            # be asked; warning on every tokenless dry run would teach the operator
+            # to scroll past the one warning that matters.
             print(safe_for_stream(
-                f"NOTE: the remote wall reached its lower ceiling for "
-                f"{repo.name} ({here}): {'; '.join(parts)}. Proceeding "
-                f"without full confirmation."))
+                f"WARNING: could not verify the visibility of {here}. "
+                f"Pushing on the offline check alone."))
+        elif fresh:
+            # A separate signal for the other ways this function reaches "no
+            # objection" without either check having actually evaluated anything:
+            # the engine's own remotes were unreadable (Check A ran against an
+            # empty set), the repository being pushed has no resolvable push URL
+            # under `remote` (only its bare name was compared), or Check B's own
+            # guard never asked GitHub at all (a non-GitHub host, or a path that is
+            # not `owner/repo`). Each of these produces a clean "no objection"
+            # return that reads exactly like a pass on a repository the wall
+            # actually evaluated, and the case above already covers the one
+            # remaining "asked and failed" shape, so this is only the cases it
+            # does not. Gated on the same `fresh` flag as the warning above so a
+            # real push-all run (the precondition, then the chokepoint) prints
+            # this once per repository rather than twice.
+            parts = []
+            if not engine_urls:
+                parts.append("the engine's own push remotes could not be read")
+            if not urls:
+                parts.append(f"'{remote}' does not resolve to a push URL for "
+                              f"{repo.name}, so only its bare name was compared")
+            elif visibility is None:
+                parts.append("GitHub was not asked, or could not answer, whether "
+                              "this remote is public")
+            if parts:
+                print(safe_for_stream(
+                    f"NOTE: the remote wall reached its lower ceiling for "
+                    f"{repo.name} ({here}): {'; '.join(parts)}. Proceeding "
+                    f"without full confirmation."))
     return None
 
 

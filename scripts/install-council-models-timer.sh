@@ -54,7 +54,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
     echo "  systemd=true" >&2
     exit 5
 fi
-for unit in "${UNITS[@]}"; do
+for unit in ${UNITS[@]+"${UNITS[@]}"}; do
     if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
         echo "Template not found: $TEMPLATE_DIR/$unit" >&2
         exit 3
@@ -63,7 +63,7 @@ done
 
 mkdir -p "$DEST_DIR"
 
-for unit in "${UNITS[@]}"; do
+for unit in ${UNITS[@]+"${UNITS[@]}"}; do
     render_unit "$TEMPLATE_DIR/$unit" "$DEST_DIR/$unit" \
         "$WORKSPACE" "$PYTHON" "$TZ_VALUE"
 done

@@ -116,8 +116,10 @@ CHILD_REFUSED_EXIT = 3    # the overlay child's own code for OverlayWriteRefused
 
 # Floors, asserted OUTSIDE every loop. A loop over a case table that came back
 # short passes while checking less than it claims.
-BLOCKED_CASE_FLOOR = 52   # MEASURED 2026-10-31: 52 payloads the write guard blocks
-ALLOWED_CASE_FLOOR = 33   # MEASURED 2026-10-31: and 33 it must let through
+BLOCKED_CASE_FLOOR = 61   # MEASURED 2026-11-02: 61 payloads the write guard blocks
+ALLOWED_CASE_FLOOR = 39   # MEASURED 2026-11-02: and 39 it must let through
+GITDIR_REFUSED_FLOOR = 77   # MEASURED 2026-11-02 (HOS-319 review round 3): 77 payloads refused (into a yard's git directory, or spelled through a substitution)
+GITDIR_ALLOWED_FLOOR = 17   # MEASURED 2026-11-02 (HOS-319 review round 3): and 17 a yard must still run
 
 # The release gate's own two directions, counted 2026-09-22 when the mid-turn
 # source was written. Same reason as the two floors above: a case table that
@@ -306,6 +308,12 @@ def _cases(helm: Path, overlay: Path, tmp: Path):
             # read-only verbs in their writing forms, into HELM
             f"sed -i s/a/b/ {helm}/zzqx.txt", f"find {helm}/zzqx -delete",
             f"sort -o {helm}/zzqx.txt zzqx")],
+        # HOS-324: Claude's own Gmail and Google Calendar connectors reach the
+        # executive's live mailbox and calendar; a yard may only read them.
+        *[(f"mcp__claude_ai_Gmail__{t}", {}) for t in (
+            "send_message", "reply", "forward", "create_draft", "trash_message")],
+        *[(f"mcp__claude_ai_Google_Calendar__{t}", {}) for t in (
+            "create_event", "update_event", "delete_event", "respond_to_event")],
     ]
     # The yard's own checkout: ROOT inside a yard, `tmp` in HELM (ROOT is HELM there).
     # MEASURED 2026-10-07: with ROOT, four own-tree cases failed in HELM, passed in a yard.
@@ -342,6 +350,11 @@ def _cases(helm: Path, overlay: Path, tmp: Path):
             "cd ~/.claude/projects && grep -rl zzqx . | python3 -c 'import sys' 2>&1",
             "crontab -l 2>/dev/null", f"cp ~/.hindsight/zzqx.jsonl {overlay}/zzqx.jsonl",
             "cd ~/.claude && python3 - < zzqx.py")],
+        # HOS-324: reading through the connectors stays open in a yard.
+        *[(f"mcp__claude_ai_Gmail__{t}", {}) for t in (
+            "get_message", "search_threads", "list_drafts")],
+        *[(f"mcp__claude_ai_Google_Calendar__{t}", {}) for t in (
+            "list_events", "search_events", "suggest_time")],
     ]
     return blocked, allowed
 
@@ -353,19 +366,21 @@ def test_a_yard_is_refused_the_writes_that_reach_helm_or_the_shared_index(
     (HOS-199), thirty-three into a place outside every checkout that decides what
     runs, or a command that changes it without naming a file (HOS-211), one deletion of HELM spelled through a variable put to the
     deletion guard (HOS-199), one hook planted through a `gitdir:` pointer
-    file (HOS-199). The observable
+    file (HOS-199), and nine calls of Claude's Gmail and Google Calendar connectors
+    that write to the executive's live mailbox or calendar (HOS-324). The observable
     consequence is the decision object the hook returns, never the wording of
     the reason."""
     module, helm, overlay, neutral = dispatch
     blocked, _allowed = _cases(helm, overlay, neutral)
     assert len(blocked) >= BLOCKED_CASE_FLOOR, (
         f"{len(blocked)} refusal cases, below the {BLOCKED_CASE_FLOOR} measured "
-        f"2026-10-04")
+        f"2026-11-02")
     monkeypatch.setattr(module, "_IN_A_YARD", True)
-    survivors = [inp for tool, inp in blocked
+    survivors = [(tool, inp) for tool, inp in blocked
                  if module.check_yard_write_guard(
                      {"tool_name": tool, "cwd": str(neutral), "tool_input": inp}) is None]
-    assert not survivors, f"the yard write guard permitted {len(survivors)} of these"
+    assert not survivors, (f"the yard write guard permitted {len(survivors)} of these"
+                           f": {[t for t, _ in survivors]}")
     # HOS-199 item 2: the DELETION guard judges the expanded text too. Its HELM
     # clause is unconditional, so no yard state is consulted; the guarded set is
     # emptied so nothing on this machine is inspected. With the literal walk
@@ -395,7 +410,7 @@ def test_the_work_a_yard_is_supposed_to_do_is_still_permitted(dispatch, monkeypa
     _blocked, allowed = _cases(helm, overlay, neutral)
     assert len(allowed) >= ALLOWED_CASE_FLOOR, (
         f"{len(allowed)} honest cases, below the {ALLOWED_CASE_FLOOR} measured "
-        f"2026-10-04")
+        f"2026-11-02")
     monkeypatch.setattr(module, "_IN_A_YARD", True)
     refused = [inp for tool, inp in allowed
                if module.check_yard_write_guard(
@@ -411,6 +426,162 @@ def test_this_wall_stays_silent_in_the_main_clone(dispatch, monkeypatch):
     tool, inp = blocked[0]
     assert module.check_yard_write_guard(
         {"tool_name": tool, "cwd": str(neutral), "tool_input": inp}) is None
+
+
+def _gitdir_cases(helm: Path, gitdir: Path, scratch: Path):
+    """HOS-319 payloads for a yard whose git directory is `gitdir`, inside
+    `helm`. `scratch` belongs to no checkout and to no data overlay."""
+    refused = [
+        "IDX=$(git rev-parse --absolute-git-dir)/zzqx-tmp.index; rm -f \"$IDX\"; "
+        "git diff --cached > \"$IDX.patch\"; GIT_INDEX_FILE=\"$IDX\" git read-tree main && "
+        "GIT_INDEX_FILE=\"$IDX\" git apply --cached \"$IDX.patch\" && "
+        "GIT_INDEX_FILE=\"$IDX\" git write-tree",
+        'git diff > "$(git rev-parse --git-dir)/zzqx.patch"',
+        "git diff > `git rev-parse --git-dir`/zzqx.patch",
+        "git diff > $(git rev-parse --git-path zzqx.patch)",
+        "git diff > $(/usr/bin/git rev-parse --git-path zzqx.patch)",
+        # Spellings bash still runs as git (HOS-319 review rounds 1 and 2).
+        'git diff > "$(git"" rev-parse --git-common-dir)/zzqx"',
+        'git diff > "$(git${IFS}rev-parse --git-dir)/zzqx.patch"',
+        'git diff > "$(command git rev-parse --git-dir)/zzqx.patch"',
+        "git diff > `\\git rev-parse --git-dir`/zzqx.patch",
+        'git diff > "$(true; git rev-parse --git-dir)/zzqx.patch"',
+        "git diff > `true; git rev-parse --git-dir`/zzqx.patch",
+        'git diff > "$(eval git rev-parse --git-dir)/zzqx.patch"',
+        'git diff > "$(ZZQX=1 git rev-parse --git-dir)/zzqx.patch"',
+        'git diff > "$(( git rev-parse --git-dir)/zzqx.patch"',
+        # A quoted `)` is text: the body runs on to the git (review round 2).
+        "git diff > \"$(printf ')' ; git rev-parse --git-dir)/zzqx.patch\"",
+        "git diff > \"$(printf \\) ; git rev-parse --git-dir)/zzqx.patch\"",
+        "git diff > \"$(printf '(' $'\\'' ')' ; git rev-parse --git-dir)/zzqx.patch\"",
+        "git diff > \"$(printf $'\\'' ')' ; git rev-parse --git-dir)/zzqx.patch\"",
+        "git diff > \"$(echo \"$(printf '\"')\" ')' ; git rev-parse --git-dir)/zzqx.patch\"",
+        'git diff > "$(case x in x) git rev-parse --git-dir;; esac)/zzqx.patch"',
+        "git diff > \"$(printf '(' ; case x in x) git rev-parse --git-dir;; esac)/zzqx.patch\"",
+        'git diff > "$(echo x # )\ngit rev-parse --git-dir)/zzqx.patch"',
+        "git diff > \"$(echo \"`printf '\"'`\" ')' ; git rev-parse --git-dir)/zzqx.patch\"",
+        'cat <<E >/dev/null\nzzqx\nE\ngit diff > "$(true; git rev-parse --git-dir)/zzqx.patch"',
+        'git diff > "$(: ${x:-)} ; git rev-parse --git-dir)/zzqx.patch"',
+        "git diff > $(echo ${x:-)} ; git rev-parse --git-dir)/zzqx.patch",
+        'git diff > "$(if false; then :; else git rev-parse --git-dir; fi)/zzqx.patch"',
+        'git diff > "$({ case x in x) git rev-parse --git-dir;; esac; })/zzqx.patch"',
+        'git diff > "$(timeout 9 git rev-parse --git-dir)/zzqx.patch"',
+        'git diff > "$((git rev-parse --git-dir) )/zzqx.patch" "))"',
+        'git diff > "$( (true)#)\ngit rev-parse --git-dir)/zzqx.patch"',
+        'git diff > "$(: `: )` ; git rev-parse --git-dir)/zzqx.patch"',
+        'GIT_INDEX_FILE="$(: ${x:-)} ; git rev-parse --git-dir)/index" git status',
+        *(f'git diff > "$({w} rev-parse --git-dir)/zzqx.patch"'
+          for w in ("{g,}it", "bin/gi?", "bin/g*t", "bin/[g]it")),
+        # A git alias by another name still asks git for a path.
+        "git diff > $(zzqx-g rev-parse --git-path zzqx.patch)",
+        "export GIT_INDEX_FILE=$(git rev-parse --git-dir)/zzqx; git read-tree main",
+        "D=$(git rev-parse --git-dir); git diff | tee $D/zzqx.patch",
+        'rm "$(git rev-parse --git-dir)/zzqx.patch"',
+        f"GIT_INDEX_FILE={gitdir}/zzqx.index git status",
+        f"env GIT_INDEX_FILE={gitdir}/zzqx.index git diff --cached",
+    ]
+    allowed = [
+        "git add -A", "git commit -m zzqx", "git status", "git diff --cached",
+        "git log --oneline -1", "git rev-parse --git-dir",
+        'cat "$(git rev-parse --git-dir)/HEAD"',
+        f"git diff --cached > {scratch}/zzqx.patch",
+        f"GIT_INDEX_FILE={scratch}/zzqx.index git read-tree main",
+        # Honest unresolved variables: no git substitution names where they write.
+        "D=$(mktemp -d); git diff > $D/zzqx.patch",
+        'for f in zzqx-a zzqx-b; do echo x > "$f.out"; done',
+        "git diff > $ZZQX_EARLIER/zzqx.patch",
+        "git diff > ${ZZQX_EARLIER}/zzqx.patch",
+        f"cat > {scratch}/zzqx.sh <<'EOF'\necho x > \"$OUT\"\nEOF",
+        'cat <<E > zzqx.txt\nzzqx\nE',
+        "echo x >| zzqx.txt", "git log |& tee zzqx.log",
+    ]
+    refused += [
+        # Review round 3: ANSI-C quoting spells git without the word.
+        "git diff > \"$(( $'\\x67it' rev-parse --absolute-git-dir) )/zzqx.patch\"",
+        "git diff > \"$($'\\x67it' rev-parse --absolute-git-dir)/zzqx.patch\"",
+        "git diff > $'\\x2e'zzqx.patch",
+        'git diff > $"zzqx".patch',
+        'git diff | tee "$(true; git rev-parse --git-dir)/zzqx.patch"',
+        # `>|` and `|&` are not chain cuts (round 3 self-review).
+        'git diff >| "$(true; git rev-parse --git-dir)/zzqx.patch"',
+        'git diff |& tee "$(true; git rev-parse --git-dir)/zzqx.patch"',
+        f"git diff >| {gitdir}/zzqx.patch",
+        *("cat <<E >/dev/null\nzzqx\nE\n" + c for c in (
+            'git diff >| "$(true; git rev-parse --git-dir)/zzqx.patch"',
+            'git diff |& tee "$(true; git rev-parse --git-dir)/zzqx.patch"')),
+        # Any substitution in a write position, whatever runs inside it: these
+        # run no git and are refused anyway (accepted over-refusal, round 3).
+        "git diff > $(git-zzqx-path)/zzqx.patch",
+        "git diff > `git-zzqx-path`/zzqx.patch",
+        "git diff > $(date +%s)-zzqx.patch",
+        "echo x > zzqx-$((1+1)).out",
+        "echo x > \"$(printf '(')zzqx.txt\"",
+        'echo x > "$(dirname "$(pwd)")/zzqx.txt"',
+        "echo x > \"$(printf $'\\x29')zzqx.txt\"",
+        'echo x > "$(echo ${HOME:-/x})/zzqx.txt"',
+        "echo x > zzqx-$(($ZZQX_N+1)).out",
+    ]
+    # Git behind a variable (rounds 2 and 3).
+    refused += [f'git diff > "$({p} $ZZQX_G rev-parse --git-dir)/zzqx.patch"' for p in (
+        "", "command", "\"command\"", "\\command", "eval", "ZZQX=1", "true;", "printf ')' ;", "printf \\) ;",
+        "printf $'\\'' ')' ;", "echo \"$(printf '\"')\" ')' ;",
+        "echo \"`printf '\"'`\" ')' ;", ": ${x:-)} ;", "case x in x) :;; esac;",
+        "echo x # )\n")]
+    return refused, allowed
+
+
+def test_a_yard_cannot_create_files_in_its_git_directory_but_git_still_works_there(
+        dispatch, monkeypatch, tmp_path_factory):
+    """HOS-319. A yard's git directory lives inside HELM, at
+    `<HELM>/.git/worktrees/<yard>/`, and the HOS-314 yard created two files
+    there through `$(git rev-parse --absolute-git-dir)` and `GIT_INDEX_FILE`
+    while the same path spelled literally was refused. MEASURED 2026-11-01 on
+    main 5bccdebe, with a fake yard outside the data overlay: the guard allowed
+    9 of the 9 refused payloads below and refused 0 of the 13 allowed ones.
+    Review round 1, MEASURED 2026-11-02 on ef8a5a37, which read a git
+    substitution with a regex: it allowed 9 of the 20 refused payloads (git by
+    path, through `command`, `eval`, a backslash, a prefix assignment, a
+    command list in either form, `$((` with no `))`, and an alias asking for
+    `--git-path`) and refused the two `git-zzqx-path` cases; main 7182f02b
+    allowed all 20 and refused 0 of the 17 allowed ones. Review round 2,
+    MEASURED 2026-11-02 on f5feeb0b, which counted quoted and escaped
+    parentheses: over that round's 58 refused payloads it let 30 through and
+    refused `"$(printf '(')..."`; a quote-aware close then still let 27
+    through (`$'\\''`, `${x:-)}`, `case`, `if ... else git`, `timeout`, `$((`,
+    a `#` comment, a heredoc elsewhere, a glob or brace), every one run as git
+    by bash with a fake git on PATH. Review round 3, MEASURED 2026-11-02 on
+    3500e6d3, which recognised git words: `$(( $'\\x67it' rev-parse ...) )`
+    passed, and bash ran it as git. Since then any substitution or `$'...'`
+    in a write position is refused whatever runs inside it, so the harmless
+    ones moved to the refused list: over the 77 below, 3500e6d3 let 16 through,
+    f5feeb0b 44 and main 7182f02b 76 (`>|` and `|&` were chain cuts on all
+    three); none of the 17 allowed is refused.
+
+    The fake yard and the scratch directory come from `tmp_path_factory`, not
+    `tmp_path`: the conftest pins the data overlay to `tmp_path`, where git is
+    refused for another reason, which would hollow out the allowed half. The
+    `.git` file's `gitdir:` path is only text; nothing is created in HELM."""
+    module, helm, _overlay, _neutral = dispatch
+    fake = tmp_path_factory.mktemp("zzqx-yard")
+    scratch = tmp_path_factory.mktemp("zzqx-scratch")
+    gitdir = helm / ".git" / "worktrees" / "zzqx-yard"
+    (fake / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    monkeypatch.setattr(module, "_IN_A_YARD", True)
+    monkeypatch.setattr(module, "_yard_mine", lambda: fake)
+    refused, allowed = _gitdir_cases(helm, gitdir, scratch)
+    assert len(refused) >= GITDIR_REFUSED_FLOOR, (
+        f"{len(refused)} refusal cases, below the {GITDIR_REFUSED_FLOOR} measured 2026-11-01")
+    assert len(allowed) >= GITDIR_ALLOWED_FLOOR, (
+        f"{len(allowed)} honest cases, below the {GITDIR_ALLOWED_FLOOR} measured 2026-11-01")
+
+    def decide(command: str):
+        return module.check_yard_write_guard(
+            {"tool_name": "Bash", "cwd": str(fake), "tool_input": {"command": command}})
+
+    survivors = [c for c in refused if decide(c) is None]
+    assert not survivors, f"the yard write guard permitted {len(survivors)}: {survivors}"
+    wrongly = [c for c in allowed if decide(c) is not None]
+    assert not wrongly, f"the yard write guard refused {len(wrongly)}: {wrongly}"
 
 
 def _overlay_child(tmp_path: Path, target: Path, mode: str, data_root: Path) -> int:
@@ -985,7 +1156,8 @@ def _pretend_world(tmp_path: Path) -> tuple[Path, Path]:
     engine = world / "engine"
     (engine / "scripts" / "utils").mkdir(parents=True)
     (world / ".heading-os-data" / "crm").mkdir(parents=True)
-    for name in ("overlay_write_guard.py", "excluded_dirs.py"):
+    # `paths.py` since HOS-313: the guard asks its one sibling rule there.
+    for name in ("overlay_write_guard.py", "excluded_dirs.py", "paths.py"):
         (engine / "scripts" / "utils" / name).write_bytes(
             (ROOT / "scripts" / "utils" / name).read_bytes())
     (engine / "committed_tool.py").write_text(ENTRYLESS_TOOL, encoding="utf-8")
@@ -993,7 +1165,8 @@ def _pretend_world(tmp_path: Path) -> tuple[Path, Path]:
     (engine / "untracked_caller.py").write_text(ENTRYLESS_BODY, encoding="utf-8")
     _git(engine, "init", "-q", ".")
     _git(engine, "add", "scripts/utils/overlay_write_guard.py",
-         "scripts/utils/excluded_dirs.py", "committed_tool.py", "tracked_caller.py")
+         "scripts/utils/excluded_dirs.py", "scripts/utils/paths.py",
+         "committed_tool.py", "tracked_caller.py")
     return engine, world / ".heading-os-data"
 
 

@@ -1,6 +1,6 @@
 # Lific: the issue tracker
 
-This guide takes you from nothing to daily use of Lific with HEADING OS. It assumes you have never seen Lific before. Lific is optional. HEADING OS runs without it, and every part that uses it stays silent when it is not installed.
+This guide takes you from nothing to daily use of Lific with HEADING OS. It assumes you have never seen Lific before. Lific is part of every HEADING OS install. If it is not running, every part that uses it stays silent.
 
 Every command, flag, file name and default in this guide was checked against Lific 2.11.1 (its own `--help`), its upstream README, or the HEADING OS engine source. Where something could not be checked, the guide says so.
 

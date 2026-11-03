@@ -20,6 +20,7 @@ installs are untouched and still fire; what went away is the check on this
 installer, so `--check` is now trusted rather than verified.
 """
 import argparse
+import shlex
 import shutil
 import subprocess
 import sys
@@ -128,8 +129,11 @@ def install_pre_push_data(repo: Path, src: Path, engine: Path | None = None) -> 
     engine = Path(engine) if engine is not None else get_workspace_root()
     dest = _hooks_dir(repo) / "pre-push"
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # shlex-quoted: the template line is `ENGINE=@@ENGINE_ROOT@@`, and a path
+    # stamped inside double quotes ran any `$(...)` it held at every push
+    # (MEASURED 2026-11-01 on a scratch data repository, HOS-301 review).
     body = src.read_text(encoding="utf-8").replace(
-        ENGINE_ROOT_PLACEHOLDER, str(Path(engine).resolve()))
+        ENGINE_ROOT_PLACEHOLDER, shlex.quote(str(Path(engine).resolve())))
     dest.write_text(body, encoding="utf-8")
     dest.chmod(0o755)
 
@@ -156,12 +160,24 @@ def check_pre_push_data(repo: Path, src: Path | None = None) -> bool:
         return True
     # Compared like the engine hook, with the hook's OWN stamp written back in,
     # so a hook one version behind reads stale whichever checkout installed it.
-    stamp = next((ln.strip()[len("ENGINE="):].strip().strip('"').strip("'")
+    stamp = next((_stamp_value(ln.strip()[len("ENGINE="):])
                   for ln in body.splitlines() if ln.strip().startswith("ENGINE=")), None)
     if stamp is None:
         return False
-    want = Path(src).read_text(encoding="utf-8").replace(ENGINE_ROOT_PLACEHOLDER, stamp)
+    # Rebuilt QUOTED, so a hook stamped the old way (inside double quotes)
+    # reads stale and is re-installed.
+    want = Path(src).read_text(encoding="utf-8").replace(ENGINE_ROOT_PLACEHOLDER, shlex.quote(stamp))
     return body == want
+
+
+def _stamp_value(text: str) -> "str | None":
+    """The path an `ENGINE=` assignment holds, read the way the shell reads it."""
+    try:
+        words = shlex.split(text, comments=True)
+    except ValueError as exc:
+        print(f"{YELLOW}unreadable ENGINE= stamp in the data pre-push hook ({exc}){RESET}")
+        return None
+    return words[0] if len(words) == 1 else None
 
 
 def _stamped_engine_exists(body: str) -> bool:
@@ -170,8 +186,8 @@ def _stamped_engine_exists(body: str) -> bool:
         stripped = line.strip()
         if not stripped.startswith("ENGINE="):
             continue
-        value = stripped[len("ENGINE="):].strip().strip('"').strip("'")
-        if value == ENGINE_ROOT_PLACEHOLDER:
+        value = _stamp_value(stripped[len("ENGINE="):])
+        if value is None or value == ENGINE_ROOT_PLACEHOLDER:
             return False
         return Path(value).is_dir()
     # No ENGINE= line at all: an older hook that guessed the path at run time.

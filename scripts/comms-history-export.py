@@ -43,9 +43,11 @@ ENGINE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ENGINE))
 
 from scripts.utils.atomic import atomic_write_text  # noqa: E402
+from scripts.utils.exchange_tz import UnknownZones  # noqa: E402
 from scripts.utils.paths import DataRootError, require_outside_engine_clone  # noqa: E402
 from scripts.utils.workspace import get_default_tz  # noqa: E402
 
+# Russian on purpose: Russian reply and forward prefixes stripped from subjects.
 REPLY_RE = re.compile(r"^\s*(re|ответ|отв)\s*:", re.I)
 PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|ответ|отв|пересл)\s*(\[\d+\])?\s*:\s*)+", re.I)
 BODY_HEAD = 1500
@@ -188,11 +190,14 @@ def export_exchange(out: Path, since: date, ahead_days: int) -> dict:
     stats["sent"] = tally(rows, "sent")
 
     rows, seen = [], set()
+    zones = UnknownZones(str(tz))
     for a, b in _months(start, now + timedelta(days=ahead_days), tz):
-        # `view` expands recurring series into their occurrences.
-        for it in acc.calendar.view(start=a, end=b).only(
+        # `view` expands recurring series into their occurrences. Naming
+        # `start` and `end` in `.only()` makes exchangelib add the zone fields,
+        # so unknown zones are read as this export's zone (HOS-299).
+        for it in zones.read(acc.calendar.view(start=a, end=b).only(
                 "id", "start", "end", "subject", "organizer", "required_attendees",
-                "optional_attendees", "is_cancelled"):
+                "optional_attendees", "is_cancelled")):
             key = (it.id, str(it.start))
             if key in seen:  # an event across a window boundary comes back twice
                 continue
@@ -207,6 +212,9 @@ def export_exchange(out: Path, since: date, ahead_days: int) -> dict:
                 "organizer_email": (str(it.organizer.email_address).lower()
                                     if it.organizer and it.organizer.email_address else None),
                 "attendee_emails": attendees, "is_cancelled": it.is_cancelled})
+    message = zones.report()
+    if message:
+        print(f"exchange: {message}", file=sys.stderr)
     write_jsonl(out / "calendar.jsonl", rows)
     stats["calendar"] = tally(rows, "start")
     return stats

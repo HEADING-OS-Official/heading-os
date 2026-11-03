@@ -25,9 +25,9 @@ directory IS the disclosure, in shorter form.
 **THE ENGINE'S CHECKS AUDIT THE ENGINE'S TESTS, AND NOTHING ELSE.** Operator
 instruction 2026-09-21, on being shown a first version of this module that
 resolved the parked directory through the data overlay so the ratchets could
-keep reading it: *"Why would anyone look for what is parked? I know anyway. When
-it is needed, I will tell you."* (translated) He is right and the machinery is gone. A parked test is
-OFF. It is run by naming its path, when he asks for it, and by nothing else.
+keep reading it: *"Why would anyone look for what is parked? I know anyway.
+When it is needed, I will tell you."* He is right and the machinery is gone. A
+parked test is OFF. It is run by naming its path, when he asks for it, and by nothing else.
 Nothing in this repository reaches into the overlay to find one, so there is no
 dynamic input here that could arrive empty and be read as "nothing to check" --
 which is the defect written out in `scripts/content-guard.py`'s own docstring,
@@ -39,8 +39,8 @@ What the manifest is for, then: a COUNT, so it can be ratcheted DOWN and
 nobody loses track of how much was parked. It carries no address and no file
 list. The operator struck both from a first draft on sight: *"nothing in
 the system should know where the old tests are, or something could go and run
-them by itself, and we do not want that."* (translated) A path in a manifest is not documentation, it
-is an instruction something eventually follows. A number is not.
+them by itself, and we do not want that."* A path in a manifest is not
+documentation, it is an instruction something eventually follows. A number is not.
 """
 from __future__ import annotations
 

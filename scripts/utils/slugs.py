@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """slugs.py - the one transliteration pass the filename builders share.
 
+Russian on purpose: the measured example below is a Russian title, the input this module transliterates.
+
 Three builders in this workspace clean a title down to `[a-z0-9-]` and use the
 result as a filename stem: `scripts/render-doctype.py`, `scripts/marp_render.py`
 and `scripts/utils/threads_lib.py`. A Cyrillic title has no character in that
@@ -28,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import unicodedata
 
+# Russian on purpose: the transliteration table maps Cyrillic letters to Latin.
 # Cyrillic to Latin, lowercase keys only; the caller lowercases or the mapping
 # below handles case by looking the lowered character up and restoring the case
 # of a single-character result.

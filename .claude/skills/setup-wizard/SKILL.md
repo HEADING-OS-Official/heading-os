@@ -1,18 +1,19 @@
 ---
 name: setup-wizard
 disable-model-invocation: true
-description: Interactive setup wizard for a public HEADING OS clone. Walks the user through 18 questions, enriches short answers into rich docs, captures API keys securely, and produces a completion-% dashboard on re-runs. Refuses to run on the CEO master workspace. EXPLICIT INVOCATION ONLY - mutates the workspace skeleton (.env plus the personalized target files the apply script names).
+description: Interactive setup wizard for a public HEADING OS clone. Walks the user through 16 questions, enriches short answers into rich docs, never takes a secret in the chat (the user types it into a hidden terminal prompt), and produces a completion-% dashboard on re-runs. Refuses to run on the CEO master workspace. EXPLICIT INVOCATION ONLY - mutates the workspace skeleton (the personalized target files the apply script names).
 argument-hint: "(no arguments)"
 allowed-tools: "Read, Bash(.venv/bin/python:*)"
 metadata:
   author: Misha Hanin
   email: misha.hanin@headingos.com
-  version: "1.1"
+  version: "1.2"
 x-heading-capability:
   what: >
     Walks a fresh public HEADING OS clone through an interactive per-question
-    setup of 18 questions, enriches short answers
-    into full voice/personal/business docs, captures API keys securely into .env,
+    setup of 16 questions, enriches short answers
+    into full voice/personal/business docs, sends every secret to a hidden
+    terminal prompt (scripts/heading-secrets.py) instead of the chat,
     and shows a completion-percent dashboard on re-runs.
   how: >
     Explicit invocation only - type /setup-wizard. All writes go through
@@ -118,31 +119,21 @@ Branches:
 
 ### Secret
 
-Render prompt + example + storage reassurance.
+**Never ask for a secret in the chat, and never accept one.** A key typed here lands in the session transcript. If the user pastes a key anyway, do not repeat it and do not pass it to any command. Tell them it is now in this conversation, and that they should replace it with a new key from its provider.
 
-User pastes key (or `skip`).
-
-1. Light validation (prefix + length). On fail, prompt re-enter.
-2. Offer optional live ping (default = no):
-
-```text
-Verify this key works now? (y/N)
-```
-
-If `y`:
+1. Render the prompt and the help line. The prompt names the exact command and the variable name.
+2. Tell the user to open a terminal in the engine folder and run that command, of this form:
 
 ```bash
-WIZARD_VERIFY_KEY="<key>" .venv/bin/python scripts/wizard-verify-key.py --provider anthropic
+.venv/bin/python scripts/heading-secrets.py set <NAME>
 ```
 
-Pass the key in the environment, never as `--key`: argv is readable by any
-local process through `/proc/<pid>/cmdline` and lands in shell history.
+3. Wait for the user to type `done` or `skip`.
+4. On `skip`, invoke `apply-wizard-answers.py --skip <id>`. Advance.
+5. On `done`, invoke apply with `{"env_set": true}`. The apply script checks that the name is set in `.env` and stores no value.
+6. If the apply script reports that the name is not set, show its message. Then go back to step 2.
 
-Interpret exit code: `0` validated, `1` invalid (loop back), `2` rate-limited (proceed with note), `3` unknown (proceed with note).
-
-Exit code `4` means the invocation itself was wrong. Correct the command and run it again. Do NOT proceed.
-
-3. On approval, invoke apply with `{"value":"<key>"}`. Confirm with masked value. Advance.
+Exit code `1` with "a secret is never passed to the wizard" means a value was sent. Correct the payload to `{"env_set": true}`.
 
 ## Re-Run Flow (dashboard)
 
@@ -181,13 +172,14 @@ Commands:
 
 - Does NOT invoke other skills.
 - Does NOT write to `.setup/answers.json` directly. All writes go through `apply-wizard-answers.py`.
-- Does NOT make network calls except the optional live-ping via `wizard-verify-key.py`.
+- Does NOT make network calls.
+- Does NOT ask for, read or pass a secret value. Secrets go only through `scripts/heading-secrets.py set` in the user's terminal.
 - Does NOT accept `--force-ceo-master`. If audience detection reports ceo-master, abort.
 
 ## Files Touched (indirectly)
 
 - Reads: `.setup/answers.json` (via `--status`). Question bank content is delivered inside `--status` rows; Claude never reads the YAML directly.
-- Writes (via apply script): `.setup/answers.json`, personalized target files per question, `.env`.
+- Writes (via apply script): `.setup/answers.json`, personalized target files per question. The user's own `heading-secrets.py set` writes `.env`; the wizard never does.
   Read the per-question target paths `apply-wizard-answers.py --status` reports. Assume none of them.
 
 ## Completion

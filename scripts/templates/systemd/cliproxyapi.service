@@ -1,0 +1,19 @@
+# heading-os-service-layer: written by scripts/utils/schedule.py (HOS-307). A
+# cliproxyapi.service without this line was written by someone else, and the
+# service layer adopts it: install and remove leave it untouched.
+[Unit]
+Description=CLIProxyAPI local model proxy for HEADING OS (127.0.0.1:8317)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{CLIPROXY_DIR}}
+ExecStart={{CLIPROXY_BIN}} -config {{CLIPROXY_CONFIG}}
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

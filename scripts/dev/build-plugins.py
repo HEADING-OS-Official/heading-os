@@ -426,9 +426,12 @@ def manifest_sources(name: str, spec: dict, root: Path) -> list[str]:
 
     The asymmetry is DELIBERATE and one-directional. `hooks:` MAY carry a hook
     that `hook_events` does not wire, because `checkpoint-statusline.py` does
-    exactly that: Claude Code exposes context-window usage only to a statusLine
-    and a plugin manifest has no statusLine key, so the file must ship as a
-    script the consumer wires by hand. Shipping an unwired hook costs one unused
+    exactly that: it ships as a script the consumer wires into its own
+    statusLine setting by hand. A mod can read the same context-window figures
+    through `$.session.usage()` (scripts/claude-mods/context-bar, HOS-331), so
+    the status line is no longer the only route to them; the script stays as
+    the route that needs no mod. Whether a plugin manifest can carry a
+    statusLine key is unverified. Shipping an unwired hook costs one unused
     file; wiring an unshipped hook is a dangling command. Only the second is a
     defect. A check pinned the first as intended until the 2026-09-21 test-suite
     split parked it, so an unwired hook here now looks like an oversight to

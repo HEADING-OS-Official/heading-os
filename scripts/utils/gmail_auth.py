@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared Gmail API authentication.
+"""Shared Google authentication for Gmail and Google Calendar.
 
 One definition of the OAuth dance, so a second Gmail caller does not fork a
 second copy of the token handling. Consumed by `scripts/gmail-reader.py` and
@@ -16,7 +16,9 @@ Usage:
 
 `google_credentials(scopes, token, interactive=...)` is the token handling itself, for any
 caller of the same OAuth client that needs a different scope in a token file of its own
-(`scripts/hindsight-snapshot-offsite.py`, scope `drive.file`).
+(`scripts/hindsight-snapshot-offsite.py`, scope `drive.file`). Google Calendar
+(`CALENDAR_SCOPES`, `calendar_token_path()`) shares the same client file with a
+token of its own, consented by `scripts/google-connect.py` (HOS-324).
 """
 
 from __future__ import annotations
@@ -37,20 +39,29 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
 ]
+CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
-def creds_path() -> str:
-    return os.getenv(
-        "GOOGLE_GMAIL_CREDENTIALS_PATH",
-        os.getenv(
-            "GOOGLE_CONTACTS_CREDENTIALS_PATH",
-            str(PROJECT_ROOT / ".sessions" / "google" / "credentials.json"),
-        ),
-    )
+def google_dir(root: Path | None = None) -> Path:
+    """`.sessions/google` of `root`, this checkout when None: the one spelling of it."""
+    if root is None:
+        root = PROJECT_ROOT
+    return root / ".sessions" / "google"
 
 
-def token_path() -> str:
-    return str(PROJECT_ROOT / ".sessions" / "google" / "gmail_token.json")
+def creds_path(root: Path | None = None) -> str:
+    """The OAuth client file. An empty override counts as unset, as in google-contacts.py."""
+    return (os.getenv("GOOGLE_GMAIL_CREDENTIALS_PATH")
+            or os.getenv("GOOGLE_CONTACTS_CREDENTIALS_PATH")
+            or str(google_dir(root) / "credentials.json"))
+
+
+def token_path(root: Path | None = None) -> str:
+    return str(google_dir(root) / "gmail_token.json")
+
+
+def calendar_token_path(root: Path | None = None) -> str:
+    return str(google_dir(root) / "calendar_token.json")
 
 
 def get_service():
@@ -65,7 +76,25 @@ class ConsentRequired(RuntimeError):
     """No usable token, and the caller forbade the browser consent flow."""
 
 
-def google_credentials(scopes: list[str], token: str, *, interactive: bool = True):
+def saved_credentials(token: str, scopes: list[str]):
+    """The saved token at `token` as Credentials; ValueError when it is not a usable token.
+
+    `Credentials.from_authorized_user_file` calls `.keys()` on whatever JSON the
+    file holds, so a token of `null` or `[]` raised AttributeError past every
+    handler (MEASURED 2026-11-02, HOS-324 review round 2). A value that is not a
+    JSON object is a ValueError here, like a truncated file. OSError propagates.
+    """
+    from google.oauth2.credentials import Credentials
+
+    with open(token, encoding="utf-8") as fh:
+        info = json.load(fh)
+    if not isinstance(info, dict):
+        raise ValueError(f"the token holds a JSON {type(info).__name__}, not an object")
+    return Credentials.from_authorized_user_info(info, scopes)
+
+
+def google_credentials(scopes: list[str], token: str, *, interactive: bool = True,
+                       force: bool = False, root: Path | None = None):
     """Credentials for `scopes` from the token file at `token`, refreshed when needed.
 
     One OAuth client (`creds_path()`), any number of tokens: a caller that needs a
@@ -73,18 +102,19 @@ def google_credentials(scopes: list[str], token: str, *, interactive: bool = Tru
     exists once. With `interactive=False` a missing, unreadable or revoked token raises
     `ConsentRequired` instead of opening a browser, which is what an unattended run
     must do: on a headless machine the consent flow waits for a click that never comes.
+    `force=True` skips the saved token and goes straight to the consent (still refused
+    by `interactive=False`); `root` is the checkout whose client file is used.
     """
     from scripts.utils.optdeps import require
 
     require("google", extra="ai-extra")
     from google.auth.exceptions import RefreshError
-    from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     creds = None
-    if os.path.exists(token):
+    if not force and os.path.exists(token):
         try:
-            creds = Credentials.from_authorized_user_file(token, scopes)
+            creds = saved_credentials(token, scopes)
         except (ValueError, json.JSONDecodeError) as exc:
             # A token file that exists but cannot be read is the normal outcome of
             # an interrupted write, a revoked grant, or a hand edit: the library
@@ -124,7 +154,7 @@ def google_credentials(scopes: list[str], token: str, *, interactive: bool = Tru
             if not interactive:
                 raise ConsentRequired(
                     f"no usable Google token at {token}; run the consent step once, by hand")
-            secrets = creds_path()
+            secrets = creds_path(root)
             if not os.path.exists(secrets):
                 raise FileNotFoundError(
                     f"Google OAuth client secrets not found at {secrets}. "

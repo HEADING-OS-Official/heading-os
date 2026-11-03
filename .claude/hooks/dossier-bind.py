@@ -10,9 +10,12 @@ PostToolUse on `mcp__lific__update_issue`: an issue set `active` joins; one set
 on it (spec section 4 narrowed by HELM, 2026-10-24). `bulk_update` is not
 watched: it answers with a count and names no issue.
 
-The list lives under `dossier_tasks` in this session's checkpoint state and is
-read by every writer of a prompt, handoff or brief. Empty means `Task: none`
-and nothing posted. Across /clear `checkpoint-inject.py` carries it as
+The list lives under `dossier_tasks` in this session's checkpoint state. No
+writer posts to it (HOS-330): a prompt or handoff record goes to the ids its
+own text names, and a brief to its own `Task:` line. A prompt the harness
+submits on its own (a `<task-notification>`, hook feedback, a system reminder:
+any form `scripts/utils/provenance.py` does not classify as the operator's)
+binds nothing. Across /clear `checkpoint-inject.py` carries the list as
 candidates under `dossier_carried` (HOS-259), which no writer reads: an id
 there is confirmed by the verbatim half of a prompt `prompt-archive.py` saves,
 or by a confirmed `update_issue ... active`, and never by a message naming it.
@@ -47,10 +50,7 @@ def changes(payload: dict) -> tuple[list[str], list[str]]:
         prompt = payload.get("prompt", "") or ""
         if not _candidates(prompt):
             return [], []
-        if _is_brief(prompt):
-            line = next((ln for ln in prompt.splitlines() if ln.startswith("Task:")), "")
-            return dossier.find_ids(line, dossier.project_keys()), []
-        return dossier.find_ids(prompt, dossier.project_keys()), []
+        return dossier.prompt_ids(prompt, dossier.project_keys()), []
     if event != "PostToolUse":
         return [], []
     tool = str(payload.get("tool_name", ""))

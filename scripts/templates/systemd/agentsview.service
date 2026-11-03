@@ -1,0 +1,17 @@
+# heading-os-service-layer: written by scripts/utils/schedule.py from scripts/templates/systemd/agentsview.service (HOS-308).
+# agentsview: local archive of AI-agent sessions, used for spend tracking.
+[Unit]
+Description=AgentsView (archive of past agent sessions and their cost, 127.0.0.1:8080)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=DO_NOT_TRACK=1
+Environment=AGENTSVIEW_TELEMETRY_ENABLED=0
+Environment=TELEMETRY_ENABLED=0
+ExecStart={{AGENTSVIEW_BIN}} serve --no-browser --no-update-check --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

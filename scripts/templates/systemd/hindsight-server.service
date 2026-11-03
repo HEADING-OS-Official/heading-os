@@ -1,0 +1,22 @@
+# heading-os-service-layer: written by scripts/utils/schedule.py (HOS-304). A
+# hindsight-server.service without this line was written by someone else, and the
+# service layer adopts it: install and remove leave it untouched.
+[Unit]
+Description=Hindsight memory server for HEADING OS (127.0.0.1:8888)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# The key and the extraction model's settings, mode 600 (scripts/utils/install_hindsight.py).
+EnvironmentFile=%h/.config/heading-os/hindsight/server.env
+ExecStart={{HINDSIGHT_ENV}}/bin/hindsight-api --host 127.0.0.1 --port 8888
+UMask=0077
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

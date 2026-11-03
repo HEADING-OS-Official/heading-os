@@ -5,7 +5,7 @@ One process runs every check in-process: first block wins, advisories are
 aggregated. There are no per-check shims (deleted in ba1affd); a
 settings.local.json that still names one needs `scripts/setup-platform.sh` re-run.
 
-Matcher scope: settings.local.json registers this dispatcher under eight
+Matcher scope: settings.local.json registers this dispatcher under nine
 matchers — `Write|Edit|MultiEdit|NotebookEdit`, `Bash`, `Read|Grep|Glob`,
 `mcp__codegraph__.*`, `Agent|Task|Workflow`, `SendMessage` (2026-09-27, so
 continuing an agent resets the fan-out count as dispatching one does), and
@@ -14,7 +14,13 @@ continuing an agent resets the fan-out count as dispatching one does), and
 `mcp__.*__.*(send|reply|forward|share|delete|trash|invalidate|clear).*`, each
 word spelled case-insensitively as `[Ss][Ee][Nn][Dd]` and so on so a camelCase
 `batchShareDocument` matches too (2026-10-31, HOS-272, so an MCP tool that sends,
-shares or deletes reaches `check_release_gate`).
+shares or deletes reaches `check_release_gate`), and
+`mcp__claude_ai_(Gmail|Google_Calendar)__.*` (2026-11-02, HOS-324, so a calendar
+write, a draft or a label reaches `check_release_gate` and the yard connector
+branch of `check_yard_write_guard`; every call of those two connectors that no
+wall refuses is then counted by `check_tool_budget` like any other tool call,
+and a released send, trash or delete twice, because it also matches the
+outbound group and the dispatcher runs once per group, MEASURED 2026-11-02).
 Every payload shape reaches every check, so a new check has to answer what it
 does with each of them rather than inherit a three-matcher assumption. The
 codegraph and agent matchers arrived on 2026-08-29 with the walls that need them: a matcher is the only
@@ -189,9 +195,12 @@ SECRET_PATTERNS = [
     # 2026-09-27. Why those four and not the other six, and why that cannot
     # admit a secret the old form refused: the mirror in
     # scripts/utils/secret_patterns.py. Edited by hand in the same change.
+    # Whitespace is the first lookahead alternative since 2026-11-01, so a run
+    # of whitespace cannot backtrack around an exclusion; the mechanism and the
+    # short-value residual are in the paragraph at the same mirror.
     (re.compile(
         r'\*\*Password:\*\*\s+'
-        r'(?!Stored|REDACTED|N/A|TBD|Change|Reset|(?i:See |Set |Use |Your ))'
+        r'(?!\s|Stored|REDACTED|N/A|TBD|Change|Reset|(?i:See |Set |Use |Your ))'
         r'[^\n]{8,}'
     ), "Plaintext password in markdown"),
     # Whole-value placeholder exclusion; the rationale, the dropped inert `<`
@@ -2612,7 +2621,7 @@ def check_tool_budget(payload: dict) -> dict | None:
 # The operator's standing instruction, given four times: 2026-08-27 twice (the
 # second in capitals), then 2026-08-29 twice, the last one asking for a
 # MECHANISM rather than another note. "decide yourself how to record it, so
-# that you cannot let yourself break the rules." (translated)
+# that you cannot let yourself break the rules."
 #
 # A written rule had already failed three times. There is also an always-on
 # UserPromptSubmit hook that names matching indexed symbols on every code-shaped
@@ -2800,7 +2809,7 @@ def is_code_search(tool_name: str, tool_input: dict) -> bool:
 
 # THE RULE IS UNCONDITIONAL, with no refusal count to wait out, on the
 # operator's instruction of 2026-08-29: "if there is a hard rule, it is ALWAYS
-# carried out, unconditionally" (translated). Two independent doors unlock it, so a session is
+# carried out, unconditionally". Two independent doors unlock it, so a session is
 # caged only if BOTH are shut:
 #   1. the MCP tool, via the `mcp__codegraph__.*` matcher in the tracked
 #      platform templates;
@@ -2820,8 +2829,8 @@ def is_code_search(tool_name: str, tool_input: dict) -> bool:
 # 2026-10-04 that memory was a different store; the operator then removed it
 # from the workspace (HOS-198), in
 # his words, translated: "Let Hindsight be the main memory, and codegraph only
-# for work with the code (the engine)." and "Reconfigure EVERYTHING onto Hindsight." So the wall
-# now asks for a Hindsight query, and nothing else opens it.
+# for work with the code (the engine)." and "Reconfigure EVERYTHING onto Hindsight."
+# So the wall now asks for a Hindsight query, and nothing else opens it.
 #
 # WHY A WALL AND NOT A SENTENCE. The identical instruction about CodeGraph was
 # given four times in prose and relapsed three times anyway, with an always-on
@@ -3735,6 +3744,7 @@ _WRAPPERS = frozenset({
 # A heredoc body is a command line only when a SHELL is what reads it.
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish"})
 
+# Russian on purpose: the release gate matches these push words in the operator's typed prompt.
 # Authorising words. A PUSH word also authorises the commit that carries it:
 # asking for the push is asking for the work to leave the machine, and refusing
 # the commit underneath it would only teach the operator to type two words.
@@ -3742,6 +3752,7 @@ _PUSH_WORDS = (
     "push", "пуш", "запуш", "отправь", "backup", "бэкап", "бекап",
     "publish", "опубликуй", "выложи", "залей",
 )
+# Russian on purpose: the release gate matches these commit and merge words in the operator's typed prompt.
 _COMMIT_WORDS = (
     "commit", "коммит", "закоммить", "зафиксируй",
     # A MERGE word authorises the commit it needs, and only that. MEASURED
@@ -3790,6 +3801,7 @@ _COMMIT_WORDS = (
     "слить", "слив", "слей", "сольё", "солью",
 )
 
+# Russian on purpose: push refusals (and the examples here) the release gate matches in the operator's prompt.
 # PER ACTION, since 2026-09-03. These were one list, and any entry refused the
 # WHOLE prompt, so `"закоммить всё и не пушь"` refused the COMMIT as well. The
 # wall's vocabulary could not express "commit, but do not push", which is the
@@ -3805,6 +3817,7 @@ _PUSH_NEGATIONS = (
     "не пуш", "не отправляй", "не заливай", "не публикуй", "без пуша",
     "don't push", "dont push", "do not push", "no push",
 )
+# Russian on purpose: commit refusals the release gate matches in the operator's prompt.
 _COMMIT_NEGATIONS = (
     "не коммить", "не комить", "без коммита",
     "don't commit", "dont commit", "do not commit", "no commit",
@@ -3819,6 +3832,7 @@ _COMMIT_NEGATIONS = (
     "не слить", "не слив", "не слей", "не сольё", "не солью", "без слива",
 )
 
+# Russian on purpose: prohibition stems (and the examples here) the release gate matches in the operator's prompt.
 # A prohibition said in words the lists above do not enumerate. MEASURED
 # 2026-09-03 against the previous version: `"пуш запрещён, только коммить"`
 # returned True for a PUSH, and so did `"push is forbidden here"` -- writing the
@@ -4410,12 +4424,23 @@ def message_delete_action(command: str) -> str | None:
 _MCP_SEND_WORDS = frozenset({"send", "reply", "forward", "share"})
 _MCP_DELETE_WORDS = frozenset({"delete", "trash", "invalidate", "clear"})
 _MCP_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+# The first word of a connector tool that only reads (HOS-324). Shared by the
+# calendar branch below and the yard's connector branch in
+# `check_yard_write_guard`; anything else is a write, so a new tool fails closed.
+_CONNECTOR_READ_VERBS = frozenset({"get", "list", "search", "suggest"})
 
 
 def mcp_outbound_action(tool_name: str) -> str | None:
     """`"send"`, `"delete"` or None for an `mcp__<server>__<tool>` name. Pure.
 
     A Hindsight query in `_HINDSIGHT_MCP_QUERIES` is None whatever it is called.
+
+    The Google Calendar connector is read by VERB, not by word (HOS-324,
+    2026-11-02): its writes (`create_event`, `update_event`, `respond_to_event`,
+    `update_calendar_sharing`) can invite or notify a third party and carry no
+    send word in their names, MEASURED 2026-11-02 from the connector's tool
+    names. A read verb is None, a delete word stays `"delete"`, and every other
+    calendar tool, one added later included, is a `"send"`.
     """
     if not tool_name.startswith("mcp__"):
         return None
@@ -4428,6 +4453,10 @@ def mcp_outbound_action(tool_name: str) -> str | None:
         bare = tool[len("hindsight_"):] if tool.startswith("hindsight_") else tool
         if bare in _HINDSIGHT_MCP_QUERIES:
             return None
+    if server.lower() == "claude_ai_google_calendar":
+        if tool.split("_", 1)[0] in _CONNECTOR_READ_VERBS:
+            return None
+        return "delete" if words & _MCP_DELETE_WORDS else "send"
     if words & _MCP_SEND_WORDS:
         return "send"
     if words & _MCP_DELETE_WORDS:
@@ -4435,6 +4464,7 @@ def mcp_outbound_action(tool_name: str) -> str | None:
     return None
 
 
+# Russian on purpose: send imperatives the outbound wall matches in the operator's prompt.
 # A send needs an IMPERATIVE ask, never a stem found anywhere. Until 2026-10-12
 # this was a substring list ("send", "отправ", ...), and MEASURED that day in
 # HELM `prompt_authorises("что отправили?", "send")` returned True: a question
@@ -4460,6 +4490,7 @@ _SEND_IMPERATIVES = re.compile(
     r"|now|to|back|here|there|in|out|over)\b|\s*[.!]*$)"
 )
 _SENTENCE_RE = re.compile(r"[^.!?\n]+[.!?]*")
+# Russian on purpose: send refusals the outbound wall matches in the operator's prompt.
 _SEND_NEGATIONS = (
     "не отправ", "не посылай", "не отсылай", "без отправки", "не надо", "не нужно",
     "don't send", "dont send", "do not send", "no send", "not send",
@@ -4467,6 +4498,7 @@ _SEND_NEGATIONS = (
     "не поделись", "не расшарь",
     "don't share", "dont share", "do not share", "not share",
 )
+# Russian on purpose: delete imperatives the outbound wall matches in the operator's prompt.
 # A Telegram delete (HOS-266), written exactly like a send: Russian imperative
 # word forms, the English verb only at the head of a clause, nothing in a
 # sentence ending in "?". The Russian infinitive for delete is left out on
@@ -4479,6 +4511,7 @@ _DELETE_IMPERATIVES = re.compile(
     r"\s*delete(?:\s+(?:it|this|that|them|these|those|the|a|an|my|our"
     r"|now|message|messages|post|posts)\b|\s*[.!]*$)"
 )
+# Russian on purpose: delete refusals the outbound wall matches in the operator's prompt.
 _DELETE_NEGATIONS = (
     "не удал", "без удален", "не надо", "не нужно",
     "don't delete", "dont delete", "do not delete", "no delete", "not delete",
@@ -5092,6 +5125,7 @@ def check_release_gate(payload: dict) -> dict | None:
         send = mattermost_send_action(command)
         delete = message_delete_action(command)
     if send and release:
+        # Russian on purpose: the comment names a prompt word that is both a send word and a push word.
         # One prompt word would otherwise authorise both: "отправь" is a push
         # word too. Two commands, two separate checks.
         return {
@@ -5426,7 +5460,10 @@ _YARD_BRANCH_MOVE_FLAGS = frozenset(("-m", "-M", "--move", "-c", "-C", "--copy")
 # refused command is itself refused. That is the safe direction and the same
 # trade the redirection check below makes, and the workaround is one tool call
 # (write the file with the Write tool, not with `cat <<EOF`).
-_YARD_CHAIN_RE = re.compile(r"(?:&&|\|\||;|\||\n)")
+# `>|` is a redirection, not a pipe, and `|&` is one pipe: MEASURED 2026-11-02
+# (HOS-319 review round 3), cutting at those `|` lost the target of
+# `true >| "$(...)/x"` and the `tee` of `true |& tee "$(...)/x"`.
+_YARD_CHAIN_RE = re.compile(r"(?:&&|\|\||;|\|&|(?<!>)\||\n)")
 
 # The shells whose `-c` argument is a COMMAND rather than data, and so is read
 # as one. `eval` is handled beside them for the same reason.
@@ -5517,6 +5554,15 @@ def _yard_split_chain(command: str, mask: list[bool]) -> list[str]:
             index += 1
             continue
         char = command[index]
+        if char == "|" and index > 0 and command[index - 1] == ">" and not mask[index - 1]:
+            index += 1                    # `>|`, see `_YARD_CHAIN_RE`
+            continue
+        if (char == "|" and index + 1 < length
+                and command[index + 1] == "&" and not mask[index + 1]):
+            segments.append(command[start:index])
+            index += 2                    # `|&` is one pipe
+            start = index
+            continue
         if (char in "&|" and index + 1 < length
                 and command[index + 1] == char and not mask[index + 1]):
             segments.append(command[start:index])
@@ -5647,6 +5693,12 @@ _YARD_DATA_PATH_SUB_RE = re.compile(
     r"\$\(\s*(?:[^\s()]*python[\d.]*\s+)?([^\s()]*scripts/data-path\.py)\s+"
     r"(scratch|path(?:\s+--create)?\s+[^\s()]+(?:\s+[\w-]+=[^\s()]+)*)\s*\)")
 
+# HOS-319. The three git-directory questions a yard asks of its own worktree,
+# answered in-process from the `gitdir:` pointer: `$(git rev-parse --git-dir)`,
+# `--absolute-git-dir` and `--git-common-dir`. No other flag, and no `-C`.
+_YARD_GIT_DIR_SUB_RE = re.compile(
+    r"\$\(\s*git\s+rev-parse\s+(--git-dir|--absolute-git-dir|--git-common-dir)\s*\)")
+
 _YARD_ASSIGN_RE = re.compile(r"[A-Za-z_]\w*=")
 _YARD_DECLARE_VERBS = frozenset(("export", "declare", "local", "readonly", "typeset"))
 
@@ -5680,12 +5732,46 @@ def _yard_resolve_data_path(match: re.Match, current: Path) -> str | None:
         return None
 
 
+def _yard_resolve_git_dir(flag: str, current: Path) -> str | None:
+    """What `$(git rev-parse <flag>)` would print in this worktree, in-process.
+
+    Only when the link runs inside this checkout, where git would answer with
+    this worktree's own git directory; anywhere else git would answer for
+    another repository, or none, and the substitution stays unresolved.
+    `--git-common-dir` follows the `commondir` file git keeps in that directory.
+    """
+    if not _yard_is_under(current, _yard_mine()):
+        return None
+    git_dir = _yard_own_git_dir()
+    if git_dir is None:
+        return None
+    if flag != "--git-common-dir":
+        return str(git_dir)
+    try:
+        common = (git_dir / "commondir").read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(f"[_dispatch:yard] git-common-dir substitution unresolved "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+    return os.path.normpath(git_dir / common)
+
+
 def _yard_expand(text: str, env: dict[str, str], current: Path) -> str:
     """`text` with every value this hook can know put in place of its name.
 
     Outside single quotes, as the shell does: `$NAME` and `${NAME}` from `env`,
-    the data-path substitutions above, and a word-initial `~`. Anything else
-    stays as written, so an unresolved name is still visibly a `$`.
+    the data-path substitutions above, the three git-directory substitutions
+    of `_YARD_GIT_DIR_SUB_RE` when the link runs inside this worktree, and a
+    word-initial `~`. Anything else stays as written, so an unresolved name is
+    still visibly a `$`.
+
+    HOS-319, MEASURED 2026-11-01: before the git-directory substitutions were
+    resolved, `IDX=$(git rev-parse --absolute-git-dir)/x; git diff > "$IDX.patch"`
+    was allowed, because `IDX` was dropped as unknowable and the write into
+    the main clone's `.git/worktrees/<yard>/` was never seen; the same write
+    spelled literally was refused. With them resolved, both are refused.
+    Every other substitution stays unresolved: a write position still
+    holding one is refused by `_yard_unresolved_write_target`.
     """
     out: list[str] = []
     quote = ""
@@ -5701,8 +5787,11 @@ def _yard_expand(text: str, env: dict[str, str], current: Path) -> str:
         elif char == '"' or (char == "'" and not quote):
             quote = "" if quote == char else char
         elif char == "$":
-            sub = _YARD_DATA_PATH_SUB_RE.match(text, index)
-            value = _yard_resolve_data_path(sub, current) if sub else None
+            sub = _YARD_GIT_DIR_SUB_RE.match(text, index)
+            value = _yard_resolve_git_dir(sub.group(1), current) if sub else None
+            if value is None:
+                sub = _YARD_DATA_PATH_SUB_RE.match(text, index)
+                value = _yard_resolve_data_path(sub, current) if sub else None
             if value is not None:
                 out.append(value)
                 index = sub.end()
@@ -5777,6 +5866,18 @@ def _yard_expanded_segments(command: str, cwd: Path,
     inserted whole. And an unresolved name in a PLAIN operand, a loop variable
     in `rm $f`, stays unjudged: only a directory-selecting position refuses one,
     in `_yard_unresolved_directory`.
+
+    HOS-319, MEASURED 2026-11-01. `$(git rev-parse --git-dir)`,
+    `--absolute-git-dir` and `--git-common-dir` are resolved when the link runs
+    inside this worktree, so a variable assigned from one is a literal path
+    afterwards. Three write positions fail closed on any command substitution
+    or `$'...'` quoting left unresolved, whatever runs inside it: a
+    redirection target, a `tee` operand, and the value of `GIT_INDEX_FILE=`,
+    `GIT_OBJECT_DIRECTORY=` or `GIT_COMMON_DIR=`; see
+    `_yard_unresolved_write_target`. A plain unresolved `$VAR` there stays
+    unjudged. On main 5bccdebe nine shapes writing into the main clone's
+    `.git/worktrees/<yard>/` through those spellings were allowed; after this,
+    all nine are refused.
     """
     env = dict(os.environ, PWD=str(cwd)) if _env is None else _env
     out: list[str] = []
@@ -5821,6 +5922,75 @@ def _yard_unresolved_directory(segment: str) -> str | None:
         elif not word.startswith("-") and words[index - 1] not in _YARD_GIT_GLOBAL_VALUE_OPTS:
             break                         # the subcommand: git's own options end
     return None
+
+
+# HOS-319. The git environment words that hand git a file or directory to WRITE
+# whatever the verb: `GIT_INDEX_FILE=<existing file> git status` rewrites that
+# file (MEASURED 2026-11-01, git 2.56.0, a throwaway repository).
+_YARD_GIT_ENV_PATHS = ("GIT_INDEX_FILE=", "GIT_OBJECT_DIRECTORY=", "GIT_COMMON_DIR=")
+# HOS-319. What bash still runs or decodes inside a word, and this hook does
+# not: a command substitution (`$(`, which `$((` begins too, or a backtick)
+# and ANSI-C or locale quoting (`$'`, `$"`).
+_YARD_UNRUN_FORMS = ("$(", "`", "$'", '$"')
+
+
+def _yard_git_env_into_helm(segment: str, current: Path, helm: Path) -> str | None:
+    """The `GIT_INDEX_FILE=`-like word of an expanded link naming a path in HELM.
+
+    Read from every word, so `export`, `env` and a prefix assignment are all
+    seen. None when no such word points inside HELM.
+    """
+    for word in segment.split():
+        bare = word.lstrip("'\"")
+        if not bare.startswith(_YARD_GIT_ENV_PATHS):
+            continue
+        path = _yard_word_path(bare.split("=", 1)[1], current)
+        if path is not None and _yard_is_under(path, helm):
+            return word
+    return None
+
+
+def _yard_unresolved_write_target(segment: str) -> str | None:
+    """A write position of an expanded link still holding a form this hook
+    does not run (`_YARD_UNRUN_FORMS`), or None.
+
+    Three positions: a redirection target, a `tee` operand, and the value of a
+    `_YARD_GIT_ENV_PATHS` word. Each answers where bytes land, and a command
+    substitution there can name this worktree's git directory or the main
+    clone's, whatever runs inside it, so it is refused without being read. A
+    plain unresolved `$VAR` or `${VAR}` is not judged: a `$(mktemp -d)`
+    variable, a loop variable and a value from an earlier Bash call are honest
+    and stay as they were. The three exact `$(git rev-parse ...)` forms of
+    `_YARD_GIT_DIR_SUB_RE` arrive here already resolved to a literal path.
+
+    MEASURED 2026-11-02 (HOS-319 review rounds 1 to 3): every reader that
+    decided by recognising git inside the substitution was passed by a new
+    spelling bash still ran as git: a prefix name, quoted parentheses,
+    `${x:-)}`, a glob, and `$(( $'\\x67it' rev-parse ...) )` in round 3.
+    """
+    words: list[str] = []
+    for target in _yard_redirection_targets(segment):
+        if target.startswith("&") or target.isdigit() or target == "-" \
+                or target in ("/dev/null", "/dev/stderr", "/dev/stdout"):
+            continue
+        words.append(target)
+    linked = _yard_words(segment)
+    if linked and linked[0].rsplit("/", 1)[-1] == "tee":
+        words.extend(w for w in linked[1:] if not w.startswith("-"))
+    words.extend(w for w in segment.split() if w.lstrip("'\"").startswith(_YARD_GIT_ENV_PATHS))
+    if ">" in segment and any(form in segment for form in _YARD_UNRUN_FORMS):
+        try:
+            _yard_quoted_positions(segment)
+        except ValueError as exc:
+            # A heredoc elsewhere in the command makes `_yard_links` split
+            # blind, so this link may hold half a quote and its redirection
+            # targets cannot be read (MEASURED 2026-11-02, HOS-319 review
+            # round 2: `cat <<E ... git diff > "$(true; git ...)/x"` passed).
+            print(f"[_dispatch:yard] write target unreadable ({exc})", file=sys.stderr)
+            return segment[:120]
+    # A substitution the shell splits on a blank (`$( git ...`) leaves the
+    # word holding its opening, which is enough.
+    return next((w for w in words if any(form in w for form in _YARD_UNRUN_FORMS)), None)
 
 
 def _yard_words(segment: str) -> list[str]:
@@ -6004,12 +6174,19 @@ def _yard_data_roots(helm: Path) -> list[Path]:
     Two candidates rather than one. `get_data_root()` is the authority, but in a
     YARD with no `.env` it answers `<yard>/examples` (demo mode, MEASURED
     2026-09-03), which names nothing a `git -C` would be pointed at. The sibling
-    of HELM is the path an operator or an agent actually types.
+    of HELM is the path an operator or an agent actually types, found by the one
+    sibling rule `sibling_data_root()` in `scripts/utils/paths.py` (HOS-313).
+
+    Not wrapped: `paths.py` is standard library only, so a failure here is a
+    broken engine, and it propagates to the dispatcher's crash handling, which
+    fails the wall CLOSED rather than answering with no sibling.
     """
+    from scripts.utils.paths import sibling_data_root
+
     roots: list[Path] = []
-    sibling = helm.parent / ".heading-os-data"
-    if sibling.is_dir():
-        roots.append(sibling.resolve())
+    sibling = sibling_data_root(helm)
+    if sibling is not None:
+        roots.append(sibling)
     try:
         from scripts.utils.paths import data_root_is_demo, get_data_root
         if not data_root_is_demo():
@@ -6732,6 +6909,28 @@ def _yard_shared_git_refusal(words: list[str], own_branch: str | None) -> str | 
     )
 
 
+def _yard_own_git_dir() -> Path | None:
+    """THIS worktree's git directory, read from the `gitdir:` pointer in its
+    `.git` file, or None (a `.git` directory, no pointer, or unreadable).
+
+    No subprocess. A relative pointer is read against the directory holding
+    that `.git` file, as git reads it, never against the process cwd.
+    """
+    mine = _yard_mine()
+    if not (mine / ".git").is_file():
+        return None
+    try:
+        pointer = (mine / ".git").read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(f"[_dispatch:yard] .git pointer unreadable "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+    if not pointer.startswith("gitdir:"):
+        return None
+    target = Path(pointer.split(":", 1)[1].strip())
+    return target if target.is_absolute() else Path(os.path.normpath(mine / target))
+
+
 def _yard_own_branch() -> str | None:
     """The branch THIS worktree has checked out, or None (detached, or unknown).
 
@@ -6740,15 +6939,11 @@ def _yard_own_branch() -> str | None:
     own-branch exception above match nothing, so a branch operation is refused
     rather than permitted on a guess.
     """
-    try:
-        pointer = (WORKSPACE / ".git").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not pointer.startswith("gitdir:"):
+    git_dir = _yard_own_git_dir()
+    if git_dir is None:
         return None
     try:
-        head = (Path(pointer.split(":", 1)[1].strip()) / "HEAD").read_text(
-            encoding="utf-8").strip()
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
     except OSError:
         return None
     marker = "ref: refs/heads/"
@@ -6897,12 +7092,16 @@ _YARD_WRITING_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 _YARD_READING_TOOLS = ("Read", "Grep", "Glob")
 
 
+_YARD_CONNECTOR_PREFIXES = ("mcp__claude_ai_Gmail__", "mcp__claude_ai_Google_Calendar__")
+
+
 def check_yard_write_guard(payload: dict) -> dict | None:
     tool_name = payload.get("tool_name", "")
     # Named rather than inferred, because "the matcher will not send it" is an
     # assumption about a settings file and this file has been burned by one
     # before.
-    if tool_name not in (*_YARD_WRITING_TOOLS, *_YARD_READING_TOOLS, "Bash"):
+    connector = tool_name.startswith(_YARD_CONNECTOR_PREFIXES)
+    if not connector and tool_name not in (*_YARD_WRITING_TOOLS, *_YARD_READING_TOOLS, "Bash"):
         return None
 
     try:
@@ -6914,6 +7113,21 @@ def check_yard_write_guard(payload: dict) -> dict | None:
             f"the main clone or a worktree ({type(exc).__name__}: {exc}). "
             f"Refusing in the safe direction."
         )
+
+    # HOS-324: Claude's own Gmail and Google Calendar connectors reach the
+    # executive's live mailbox and calendar. A yard touches no live mailbox, so
+    # it may only read through them; drafts and labels are refused too, and an
+    # unknown or new connector tool fails closed. Decided before the main clone
+    # is resolved, so this refusal never depends on that.
+    if connector:
+        verb = tool_name.rsplit("__", 1)[-1].lower().split("_", 1)[0]
+        if verb in _CONNECTOR_READ_VERBS:
+            return None
+        return _yard_deny(
+            f"YARD write guard: `{tool_name}` is refused in a yard. A yard may "
+            f"only read the executive's mailbox and calendar through Claude's "
+            f"connectors (get, list, search, suggest); sending, drafting, "
+            f"labelling, deleting and every calendar write happen in HELM.")
 
     from scripts.utils.clone_guard import CloneGuardError, main_clone_path
     try:
@@ -7021,6 +7235,34 @@ def check_yard_write_guard(payload: dict) -> dict | None:
                 f"reaches HELM or the data overlay's git cannot be judged. Write "
                 f"the path literally, or assign it literally earlier in the same "
                 f"command (`D=/the/path; cd $D`), and run it again."
+            )
+
+        # HOS-319. Before read-only status is consulted and before a `cd` is
+        # followed: a git index or object path into HELM is a write whatever
+        # the verb, and a write position still spelled through git is unknown.
+        into_helm = _yard_git_env_into_helm(segment, current, helm)
+        if into_helm is not None:
+            return _yard_deny(
+                f"YARD write guard — intentional policy block, not an error. "
+                f"This command hands git an index or object path inside HELM, "
+                f"`{into_helm}`:\n\n  {segment[:300]}\n\n"
+                f"A git command that only reads still rewrites the index it is "
+                f"handed (`git status` did, MEASURED 2026-11-01), so no git verb "
+                f"makes this a read. Point GIT_INDEX_FILE at a file in the "
+                f"checkout scratch (`python scripts/data-path.py scratch`) instead."
+            )
+        unrun = _yard_unresolved_write_target(segment)
+        if unrun is not None:
+            return _yard_deny(
+                f"YARD write guard — intentional policy block, not an error. "
+                f"This command writes to `{unrun}`, a path spelled through a "
+                f"command substitution or `$'...'` quoting this guard does not "
+                f"run:\n\n  {segment[:300]}\n\n"
+                f"Whatever runs inside it can answer with this worktree's git "
+                f"directory inside the main clone, or with the main clone's own, "
+                f"so the write may land in HELM. Write the path literally, or "
+                f"write into the checkout scratch (`python scripts/data-path.py "
+                f"scratch`), and run it again."
             )
 
         # Before anything else reads the link, and on the raw text: the

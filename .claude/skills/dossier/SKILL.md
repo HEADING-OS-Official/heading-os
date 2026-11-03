@@ -1,5 +1,6 @@
 ---
 name: dossier
+# Russian on purpose: the description names the Russian trigger phrases.
 description: >
   Assemble everything about one Lific issue in chat: the prompts, handoffs and yard briefs whose
   Task header names it, its [dossier] journal and comments in Lific, the commits in both
@@ -27,6 +28,7 @@ x-heading-capability:
     memory search without an issue id use /recall.
 x-heading-routing:
   category: Operations
+  # Russian on purpose: Russian trigger phrases the router matches.
   triggers:
     - dossier HOS-
     - досье HOS-

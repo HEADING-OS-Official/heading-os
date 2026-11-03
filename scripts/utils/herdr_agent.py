@@ -524,3 +524,34 @@ def stop_waiter(record: dict) -> bool:
         unregister_waiter(Path(record["_path"]))
         return False
     return True
+
+
+# ============================================================
+# The unsent input line of a pane (HOS-277, moved here by HOS-296)
+# ============================================================
+#
+# Used by the relay (`scripts/herdr-relay.py`): it must never type into a pane
+# where the operator has text not sent yet.
+
+INPUT_READ_TIMEOUT = 10
+PROMPT_GLYPH = "❯"             # the Claude Code input line starts with it
+
+
+def read_input_line(pane: str) -> str:
+    """What is typed but not sent in `pane`: the text after the last `❯` line, stripped.
+
+    MEASURED 2026-10-31 by HELM: with the operator typing unsent, the visible snapshot
+    showed `❯ Prob`; with nothing typed the line is a bare `❯`. NOT measured:
+    whether Claude Code's greyed placeholder suggestion appears on that line. If
+    it does, this reads non-empty and the dispatch is merely withheld, the safe
+    direction. No `❯` line at all raises, so the caller does not dispatch.
+    """
+    proc = subprocess.run(  # nosec B603 - list argv, no shell
+        [HERDR_BIN, "pane", "read", pane, "--source", "visible", "--lines", "12"],
+        capture_output=True, text=True, timeout=INPUT_READ_TIMEOUT)
+    if proc.returncode != 0:
+        raise RuntimeError(f"herdr pane read exited {proc.returncode}: {proc.stderr.strip()[:200]}")
+    lines = [line for line in proc.stdout.splitlines() if line.startswith(PROMPT_GLYPH)]
+    if not lines:
+        raise RuntimeError(f"no {PROMPT_GLYPH} input line in the visible snapshot of {pane}")
+    return lines[-1][len(PROMPT_GLYPH):].strip()

@@ -224,6 +224,7 @@ step here.
 
 Before writing anything, scan the user's original invocation text for any of:
 
+<!-- Russian on purpose: a Russian phrase the skill recognises in the invocation. -->
 - The literal flag `--no-log`
 - Natural-language equivalents: `no transcript`, `don't log`, `do not save`, `skip the log`, `skip transcript`, `без записи` (Russian)
 
@@ -268,7 +269,8 @@ That is all. Do NOT re-summarise, push for a decision, or explain the choice val
 
 When the CEO replies, parse their next message:
 
-- First token (case-insensitive) is the choice. Accept `claude` / `gemini` / `grok` / `kimi` / `chatgpt` / `mix` / `reject` / `skip` / Russian equivalents (`пропустить`, `мix`, etc — normalise to the English choice).
+<!-- Russian on purpose: a Russian choice word the skill recognises in the reply. -->
+- First token (case-insensitive) is the choice. Accept `claude` / `gemini` / `grok` / `kimi` / `chatgpt` / `mix` / `reject` / `skip` / Russian equivalents (`пропустить`, etc — normalise to the English choice).
 - Everything after the first token is the optional `notes` string. Trim whitespace.
 
 If choice is **`skip`** (or any non-recognised first token without an explicit `claude/gemini/grok/kimi/chatgpt/mix/reject` keyword anywhere in the reply): do NOT record. Print one line: `Verdict skipped (left pending).` Do not nag.

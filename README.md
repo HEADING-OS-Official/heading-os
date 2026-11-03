@@ -26,7 +26,7 @@ It is named after one idea, the **Navigation Principle**: set a heading and hold
 5. [Install in three steps](#install-in-three-steps)
 6. [Or have it installed: the VIP licence](#or-have-it-installed-the-vip-licence)
 7. [Guides](#guides)
-8. [Optional tools](#optional-tools)
+8. [Modules](#modules)
 9. [Questions executives ask](#questions-executives-ask)
 10. [Status](#status)
 11. [Support, contributing and contact](#support-contributing-and-contact)
@@ -197,16 +197,16 @@ Assistant:  Brief ready. Dana joined as CFO in March and has asked twice about
 
 **A Claude Max subscription is recommended.** A single morning of meeting prep, research and drafts can mean hundreds of pages read on your behalf, and Max gives the assistant far more room before it reaches a usage limit. An Anthropic API key also works.
 
-**Step 1. Get ready.** You need a computer running macOS 13 or later, Linux, or Windows 11 with WSL2 (Windows' built-in Linux; the guide shows how to switch it on). You also need a [Claude](https://claude.com/pricing) subscription, a free [GitHub](https://github.com) account, which is where your private vault is kept, and a few free tools. [docs/INSTALL.md](docs/INSTALL.md) lists each one with the exact command to install it.
+**Step 1. Get ready.** You need a computer running macOS 13 or later, Linux, or Windows 11 with WSL2 (Windows' built-in Linux; the guide shows how to switch it on). You also need a [Claude](https://claude.com/pricing) subscription, and, if you want a private copy of your vault on GitHub, a free [GitHub](https://github.com) account. The installer gets the free tools it needs. [docs/INSTALL.md](docs/INSTALL.md) lists each one with the exact command to install it.
 
 **Step 2. Run the installer.** Open a terminal and paste these two lines:
 
 ```bash
-git clone https://github.com/HEADING-OS-Official/heading-os.git ~/ai/claude-workspaces/.heading-os
-bash ~/ai/claude-workspaces/.heading-os/install.sh
+curl -fsSLO https://raw.githubusercontent.com/HEADING-OS-Official/heading-os/main/install.sh
+bash install.sh
 ```
 
-It sets up the engine, creates your private vault on your GitHub account and switches on every safety check described above. Run it twice? Nothing breaks, because each step that is already done gets skipped.
+It sets up the engine, creates your private vault on your own machine and switches on every safety check described above. Add `--github` to keep a private copy on your GitHub account. Run it twice? Nothing breaks, because each step that is already done gets skipped.
 
 **Step 3. Introduce yourself.** Start Claude Code in the engine folder and run the setup interview, then your first session:
 
@@ -236,9 +236,9 @@ Once it is installed, these explain how to work with it, in plain English. They 
 - **[Rules and protections](docs/RULES-AND-PROTECTIONS.md)**: the rules the assistant follows, the checks that refuse an action, and what to do when one does.
 - **[What's new](docs/WHATS-NEW.md)**: what changed in each release.
 
-## Optional tools
+## Modules
 
-HEADING OS works on its own. Each of these adds one thing, and each has its own guide:
+Every install includes these modules, and none of them is optional. Each adds one thing, and each has its own guide:
 
 - **[Hindsight](docs/HINDSIGHT.md)**: long-term memory, so the assistant remembers decisions and conversations from weeks ago.
 - **[Lific](docs/LIFIC.md)**: a private task list the assistant can read and update with you.

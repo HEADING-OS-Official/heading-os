@@ -4,7 +4,7 @@ HEADING OS is an operations engine for an AI executive assistant: skills, always
 
 ## Engine and data
 
-The engine never contains real data, secrets or personal information. Everything that belongs to the person using it (contacts, knowledge, outputs, threads, identity, credentials) lives in the private data repository `.heading-os-data` beside this one, and in gitignored runtime files (`.env`, `.sessions`). The engine finds the data repository as its sibling directory, or through `HEADING_OS_DATA` in `.env`.
+The engine never contains real data, secrets or personal information. Everything that belongs to the person using it (contacts, knowledge, outputs, threads, identity, credentials) lives in the private data repository (`~/HeadingOS/data` beside this engine, by default), and in gitignored runtime files (`.env`, `.sessions`). The engine finds the data repository through `HEADING_OS_DATA`, which the installer sets in your shell startup files, or as a sibling directory named `.heading-os-data`.
 
 Every artifact you create is written into the data repository at the address its kind has, resolved by logical name: `python scripts/data-path.py path <name>` from a shell or a skill, `data_path()` in Python. Never build a path to a data file by hand, and never write an artifact into the engine tree. `config/routing-map.yaml`, `scripts/leak-guard.py` and the push-time content scan in `scripts/push-all.py` refuse a data file in the engine.
 
@@ -21,9 +21,9 @@ Every artifact you create is written into the data repository at the address its
 
 ## Setup
 
-`install.sh` does all of it; `docs/INSTALL.md` explains each step. By hand:
+`install.sh` does all of it, through `scripts/heading-install.py`; `docs/INSTALL.md` explains each step. By hand:
 
-1. `uv sync`
+1. `uv sync --all-extras`
 2. `cp .env.example .env`, then fill in your own keys. Never commit `.env`.
 3. `pre-commit install`, once per clone, or the commit gates are not armed.
 4. `.venv/bin/python scripts/install-git-hooks.py`, once per clone, for the pre-push gate.
@@ -39,9 +39,9 @@ One main session works on `main` in this clone: it is HELM, and everything live 
 
 Some rules, skills and script docstrings point at design records in the data repository under the registry names `spec-docs` and `reference-docs` (`ARCHITECTURE.md`, `SECURITY-MODEL.md`, `HOOKS-REFERENCE.md` and others). Those are the maintainer's own records and are not part of this distribution, so in your data repository the names resolve to empty directories. The rule or code that points at one is complete without it; the record only explains why it was written that way. Write your own records there if you want them.
 
-## Optional tools
+## Modules
 
-Hindsight (memory), Lific (issue tracker), Herdr (parallel sessions), CLIProxyAPI (other models) and AgentView (activity view and proxy usage). The core runs without any of them; each guide is in `docs/`.
+Hindsight (memory), Lific (issue tracker), Herdr (parallel sessions), CLIProxyAPI (other models) and AgentView (activity view and proxy usage). Every install includes them; each guide is in `docs/`.
 
 ## Security
 

@@ -30,8 +30,9 @@ block says so, with the snapshot's date, under `source="hindsight-snapshot"`.
 
 The snapshot query STARTS AT THE SAME MOMENT as the Hindsight request, as a venv
 subprocess, and is killed when Hindsight answers. Operator instruction, 2026-10-06:
-"Run the memory search and the snapshot search at once. Wait up to 10 seconds
-for memory, and if it has not answered, take the snapshot's answer." (translated) The reason, MEASURED 2026-10-06:
+"Run the memory search and the snapshot search at once. Wait up to 10 seconds for
+memory, and if it has not answered, take the snapshot's answer." The reason,
+MEASURED 2026-10-06:
 recall took p95 6.1 s on the server and 7.5 s at the laptop against the former 6 s
 wait, and the snapshot query took 2.0 s warm and 5.5 s cold, so run one after the
 other the two did not fit in the hook's 10 s. Both now run inside

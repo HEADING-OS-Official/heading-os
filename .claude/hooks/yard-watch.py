@@ -4,7 +4,7 @@
 Operator instruction, 2026-09-20: *"think about it: maybe there should be a
 mechanism where HELM itself periodically goes and checks the state of every
 yard it created, instead of waiting for me to tell it to. That will avoid
-losing a great deal of time."* (translated)
+losing a great deal of time."*
 
 THE EVENING THAT PRODUCED IT. Five yards were working. One finished its
 analysis, wrote a good report into the chat, and stopped: the agent alive, the

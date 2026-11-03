@@ -49,6 +49,7 @@ WEIGHTS_FILENAME = "sentinel-rule-weights.json"
 _DROPPED = {"hour_local", "n_recipients", "sender_prior_items", "mail_found", "is_email"}
 
 # ---------------------------------------------------------------- lexicons
+# Russian on purpose: Russian keywords and reply prefixes the mail classifier matches in incoming mail.
 # First lexicon: hand-written. The fit decides which of these carry weight.
 LEX = {
     "urgent": r"\b(urgent|asap|immediately|right away|critical|emergency)\b|срочн|немедленн|критичн",
@@ -83,6 +84,7 @@ def _join(pattern: str) -> re.Pattern:
     return re.compile(re.sub(r"\n\s*", "", pattern), re.I)
 
 
+# Russian on purpose: Russian signal patterns the mail classifier matches in incoming mail.
 # Second lexicon, positive and negative signals in both languages.
 POS = {
     "contract_stage": _join(r"""
@@ -206,6 +208,7 @@ def _caps_re(names) -> re.Pattern | None:
     alts = "|".join(re.escape(n.strip()) for n in names if n and n.strip())
     if not alts:
         return None
+    # Russian on purpose: Cyrillic letters bound the name match, as Latin letters do.
     # Case-SENSITIVE on purpose: the signal is the name written in capitals.
     return re.compile(rf"(?<![A-Za-zА-Яа-яЁё])({alts})(?![A-Za-zА-Яа-яЁё])")
 

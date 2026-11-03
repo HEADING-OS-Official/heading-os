@@ -1,6 +1,6 @@
 # Memory discipline — the Economy half, written out
 
-Last Updated: 2026-10-29
+Last Updated: 2026-11-02
 
 Companion to the always-on `.claude/rules/memory-discipline.md`, which keeps the
 Fidelity half resident. This file carries the Economy half: the convention that

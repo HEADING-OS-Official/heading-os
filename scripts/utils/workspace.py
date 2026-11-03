@@ -467,8 +467,8 @@ def _routing_map_from_data(data) -> dict:
 # PRIVACY BY REPOSITORY, since HOS-232 (2026-10-12). The operator's words that
 # day, translated: "everything in .heading-os-data is mine, nobody else sees it
 # and nobody receives it ... .heading-os is the engine, and nothing that MUST be
-# only in .heading-os-data may ever get into it." So the question "what is this file" has four answers
-# and the per-path map of the data repository is no longer read:
+# only in .heading-os-data may ever get into it." So the question "what is this file"
+# has four answers and the per-path map of the data repository is no longer read:
 #
 #   in the data repository                     -> private
 #   in the engine AND in the engine allowlist  -> engine

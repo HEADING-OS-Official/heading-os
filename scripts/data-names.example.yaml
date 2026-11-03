@@ -19,9 +19,11 @@
 # carries STRUCTURE: the subject roots listed in `subject_roots:` below, and the
 # generic sub-addresses inside them, which are the same in every workspace. It carries no
 # real person, no real entity, no private path, no dated one-off directory and
-# nothing else belonging to one operator. The engine repository is public. Two
-# names the engine's own code asks for are deliberately absent for that reason
-# and are named in `template_names()`.
+# nothing else belonging to one operator. The engine repository is public. The
+# names the engine's own code asks for that are deliberately absent for that
+# reason are listed, each with its reason, in `EXEMPT` in
+# `scripts/check-engine-data-names.py`, which refuses at commit any other name
+# the engine asks for and this file cannot answer (HOS-298).
 #
 # WHAT AN ENTRY IS. `what:` says in one line what the address holds. Exactly one
 # of `path:` or `runtime:` is the base. `path:` is an address of its own,
@@ -59,6 +61,16 @@ runtime_store: runtime-junk
 # guards read it with a regular expression and the resolver refuses a registry
 # the two would read differently. A root may not name a top-level engine entry.
 subject_roots: [accounts, company, content, people, knowledge, personal, inbox, system, archive]
+
+# Names the engine asks for whose address this public file may not carry, listed
+# by NAME only. `scripts/init-data.py` writes each one's address into the new
+# tree's own registry, under `installed_names:`, when it scaffolds a data
+# repository; a tree with no `names:` block is answered from those rows beside
+# the ones below. Operator decision 2026-11-01 (HOS-298): `threads-personal`
+# first, because the personal-threads wall refuses its address in every engine
+# file. A name listed here and not placed by the installer, or placed and not
+# listed, is refused by scripts/check-engine-data-names.py.
+installer_placed: [threads-personal]
 
 names:
   audit-campaigns:
@@ -744,6 +756,30 @@ names:
   workspace-deep-audit:
     what: "the deep workspace audit reports"
     path: system/reports/workspace
+  # Added 2026-11-01, HOS-298. Names the engine asks for that a fresh data
+  # repository could not answer, found by scripts/check-engine-data-names.py,
+  # which now refuses any such name at commit. Structure only.
+  odin-positions:
+    what: "the Odin brain's positions, one file each"
+    path: knowledge/odin-brain/positions
+  odin-sources:
+    what: "the material the Odin brain was built from"
+    path: knowledge/odin-brain/sources
+  odin-episodes:
+    what: "the Odin brain's episodes, one file per thing that happened"
+    path: knowledge/odin-brain/episodes
+  data-config-exemptions:
+    what: "the ratchet ledger of `audit-skill-data-paths.py --data-config`: its ceiling and the reviewed physical paths in this repository's config files"
+    path: system/config/data-config-paths-exemptions.json
+  ho2-migration-reports:
+    what: "the HEADING OS 2 migration tools' reports and journals"
+    path: system/reports/heading-os-2-migration
+  official-docs:
+    what: "the optional-tool and methodology guides published into HEADING OS Official's docs/ (scripts/official-build.py)"
+    path: system/official/docs
+  official-private-terms:
+    what: "this machine's own names the official build refuses in a shipped file; read in memory only (scripts/official-build.py)"
+    path: system/official/private-terms.yaml
 
 # Named sets of the names above, for readers that walk several directories
 # together (HOS-234). Generic structure only, as the names are; a tree whose

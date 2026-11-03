@@ -6,7 +6,7 @@ against the snapshot from the previous run, and write one report per run.
 It reads and reports. It never edits code: adapting the workspace to what a
 report shows is engine work, done in a yard on the operator's word. Operator
 decision 2026-09-30, translated: "the check automatic, the adaptation on your
-word" was HELM's proposal and his answer was "yes". (translated)
+word" was HELM's proposal and his answer was "yes".
 
 The sources are the `doc_sources:` list in `config/update-registry.yaml`, each
 with a note saying where its address was read. Snapshots, the run stamp and the

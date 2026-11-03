@@ -11,6 +11,10 @@ The dispatcher is loaded from `OUTBOUND_WALL_DISPATCH` when it is set, so the
 same file can be run against a previous `_dispatch.py` extracted OUTSIDE the
 checkout (K011); `WORKSPACE` is then pointed back at this checkout so both
 copies resolve the same roots.
+
+HOS-324 (2026-11-02) adds Google Calendar connector writes, which carry no send
+word in their names: each is a send the operator must ask for, while calendar
+reads and Gmail drafting stay free.
 """
 from __future__ import annotations
 
@@ -26,10 +30,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 FAKE_SESSION = "zzqx0000-0000-4000-8000-000000000000"
 
-# Counted 2026-10-31 when the cases were written, less the five cases of the
-# assistant-channel capture the official tree does not ship.
-REFUSED_FLOOR = 44
-ALLOWED_FLOOR = 33
+# Counted 2026-11-02 (HOS-324), when the Google Calendar cases were added, less
+# the five cases of the assistant-channel capture the official tree does not ship.
+REFUSED_FLOOR = 48
+ALLOWED_FLOOR = 41
 
 NEUTRAL = "посмотри, что там"
 SEND = "send it"
@@ -111,6 +115,13 @@ _GATED = [
     ("git-revert", _bash("git revert abc"), COMMIT),
     ("git-am", _bash("git am x.patch"), COMMIT),
     ("git-pull", _bash("git pull"), COMMIT),
+    # HOS-324: a calendar write can invite or notify a third party, and its name
+    # carries no send word, so the calendar server is read by verb.
+    ("calendar-create", _mcp("mcp__claude_ai_Google_Calendar__create_event"), SEND),
+    ("calendar-update", _mcp("mcp__claude_ai_Google_Calendar__update_event"), SEND),
+    ("calendar-respond", _mcp("mcp__claude_ai_Google_Calendar__respond_to_event"), SEND),
+    ("calendar-sharing", _mcp("mcp__claude_ai_Google_Calendar__update_calendar_sharing"),
+     SEND),
 ]
 
 # (name, (tool, input), prompt): refused, each for lack of its own word.
@@ -145,14 +156,19 @@ ALLOWED = [(f"{name}-asked", call, word) for name, call, word in _GATED] + [
     ("hindsight-recall", _mcp("mcp__hindsight-main__recall"), NEUTRAL),
     ("drive-share-on-a-send-word", _mcp("mcp__claude_ai_Google_Drive__share_file"),
      "отправь файл"),
+    # HOS-324: calendar reads stay free, and so does drafting (M002.1 needs it).
+    ("calendar-list", _mcp("mcp__claude_ai_Google_Calendar__list_events"), NEUTRAL),
+    ("calendar-search", _mcp("mcp__claude_ai_Google_Calendar__search_events"), NEUTRAL),
+    ("calendar-suggest", _mcp("mcp__claude_ai_Google_Calendar__suggest_time"), NEUTRAL),
+    ("gmail-create-draft", _mcp("mcp__claude_ai_Gmail__create_draft"), NEUTRAL),
 ]
 
 
 def test_the_outbound_wall_refuses_unasked_and_hears_the_operator(dispatch, tmp_path):
     assert len(REFUSED) >= REFUSED_FLOOR, (
-        f"{len(REFUSED)} refusal cases, below the {REFUSED_FLOOR} counted 2026-10-31")
+        f"{len(REFUSED)} refusal cases, below the {REFUSED_FLOOR} counted 2026-11-02")
     assert len(ALLOWED) >= ALLOWED_FLOOR, (
-        f"{len(ALLOWED)} acceptance cases, below the {ALLOWED_FLOOR} counted 2026-10-31")
+        f"{len(ALLOWED)} acceptance cases, below the {ALLOWED_FLOOR} counted 2026-11-02")
 
     def decide(name: str, call: tuple[str, dict], prompt: str):
         tool, tool_input = call

@@ -275,7 +275,7 @@ NEVER auto-invoke `/odin reflect` without an explicit CEO go-ahead. NEVER run th
 
 ## Phase 3.6: Proposed Conduct Rules From Hindsight
 
-Operator decision, 2026-10-05: "Add to /weekly-review a question to Hindsight about new rules. The answer is saved as a file and stays a proposal until you approve it." (translated) This phase asks one question and writes one file. It writes nothing into any rule file.
+Operator decision, 2026-10-05: "Add to /weekly-review a question to Hindsight about new rules. The answer is saved as a file and stays a proposal until you approve it." This phase asks one question and writes one file. It writes nothing into any rule file.
 
 1. Call the `reflect` tool of the `hindsight-main` MCP server once, over bank `main`. Use `budget: "mid"`, `tags: ["source:chat"]`, `include_based_on: true`, `max_tokens: 8000`, and a `response_schema` with a `rules` array. Each item has `rule`, `why`, `stated_by_operator`, `sources` and `dates`. Name the first and last day of the review week in the query. Ask only for standing rules whose evidence falls in that week. Use MCP, not the `hindsight` CLI. On 2026-10-05 the CLI dropped this call at 118 seconds with a false "Cannot connect". The MCP call ran to the end in two to four minutes.
 2. Drop every item whose `sources` are empty, or whose dates all fall outside the week. Never add a source or a rule that Hindsight did not return.

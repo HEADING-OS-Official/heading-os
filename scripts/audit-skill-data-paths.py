@@ -125,6 +125,10 @@ empty. A path in a config is engine-relative on purpose in one reader
 (`include` of the service manifest) and VM-relative in another; the scan
 cannot tell those from a data path, which is what the ledger is for.
 
+With no file to scan it refuses (exit 2), except when the registry exists and
+no tree of the group exists at all, the state of a data repository fresh from
+the installer: that passes with ceiling 0 and says so (2026-11-01, HOS-320).
+
 Its ledger is the registry name `data-config-exemptions` in the data
 repository, same format, and it is OPTIONAL: absent, the ceiling is 0 and no
 entry exempts anything, which is the goal this mode exists to hold.
@@ -536,6 +540,24 @@ def main() -> int:
             return 2
         ratchet_rel = ledger.relative_to(root)
         if not files:
+            from scripts.utils.data_homes import homes
+            from scripts.utils.data_path import registry_path
+            # HOS-320: a fresh data repository holds the registry and no tree of
+            # the group yet; that, and only that, is an honest empty pass.
+            if registry_path(root).is_file() and not homes("data-config-trees", data_root=root):
+                not_scanned = [p.relative_to(root).as_posix() for p in skipped]
+                if args.json:
+                    print(json.dumps({"ceiling": 0, "uncovered": 0, "files": 0, "exempt": 0,
+                                      "stale_entries": [], "not_scanned": not_scanned,
+                                      "findings": [], "no_config_tree": True},
+                                     ensure_ascii=False, indent=1))
+                else:
+                    for rel in not_scanned:
+                        print(f"not scanned (not a structured config): {rel}")
+                    print(f"0 physical data path finding(s): no tree of the group "
+                          f"data-config-trees exists yet under {root}, only the "
+                          f"registry; ceiling 0")
+                return 0
             print(f"REFUSED: no structured config file found under {root}; "
                   f"refusing to report a clean scan of nothing", file=sys.stderr)
             return 2

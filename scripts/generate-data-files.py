@@ -5,7 +5,7 @@
     python scripts/generate-data-files.py --out <dir>          # write the results under <dir>
     python scripts/generate-data-files.py --write              # write in place (HELM only)
 
-HOS-234, operator decision 2026-10-13: "NO hardcoded paths" (translated). Moving a data
+HOS-234, operator decision 2026-10-13: "NO hardcoded paths". Moving a data
 artifact is an edit of the data registry and nothing else. Code reads the
 registry through `data_path()`, but some files are read by programs that cannot
 call a resolver: git reads the data repository's `.gitignore`, and

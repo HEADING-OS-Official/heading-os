@@ -37,7 +37,7 @@ STATE_MOVING = "moving"
 STATE_MOVED = "moved"
 
 #: The fourth state, added 2026-09-19 on the operator's instruction and with his
-#: name for it: "It is wrong to leave anything 'in progress'." (translated)
+#: name for it: "It is wrong to leave anything 'in progress'."
 #:
 #: It reads EXACTLY like `moving` (records on both sides, so both homes are
 #: searched) and it means the opposite thing about the future: the migration of

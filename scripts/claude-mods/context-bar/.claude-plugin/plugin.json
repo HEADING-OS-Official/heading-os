@@ -1,0 +1,9 @@
+{
+  "name": "context-bar",
+  "version": "0.1.0",
+  "description": "A band above the prompt (/context-bar) showing what fills the context window, by category, against the auto-compaction point; /context-bar panel lists every item.",
+  "author": {
+    "name": "Misha Hanin"
+  },
+  "types": "./types/index.d.ts"
+}

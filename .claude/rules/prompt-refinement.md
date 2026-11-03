@@ -54,6 +54,7 @@ Shape is four fields, the same four Phase 1 expands: objective, scope, deliverab
 
 Nothing archived yet: write the file. It differs in one of the four: write the next file in sequence. It differs only in how far the work has got: write nothing.
 
+<!-- Russian on purpose: two Russian operator replies that fix no task shape, quoted as typed. -->
 So nothing is written for "yes", "go", "спасибо" or "ага"; a reply that only picks from options you listed; a one-step correction to work just produced; a request to show or report on what exists; or a session switch such as `/unattended on`, which changes how the session runs, not what it does. A file IS written for "commit and push" or "merge that branch and delete the yard" whenever the archived expansion stopped short of them, because they add a deliverable no file carries.
 
 **Where no approval stop happens, the file is still written before the first action:** expand, save, name the absolute path, then act.

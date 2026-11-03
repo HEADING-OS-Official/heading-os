@@ -78,6 +78,7 @@ session has nothing else, so fill every section, and run the template's
 self-check: every operator message has its line under `## Operator messages`.
 If `$ARGUMENTS` is not empty, put it under `## User note`.
 
+<!-- Russian on purpose: the Russian resume lines the operator reads after /clear. -->
 Add one more section, `## Resume`, with two or three lines. Write them in the
 language the operator writes to you. The SessionStart hook shows them ON SCREEN
 the moment `/clear` finishes, before he types anything. No model turn runs then,
@@ -88,6 +89,7 @@ write paths: the hook adds the handoff path itself. The hook shows only the
 first three non-blank lines. Never put a pinned item here; pins travel verbatim
 in their own section.
 
+<!-- Russian on purpose: the Russian resume lines the operator reads after /clear. -->
 ```bash
 .venv/bin/python scripts/checkpoint-paths.py --write --kind clear <<'HANDOFF'
 # Handoff - clear-handover

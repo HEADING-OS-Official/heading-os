@@ -30,6 +30,7 @@ from pathlib import Path
 
 from scripts.utils import checkpoint_paths as CP
 from scripts.utils import herdr_agent as HA
+from scripts.utils import provenance
 
 
 # ============================================================
@@ -1028,3 +1029,262 @@ def unattended_turn(
         reason = f"{note}\n\n{reason}"
     print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
     return 0
+
+
+# ============================================================
+# Handoff freshness (HOS-315)
+# ============================================================
+#
+# A trigger SEPARATE from the context menu, so the 2026-10-14 decision (one
+# menu, a last call, no repeat) stands. The operator approved it 2026-11-01 after a
+# handoff on disk stayed two hours stale while five merges, twelve new issues
+# and five decisions happened with the menu silent. The handoff ages by what
+# happened since it was written, not by how full the context is.
+
+#: Thresholds: whichever is reached first makes the handoff stale.
+FRESH_EVENTS_ENV = "CLAUDE_HANDOFF_FRESH_EVENTS"
+FRESH_MINUTES_ENV = "CLAUDE_HANDOFF_FRESH_MINUTES"
+FRESH_EVENTS_DEFAULT = 3
+FRESH_MINUTES_DEFAULT = 60
+
+#: The archive kinds a model wrote; the same set the PostCompact inject reads.
+FRESH_KINDS = ("manual", "auto", "clear", "second-wind")
+
+#: A silence between two transcript records counts as at most this much work,
+#: so a night away does not age the handoff by eight hours of "work".
+ACTIVE_GAP_CAP_SECONDS = 300
+
+#: The Lific calls that create or move an issue, as the transcript names them,
+#: each with the input field that makes it a move (None: the call itself is one).
+#: A title, description or priority edit moves nothing (review finding, HOS-315).
+LIFIC_EVENT_TOOLS = {
+    "mcp__lific__create_issue": None,
+    "mcp__lific__update_issue": "status",
+    "mcp__lific__bulk_update": "set_status",
+}
+
+
+def _lific_event(block: dict) -> bool:
+    """Does this tool_use block create or move an issue?"""
+    name = block.get("name")
+    if name not in LIFIC_EVENT_TOOLS:
+        return False
+    field = LIFIC_EVENT_TOOLS[name]
+    given = block.get("input")
+    return field is None or (isinstance(given, dict) and bool(given.get(field)))
+
+# The words the M030.1 relay types into a pane (`scripts/herdr-relay.py`): a
+# machine's, and the merge they lead to is counted on its own.
+_RELAY_WORDS = re.compile(r"commit(, merge and delete [A-Za-z0-9][A-Za-z0-9_-]*)?")
+
+# A record's own time and session, read without parsing the record. The first
+# `"timestamp"` on a line is the record's own (MEASURED 2026-11-01 over the
+# largest real transcripts on the machine: no mismatch against the parsed field).
+_RECORD_STAMP = re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+_RECORD_SESSION = re.compile(r'"sessionId"\s*:\s*"([^"]+)"')
+
+
+def in_yard() -> bool:
+    """A yard's agent runs with HEADING_OS_YARD=1; handoff freshness is HELM's, never a yard's."""
+    return os.environ.get("HEADING_OS_YARD", "").strip() == "1"
+
+
+def freshness_config() -> dict:
+    """The two thresholds; an invalid or out-of-range value gives the default."""
+    return {
+        "events": CP.env_int(FRESH_EVENTS_ENV, FRESH_EVENTS_DEFAULT, minimum=1, maximum=1000),
+        "minutes": CP.env_int(FRESH_MINUTES_ENV, FRESH_MINUTES_DEFAULT, minimum=1, maximum=1440),
+    }
+
+
+def _main_clone(project: Path) -> Path | None:
+    """The main clone: the parent of the common git directory, whatever checkout this is."""
+    import subprocess  # nosec B404 - fixed argv, never shell=True
+
+    proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=str(project), capture_output=True, text=True, errors="replace", timeout=5,
+    )
+    common = Path(proc.stdout.strip()) if proc.returncode == 0 else None
+    return common.parent if common is not None and common.name == ".git" else None
+
+
+def _merges_since(project: Path, since: float) -> int:
+    """Merge commits on the main clone's `main` since `since`. Raises when git cannot answer."""
+    import subprocess  # nosec B404 - fixed argv, never shell=True
+
+    clone = _main_clone(project)
+    if clone is None:
+        raise RuntimeError("no main clone found")
+    stamp = datetime.fromtimestamp(since, timezone.utc).isoformat()
+    proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+        ["git", "-C", str(clone), "log", "main", "--merges", f"--since={stamp}", "--format=%H"],
+        capture_output=True, text=True, errors="replace", timeout=5,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git log exited {proc.returncode}")
+    return len(proc.stdout.split())
+
+
+def _prompts_since(session: str, project: Path, since: float) -> int:
+    """This session's prompts archived since `since`. Raises when the archive cannot be asked."""
+    paths, refusal = CP.archived_prompts(session, project, CP.prompt_archive_tool())
+    if refusal is not None:
+        raise RuntimeError(refusal)
+    floor = datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    return sum(1 for p in paths
+               if (m := _ARCHIVE_STAMP.search(Path(p).name)) and m.group(1) >= floor)
+
+
+def _transcript_since(path: str | None, since: float | None, session: str) -> dict:
+    """One pass over the transcript: operator turns, Lific writes and active seconds after `since`.
+
+    `since` None counts from the first record (a session with no handoff yet),
+    whose time is returned as `start`. Raises OSError when the file cannot be read.
+    """
+    if not path:
+        raise OSError("no transcript path reached this hook")
+    found = {"operator": 0, "lific": 0, "active": 0.0, "start": None}
+    previous = None
+    # A Lific call counts when its result arrives without an error, never on the call.
+    lific_calls: set[str] = set()
+    with Path(path).open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            # Most records only move the clock: read their time without parsing
+            # the whole record, which can be large (a tool result, a file).
+            stamp = _RECORD_STAMP.search(line)
+            when = CP.iso_epoch(stamp.group(1)) if stamp else None
+            if when is None:
+                continue
+            owner = _RECORD_SESSION.search(line)
+            if session and owner and owner.group(1) != session:
+                continue
+            if found["start"] is None:
+                found["start"] = when
+            if since is not None and when < since:
+                continue
+            if previous is not None and when > previous:
+                found["active"] += min(when - previous, ACTIVE_GAP_CAP_SECONDS)
+            previous = max(when, previous or when)
+            if '"user"' not in line and "mcp__lific__" not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            text = CP._operator_text(entry)
+            if text is not None:
+                # Only what a person typed: not a background task's report, a
+                # brief, a hook's or another session's text, nor a relayed word
+                # (MEASURED 2026-11-01 on a real HELM transcript: most such
+                # turns after a handoff were `<task-notification>`s).
+                if provenance.classify(text) == provenance.OPERATOR \
+                        and not _RELAY_WORDS.fullmatch(text.strip()):
+                    found["operator"] += 1
+                continue
+            message = entry.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and _lific_event(block):
+                    lific_calls.add(str(block.get("id")))
+                elif (block.get("type") == "tool_result"
+                      and str(block.get("tool_use_id")) in lific_calls):
+                    lific_calls.discard(str(block.get("tool_use_id")))
+                    if not block.get("is_error"):
+                        found["lific"] += 1
+    return found
+
+
+def newest_handoff(project: Path, root: Path, session: str) -> Path | None:
+    """This session's newest model-written handoff archive, or None. Raises when unresolvable."""
+    found = CP.session_handoffs(CP.handoff_dir(project, root), CP.safe_slug(session), FRESH_KINDS)
+    return found[0] if found else None
+
+
+def handoff_freshness(payload: dict, project: Path, root: Path,
+                      archive: Path | None = None) -> dict:
+    """How old the handoff is, in events and minutes of active work. Never raises.
+
+    Events since this session's newest handoff archive (`archive` overrides
+    which): merge commits on the main clone's `main`, Lific issues this session
+    created or moved (its own MCP calls in the transcript: the board cannot say
+    which session moved an issue), prompts this session archived, and operator
+    messages. With no archive the count starts at the session's first record.
+    A source that cannot be read counts as nothing and is named in `unread`.
+    """
+    session = CP.session_id(payload)
+    unread: list[str] = []
+    if archive is None:
+        try:
+            archive = newest_handoff(project, root, session)
+        except Exception as exc:  # noqa: BLE001 - an unresolvable archive is a missing fact
+            unread.append(f"handoff archive ({exc})")
+    since = None
+    if archive is not None:
+        try:
+            since = archive.stat().st_mtime
+        except OSError as exc:
+            unread.append(f"handoff archive ({exc})")
+            archive = None
+    try:
+        seen = _transcript_since(payload.get("transcript_path"), since, session)
+    except OSError as exc:
+        unread.append(f"transcript ({exc})")
+        seen = {"operator": 0, "lific": 0, "active": 0.0, "start": None}
+    if since is None:
+        since = seen["start"]
+    parts = {"merges": 0, "lific": seen["lific"], "prompts": 0, "operator": seen["operator"]}
+    if since is not None:
+        try:
+            parts["merges"] = _merges_since(project, since)
+        except Exception as exc:  # noqa: BLE001 - an unreadable source counts as nothing
+            unread.append(f"git log of the main clone ({exc})")
+        try:
+            parts["prompts"] = _prompts_since(session, project, since)
+        except Exception as exc:  # noqa: BLE001 - an unreadable source counts as nothing
+            unread.append(f"prompt archive ({exc})")
+    cfg = freshness_config()
+    events = sum(parts.values())
+    minutes = int(seen["active"] // 60)
+    return {
+        "archive": str(archive) if archive is not None else None,
+        "since": since,
+        "events": events,
+        "minutes": minutes,
+        "parts": parts,
+        "unread": unread,
+        "due": events >= cfg["events"] or minutes >= cfg["minutes"],
+    }
+
+
+def freshness_detail(fresh: dict) -> str:
+    """`2 merges, 1 Lific change, 0 prompts, 3 operator messages`."""
+    p = fresh.get("parts") or {}
+    return (f"{p.get('merges', 0)} merge(s), {p.get('lific', 0)} Lific change(s), "
+            f"{p.get('prompts', 0)} prompt(s) archived, "
+            f"{p.get('operator', 0)} operator message(s)")
+
+
+# The light refresh, unattended (HOS-315 part 1): write only. No /clear, no
+# /compact, no goldfish cold read: it is a save of the record, not a reset.
+FRESH_REFRESH_NOTE = """\
+The handoff on disk is stale: {events} event(s) / {minutes} min of work since it \
+was written ({detail}). First refresh it with a light /handover: run \
+`python scripts/checkpoint-paths.py`, then pass the handoff, written per \
+.claude/skills/handover/references/handoff-template.md with `Trigger: manual \
+(freshness refresh)`, on stdin to `python scripts/checkpoint-paths.py --write`. \
+Write only: no goldfish cold read (end Current state with `Cold read: not run \
+(light freshness refresh)`), no /clear, no /compact. Then carry on."""
+
+#: A refresh asked for this many times on one baseline is not asked again.
+FRESH_REFRESH_MAX_ASKS = 2
+
+# The attended line (HOS-315 part 1): said once per handoff, never repeated.
+FRESH_LINE = ("Handoff is {events} event(s) / {minutes} min old ({detail}). "
+              "/handover refreshes it.")

@@ -415,6 +415,24 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # Fresh-repository name guard (HOS-298). A data repository created by
+  # scripts/create-data-repo.py has no `names:` block, so every name the engine
+  # asks for is answered from scripts/data-names.example.yaml and every runtime
+  # service from scripts/runtime-services.example.yaml. MEASURED 2026-11-01:
+  # five names the engine asked for refused on such a tree and nothing said so.
+  # Refuses a name the shipped defaults cannot answer unless the guard lists
+  # it as exempt or escalated, with its reason. MEASURED 2026-11-01: 2.7s over
+  # 493 Python and 547 text files.
+  # Test: tests/test_fresh_data_repo_answers_the_engine.py.
+  - repo: local
+    hooks:
+      - id: fresh-repo-data-names
+        name: HEADING OS fresh data repository answers every engine data name
+        entry: .venv/bin/python scripts/check-engine-data-names.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
   # Home-path guard (HOS-35). This repository is public, and an absolute path
   # rooted in somebody's home directory publishes the account name, the layout
   # of the machine and the names of the working trees on it. leak-guard and

@@ -24,7 +24,7 @@ There are two ways.
 - **Your records.** Most skills read your own documents first: who you are, your business, your strategy, your contacts, your voice. `/setup-wizard` writes the first versions of these documents from your answers, and you can edit any of them later in a text editor, since each is a plain file in your data repository. A skill that finds a record missing says which one and continues without inventing anything.
 - **Keys.** A skill that calls an outside service reads its key from `.env` in the engine, for example `FIRECRAWL_API_KEY` or `REPLICATE_API_TOKEN`. `.env.example` lists every key with a comment. Leave a key empty if you do not use that service; the skill that needs it says so when you call it.
 - **Optional extras.** Heavy integrations are installed separately: `uv sync --extra <name>` in the engine, or `uv sync --all-extras` for all of them. A script that needs a missing extra prints the exact command.
-- **Optional tools.** Some skills work better, or only, with one of the optional tools: Hindsight (`HINDSIGHT.md`), Lific (`LIFIC.md`), Herdr (`HERDR.md`), CLIProxyAPI (`CLIPROXY.md`).
+- **Modules.** Some skills work better, or only, with one of the modules every install includes: Hindsight (`HINDSIGHT.md`), Lific (`LIFIC.md`), Herdr (`HERDR.md`), CLIProxyAPI (`CLIPROXY.md`).
 
 ## Where the results go
 

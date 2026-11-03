@@ -2,7 +2,7 @@
 """hindsight-shown.py - Claude Code Stop hook. Holds an answer that hides its Hindsight check.
 
 Operator decision, 2026-10-13: "I want to ALWAYS see that you also check
-Hindsight memory and show information from it" (translated). The UserPromptSubmit hook
+Hindsight memory and show information from it". The UserPromptSubmit hook
 `hindsight-recall-inject.py` already asks Hindsight on every prompt and leaves a
 per-session marker, `turn-<session>.json`, when it injected facts (or the
 snapshot's answer). This hook reads that marker at the end of the turn: when

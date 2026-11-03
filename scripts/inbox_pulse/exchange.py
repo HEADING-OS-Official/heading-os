@@ -24,7 +24,8 @@ import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Iterator
-from scripts.utils.workspace import get_default_tz
+from scripts.utils.workspace import get_default_tz, get_default_tz_name
+from scripts.utils.exchange_tz import UnknownZones
 from scripts.utils.user_agent import user_agent
 
 if TYPE_CHECKING:
@@ -75,6 +76,7 @@ class EWSConnection:
         self._password: str | None = password or os.getenv("EXCHANGE_PASSWORD")
         self._server: str | None = server_url or os.getenv("EXCHANGE_SERVER")
         self._account: "Account | None" = None
+        self._zones = None
 
     # ------------------------------------------------------------------
     # account property (lazy connect)
@@ -194,7 +196,15 @@ class EWSConnection:
             DoesNotExist. Callers should catch this as a transient skip,
             NOT a fatal error.
         """
-        return self.account.inbox.get(id=item_id)
+        # An invite parses its zone fields too (HOS-299,
+        # scripts/utils/exchange_tz.py); each item is named once per connection.
+        if self._zones is None:
+            self._zones = UnknownZones(get_default_tz_name())
+        item = self._zones.one(lambda: self.account.inbox.get(id=item_id))
+        message = self._zones.report()
+        if message:
+            _logger.warning(message)
+        return item
 
     # ------------------------------------------------------------------
     # Cleanup

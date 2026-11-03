@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.venv_guard import ensure_venv  # noqa: E402
 from scripts.utils.exchange_conn import build_account  # noqa: E402
 from scripts.utils.atomic import atomic_write_text  # noqa: E402
+from scripts.utils.exchange_tz import UnknownZones  # noqa: E402
 
 ensure_venv()
 # exchangelib names are bound lazily (F-2.1: import stays pure). The daemon
@@ -180,6 +181,21 @@ def _warn_once(message):
     print(f"[WARN] {message}")
 
 
+def _fetch_events(account, start, end, timezone_str):
+    """All items of the calendar view, unknown zones read as `timezone_str`.
+
+    The mechanism and its measurement are in `scripts/utils/exchange_tz.py`
+    (HOS-293, shared since HOS-299). The affected items are reported in one
+    line per run, each by a short hash of its EWS id, never by its subject.
+    """
+    zones = UnknownZones(timezone_str)
+    events = list(zones.read(account.calendar.view(start=start, end=end)))
+    message = zones.report()
+    if message:
+        _warn_once(message)
+    return events
+
+
 def _to_local(value, local_tz):
     """Return `value` converted to local time, or None when it cannot be.
 
@@ -288,7 +304,7 @@ def sync_calendar(account, days=7, timezone_str=None):
 
     print(f"[INFO] Fetching calendar events: {start.date()} to {end.date()}...")
 
-    events = account.calendar.view(start=start, end=end)
+    events = _fetch_events(account, start, end, timezone_str)
     event_list = sorted(events, key=lambda e: _start_sort_key(e.start, local_tz))
 
     if not event_list:
@@ -483,7 +499,12 @@ def sync_emails(account, count=30, unread_only=False, folder_name="Inbox"):
     else:
         items = folder.all().order_by("-datetime_received")[:count]
 
-    email_list = list(items)
+    # An invite in the folder parses its zone fields too (HOS-299).
+    zones = UnknownZones(get_default_tz_name())
+    email_list = list(zones.read(items))
+    message = zones.report()
+    if message:
+        _warn_once(message)
 
     if not email_list:
         # No early return. This used to skip the write entirely, so the file
@@ -723,7 +744,11 @@ def delete_emails(account, subject_query, folder_name="Inbox", confirm=True):
     print(f"[INFO] Searching {folder_name} for emails matching: \"{subject_query}\"...")
 
     hits = folder.filter(subject__icontains=subject_query).order_by("-datetime_received")
-    matches = list(hits[:DELETE_MATCH_CAP])
+    zones = UnknownZones(get_default_tz_name())
+    matches = list(zones.read(hits[:DELETE_MATCH_CAP]))
+    message = zones.report()
+    if message:
+        _warn_once(message)
 
     if not matches:
         print(f"[INFO] No emails found matching \"{subject_query}\".")

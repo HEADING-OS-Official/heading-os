@@ -17,7 +17,7 @@
 # email-intelligence, whose prompts carry email bodies and calendar subjects,
 # which are ceo-only. The operator's named remote trust list admits Moonshot
 # Kimi and OpenAI ChatGPT Astra here (his answer of 2026-10-12: "yes, Kimi and
-# Astra", translated); Gemini and Grok are not on it and left every chain. The yaml is not
+# Astra"); Gemini and Grok are not on it and left every chain. The yaml is not
 # the guard: `llm_fallback.TRUSTED_FALLBACK_VENDORS` refuses any other vendor in
 # code, so a chain edited back to gemini is refused at call time and logged,
 # never sent.

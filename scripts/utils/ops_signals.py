@@ -1356,33 +1356,59 @@ def restart_loop_state(window_hours: int = RESTART_LOOP_WINDOW_HOURS) -> dict:
     return classify_restart_loops(counts, window_hours)
 
 
-def classify_exchange_sync(age_hours: float | None, unit_present: bool) -> dict:
+def classify_exchange_sync(age_hours: float | None, unit_present: bool,
+                           last_failure: str | None = None) -> dict:
     """Pure: hours since the last successful Exchange sync -> signal dict.
 
     No unit and no log line means this machine does not run the sync: not due.
-    A unit with no successful sync on record is due at high.
+    A unit with no successful sync on record is due at high. `last_failure` is
+    the one-line reason of a failed job newer than the last success; when the
+    signal is due it is appended, so the line says what to do, not only how old.
     """
-    if not unit_present and age_hours is None:
+    if not unit_present and age_hours is None and last_failure is None:
         return {"key": "exchange_sync", "value": None, "threshold": EXCHANGE_SYNC_STALE_HOURS,
                 "due": False, "severity": "ok", "tier": "B",
                 "summary": "exchange sync: not run on this machine"}
+    why = f"; last failure: {last_failure}" if last_failure else ""
     if age_hours is None:
         return {"key": "exchange_sync", "value": None, "threshold": EXCHANGE_SYNC_STALE_HOURS,
                 "due": True, "severity": "high", "tier": "B",
-                "summary": "exchange sync: no successful sync on record"}
+                "summary": f"exchange sync: no successful sync on record{why}"}
     due = age_hours > EXCHANGE_SYNC_STALE_HOURS
     severity = ("high" if age_hours > EXCHANGE_SYNC_HIGH_HOURS
                 else "warn" if due else "ok")
     return {"key": "exchange_sync", "value": round(age_hours, 1),
             "threshold": EXCHANGE_SYNC_STALE_HOURS, "due": due, "severity": severity,
-            "tier": "B", "summary": f"exchange sync: last success {age_hours:.0f}h ago"}
+            "tier": "B", "summary": f"exchange sync: last success {age_hours:.0f}h ago"
+                                   + (why if due else "")}
+
+
+def exchange_sync_from_log(log: Path, unit_present: bool, now: float | None = None) -> dict:
+    """Classify the Exchange sync from the daemon's own log. Read-only.
+
+    The one place job OUTCOME is read, for the radar and for the /prime pulse
+    alike: a running process says nothing about whether its jobs succeed
+    (HOS-294). Adds `last_failure` (reason or None) and `last_failure_age_hours`
+    to the classifier's dict; a failure older than the last success is history,
+    not the current state, and `last_job_fail` leaves it out by log order.
+    """
+    from scripts.utils.sync_exchange_paths import last_job_fail, last_job_ok
+    now = time.time() if now is None else now
+    last = last_job_ok(log)
+    fail = last_job_fail(log)
+    age = None if last is None else max(0.0, (now - last.timestamp()) / 3600)
+    result = classify_exchange_sync(age, unit_present, fail[1] if fail else None)
+    result["last_failure"] = fail[1] if fail else None
+    result["last_failure_age_hours"] = (
+        None if fail is None else round(max(0.0, (now - fail[0].timestamp()) / 3600), 1))
+    return result
 
 
 def exchange_sync_state(now: float | None = None) -> dict:
-    """Age of the last 'job-ok sync-exchange' in the daemon's log, read by the
-    same parser the pulse uses, then classify. Read-only."""
+    """The radar's Exchange sync signal: the unit's presence from systemd, the
+    outcome from the daemon's log through `exchange_sync_from_log`. Read-only."""
     from scripts.utils.data_path import DataPathError
-    from scripts.utils.sync_exchange_paths import daemon_files, last_job_ok
+    from scripts.utils.sync_exchange_paths import daemon_files
     try:
         unit = subprocess.run(
             ["systemctl", "--user", "show", "-p", "LoadState", "--value",
@@ -1391,12 +1417,10 @@ def exchange_sync_state(now: float | None = None) -> dict:
     except (OSError, subprocess.SubprocessError):
         unit_present = False
     try:
-        last = last_job_ok(daemon_files(create=False).log)
+        log = daemon_files(create=False).log
     except DataPathError:
-        last = None
-    now = time.time() if now is None else now
-    age = None if last is None else max(0.0, (now - last.timestamp()) / 3600)
-    return classify_exchange_sync(age, unit_present)
+        return classify_exchange_sync(None, unit_present)
+    return exchange_sync_from_log(log, unit_present, now)
 
 
 def classify_unit_drift(drifted: list[str] | None) -> dict:

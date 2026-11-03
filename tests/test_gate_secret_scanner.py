@@ -70,6 +70,7 @@ RULE_FLOOR = 17
 # the gate prints, never its pattern. Selecting by it is what lets the boundary
 # case read its sample out of the gate instead of restating a key header here.
 PEM_RULE = "PEM private key"
+MARKDOWN_LABEL_RULE = "Plaintext password in markdown"
 
 # Characters a generated sample draws on where a rule allows a choice. Chosen to
 # carry the workspace's grep sentinel, so every byte this file writes to disk is
@@ -285,6 +286,92 @@ def test_the_pem_rule_fires_on_a_header_and_not_from_inside_a_longer_token(
         "the gate refused a run of token characters that merely SPELLS the key "
         "header; no key can carry a word character against its delimiter: "
         + ", ".join(survivors))
+
+
+def test_the_markdown_password_rule_keeps_its_exclusions_after_a_run_of_whitespace(
+        samples, tmp_path):
+    """The markdown password rule's exclusions hold after any whitespace run.
+
+    The whitespace run after the label is greedy but not atomic, so until
+    2026-11-01 a run of two or more whitespace characters let the engine back
+    off by one, test the exclusion lookahead against a space instead of the
+    excluded word, and match that space plus the word as the value. Whitespace
+    is now the first alternative of that lookahead, so it is always tested at
+    the first non-whitespace character. MEASURED 2026-11-01 before the fix: the
+    honest case below, two spaces, the excluded word, then the sample's own
+    eight-character value, was refused (exit 1), which is this function's red
+    half. The refused half is green before and after: it is what stops the fix
+    from being widened into a loosening of the value check.
+
+    THE SAMPLE AND THE WORD ARE NOT WRITTEN DOWN. The sample is the one the
+    module fixture generated from this rule's compiled form; the variants widen
+    its FIRST space, which the label does not contain. The excluded word is
+    read out of the same compiled form: the first alternative of its exclusion
+    lookahead that is a run of literals.
+
+    MUTATION-VERIFIED 2026-11-01, 2 of 2 planted in the rule itself: the
+    whitespace alternative dropped from the lookahead (which is also the rule
+    as it stood before this change), and the whitespace run narrowed to a run
+    of literal spaces.
+
+    NOT CLAIMED. Nothing about the embedded copy of this rule in
+    `.claude/hooks/_dispatch.py` (edited by hand in the same change and checked
+    by a reproduction run, not by this function), or the redactor. An excluded
+    word followed by more than one space or by a tab still fires; that shape is
+    left open. And the short-value residual of this change: a value of fewer
+    than eight characters after two or more whitespace characters, refused
+    before, is no longer refused, because the rule's eight-character minimum
+    now applies after the whole run, as it always did after one space.
+    """
+    matching = [s for description, s in samples
+                if description == MARKDOWN_LABEL_RULE]
+    assert len(matching) == 1, (
+        f"the gate carries {len(matching)} rules described "
+        f"{MARKDOWN_LABEL_RULE!r}; this function drives exactly one and "
+        f"tests nothing at any other count")
+    sample = matching[0]
+    assert " " in sample, "the generated sample carries no space to widen"
+
+    rules = [p for p, d in iter_patterns(sample) if d == MARKDOWN_LABEL_RULE]
+    assert len(rules) == 1
+    words: list[str] = []
+    for op, arg in _regex_parser.parse(rules[0].pattern, rules[0].flags):
+        if _opname(op) != "ASSERT_NOT":
+            continue
+        for branch_op, branch_arg in arg[1]:
+            if _opname(branch_op) != "BRANCH":
+                continue
+            for alternative in branch_arg[1]:
+                if alternative and all(_opname(o) == "LITERAL"
+                                       for o, _a in alternative):
+                    words.append("".join(chr(a) for _o, a in alternative))
+                    break
+    assert words, "no literal exclusion could be read out of the rule"
+    word = words[0]
+
+    probe = tmp_path / "planted.txt"
+
+    def verdict(text: str) -> int:
+        probe.write_text(text + "\n", encoding="utf-8")
+        return _run(str(probe)).returncode
+
+    # The direction that must never weaken: the sample's own value after a
+    # wider run of whitespace is still a password.
+    widened = [("two spaces", "  "), ("a tab", "\t"), ("a tab and a space", "\t ")]
+    assert len(widened) == 3
+    missed = [label for label, run in widened
+              if verdict(sample.replace(" ", run, 1)) != 1]
+    assert not missed, (
+        "the gate passed the rule's own value after a wider whitespace run: "
+        + ", ".join(missed))
+
+    # The direction that was wrong until 2026-11-01. The value after the word
+    # is the sample's own eight characters, because the word alone after one
+    # backtracked space falls below the rule's minimum and would not have been
+    # refused before the fix either.
+    assert verdict(sample.replace(" ", "  " + word, 1)) == 0, (
+        "the gate refused an excluded word after two spaces; the whitespace "
+        "run backtracked around the exclusion lookahead")
 
 
 def test_an_ordinary_file_with_no_credential_passes(tmp_path):

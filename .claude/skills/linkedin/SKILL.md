@@ -1,5 +1,6 @@
 ---
 name: linkedin
+# Russian on purpose: the description names the Russian archive triggers.
 description: "LinkedIn content, in three modes. post: draft one standalone post in the operator's voice (\"linkedin post\", \"draft a post about\", \"write a post\"). series: plan three or more posts with one arc and a publishing order, when the ask names a week, a plan or a post count (\"linkedin series\", \"content series\", \"plan posts for the week\"). archive: file a piece already published from linkedin-drafts into the archive; auto-fires on English or Russian \"I published it on LinkedIn\" phrasing (\"live on linkedin\", \"опубликовал на linkedin\", \"выложил на linkedin\"). Do NOT use for LinkedIn analytics or profile and banner questions (just answer), or for other platforms."
 argument-hint: "[post|series|archive] [topic, theme or slug]"
 allowed-tools: "Read, Bash(.venv/bin/python:*), AskUserQuestion"
@@ -22,6 +23,7 @@ x-heading-capability:
 x-heading-routing:
   category: Content
   label: /linkedin [post|series|archive]
+  # Russian on purpose: the Russian archive triggers the router matches.
   triggers:
     - linkedin post
     - draft a post about

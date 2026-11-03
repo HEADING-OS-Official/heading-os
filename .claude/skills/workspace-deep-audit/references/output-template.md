@@ -1,7 +1,7 @@
 # Audit Output Template
 
 Consumed by: `.claude/skills/workspace-deep-audit/SKILL.md` Phase 7.
-Last Updated: 2026-09-25
+Last Updated: 2026-11-02
 
 Produces the markdown artifact at `$AUDIT`, named
 `{YYYY-MM-DD}_audit_workspace-deep-overview{-version}.md`, where `$AUDIT` is
@@ -16,19 +16,21 @@ AUDIT_DIR="$(.venv/bin/python scripts/data-path.py path workspace-deep-audit)"
 
 Substitute `{placeholders}` with computed values from Phases 1-6. Sections marked `[QUICK MODE: SKIP]` are omitted when `--mode=quick`. Sections marked `[FOCUS MODE: ONLY IF MATCHING]` are included only when `--focus` matches.
 
+Write the report in the operator's working language; the skeleton below is English.
+
 ---
 
 ## Skeleton
 
 ```markdown
-# HEADING OS Workspace — Глубокий архитектурный и стратегический аудит {version_suffix}
+# HEADING OS Workspace: deep architectural and strategic audit {version_suffix}
 
-**Дата:** {YYYY-MM-DD}
-**Версия:** {v1 / v2 / vN — auto-incremented if same-date audit exists}
+**Date:** {YYYY-MM-DD}
+**Version:** {v1 / v2 / vN, auto-incremented if same-date audit exists}
 {if --vs: **Companion:** [previous audit]({prev_audit_path}) · explicit delta tables in each section}
-**Автор:** {the model that ran the audit — read the running model id, never hardcode a generation}
-**Объём:** {Полная инвентаризация / quick / focus on X}, Context7-валидация всех зависимостей, gap-анализ против {N}-best-practice пунктов 2026 года, конкурентный анализ {M} платформ, приоритизированные рекомендации.
-**Классификация:** CEO-only.
+**Author:** {the model that ran the audit: read the running model id, never hardcode a generation}
+**Scope:** {Full inventory / quick / focus on X}, Context7 validation of every dependency, gap analysis against {N} 2026 best-practice items, competitive analysis of {M} platforms, prioritized recommendations.
+**Classification:** CEO-only.
 
 ---
 
@@ -36,13 +38,13 @@ Substitute `{placeholders}` with computed values from Phases 1-6. Sections marke
 
 {1-2 paragraphs setting the headline}
 
-**Три ключевых вывода:**
+**Three key findings:**
 
 1. {finding 1 - architectural state}
 2. {finding 2 - cost/observability state}
 3. {finding 3 - strategic positioning state}
 
-**Топ-{N} приоритетных действий:**
+**Top {N} priority actions:**
 
 | # | Action | Effort | Impact |
 |---|---|---|---|
@@ -50,7 +52,7 @@ Substitute `{placeholders}` with computed values from Phases 1-6. Sections marke
 | 2 | {P0 item 2} | ... | ... |
 {... up to 5 items}
 
-Полная детализация в Section 7.
+Full detail in Section 7.
 
 ---
 
@@ -58,16 +60,16 @@ Substitute `{placeholders}` with computed values from Phases 1-6. Sections marke
 
 {1 paragraph summarizing the 6 audit streams (or fewer for quick/focus modes)}
 
-1. **Инвентаризация ({N} streams):** {list}
-2. **Архитектурный разбор:** {files inspected}
-3. **Context7 валидация:** {N} packages
+1. **Inventory ({N} streams):** {list}
+2. **Architecture review:** {files inspected}
+3. **Context7 validation:** {N} packages
 4. **Web research:** {N} sources surveyed
-5. **Конкурентный анализ:** {M} platforms (skip if quick)
-6. **Синтез:** gap analysis, recommendations prioritized by effort × impact
+5. **Competitive analysis:** {M} platforms (skip if quick)
+6. **Synthesis:** gap analysis, recommendations prioritized by effort × impact
 
 {If --vs: All numbers explicitly compared to v(prev). Delta columns added throughout.}
 
-Никакие файлы не модифицированы.
+No files were modified.
 
 ---
 
@@ -331,9 +333,8 @@ Substitute `{placeholders}` with computed values from Phases 1-6. Sections marke
 
 ## Voice Discipline
 
-Match the v1+v2 audit precedent:
+The template is English; write the report in the operator's working language.
 
-- Russian/English mix acceptable when v1 register works
 - Engineering audit tone, not marketing
 - Every claim backed by count / hash / pin / run
 - Explicit before/after deltas when `--vs` is active

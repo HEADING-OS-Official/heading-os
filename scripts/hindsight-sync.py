@@ -125,14 +125,14 @@ def listed(root: Path) -> list[str]:
 
 
 #: Operator decision, 2026-10-03 (HOS-195): the working material beside a document goes into a `_work/`
-#: folder next to it ("yes, _work/ beside the document", translated), and `_work/` stays out of memory the
+#: folder next to it ("yes, _work/ beside the document"), and `_work/` stays out of memory the
 #: way archives do. Unlike the archive rule, no `wave-admit.txt` prefix lifts it, and a
 #: document already sent from such a folder leaves the bank through the mirror step.
 WORK_REASON = "inside a _work/ folder (working material beside a document is not memory)"
 
 
 #: Operator decision, 2026-10-05, on the local model's records: "Keep all of its records on disk only,
-#: remove them from Hindsight." (translated) A memory record whose frontmatter names one of these writers
+#: remove them from Hindsight." A memory record whose frontmatter names one of these writers
 #: (top level or under `metadata:`) is never sent, and the mirror takes out what was.
 MACHINE_WRITERS = frozenset({"cognee-distil", "memory-distil"})
 MACHINE_REASON = "a machine-written memory record (kept on disk only, operator decision 2026-10-05)"
@@ -282,9 +282,9 @@ def admit_prefixes() -> tuple[str, ...]:
     """Path prefixes sent although they read as an archive, one per line in `wave-admit.txt`
     beside the ledger. Only the archive rule is lifted; every other filter still applies.
     Operator decision, 2026-10-03 (HOS-193), on what to admit: "LinkedIn posts, closed threads,
-    approved assignments" (translated); handoffs stay out, and his rule of 2026-09-30, "do not
-    load archives for now" (translated), holds for everything else. The list lives in the data repository, not here,
-    because these are data addresses and this engine names none."""
+    approved assignments"; handoffs stay out, and his rule of 2026-09-30, "do not load
+    archives for now", holds for everything else. The list lives in the data repository,
+    not here, because these are data addresses and this engine names none."""
     return _prefixes("wave-admit.txt")
 
 
@@ -775,7 +775,7 @@ def items_for(root: Path, path: str, max_bytes: int = DEFAULT_MAX_BYTES, header:
     base = {
         "context": f"HEADING OS workspace file ({area})",
         "timestamp": when or document_date(f, path)[0].isoformat(),
-        # Operator decision, 2026-10-03 (HOS-189), "5 - yes" (translated): a file under any `personal/` directory is marked
+        # Operator decision, 2026-10-03 (HOS-189), "5 - yes": a file under any `personal/` directory is marked
         # personal; the content is unchanged. A re-retain replaces the tags, so every send adds it.
         "tags": ["workspace", f"area:{area}"] + (["personal"] if "/personal/" in "/" + path else [])
                 + ([f"domain:{domain}"] if domain else []),
@@ -1714,7 +1714,7 @@ def mirror_cap(uploaded: int, already: int = 0) -> int:
     """How many ids the mirror step may delete this pass: the guard of `memory_plan`
     (`MAX_DELETES`, and `MAX_FRACTION` of the uploaded paths, at least one), less the
     family deletions this same pass already plans. Operator decision, 2026-10-03, on more than that:
-    "Delete in portions." (translated) The rest waits for the next passes; nothing waits for a word."""
+    "Delete in portions." The rest waits for the next passes; nothing waits for a word."""
     cap = max(1, min(memory_plan.MAX_DELETES, int(memory_plan.MAX_FRACTION * uploaded)))
     return max(0, cap - already)
 
@@ -2938,7 +2938,7 @@ def _st_untracked_files_git_does_not_ignore_are_sent_and_mirrored(tmp: Path) -> 
 
 def _st_machine_written_memory_records_stay_on_disk_and_leave_the_bank(tmp: Path) -> None:
     """HOS-200 part 2, operator decision, 2026-10-05: "Keep all of its records on disk only, remove them
-    from Hindsight." (translated) A memory record whose frontmatter says the local model wrote it is never
+    from Hindsight." A memory record whose frontmatter says the local model wrote it is never
     sent, and one already sent leaves through the mirror; no file is touched. Before it
     all four records under the memory prefix were sent."""
     root = tmp / "data"

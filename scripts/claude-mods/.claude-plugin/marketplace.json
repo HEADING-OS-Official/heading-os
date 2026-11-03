@@ -11,6 +11,11 @@
       "name": "agent-watch",
       "source": "./agent-watch",
       "description": "A band above the prompt and a panel (/agent-watch) listing this session's subagents with model, progress, elapsed time and an estimated cost."
+    },
+    {
+      "name": "context-bar",
+      "source": "./context-bar",
+      "description": "A band above the prompt (/context-bar to hide or show) showing what fills the context window, by category; /context-bar panel lists every item."
     }
   ]
 }

@@ -12,7 +12,11 @@ Without the unit (no systemd, or never installed) the old behaviour stands: a
 dead daemon is spawned detached, under the pinned `.venv/bin/python`.
 
 Output policy:
-    - Daemon alive: single OK line with pid + last sync timing
+    - Daemon alive, last successful job within EXCHANGE_SYNC_STALE_HOURS:
+      single OK line with pid + last sync timing
+    - Daemon alive, sync failing (no success within the window, or none on
+      record): error line with the age of the last success and the last
+      failure's one-line reason, exit 1. The process is not the sync.
     - Unit installed and not active: error line naming the unit state, exit 1
     - No unit, daemon dead + auto-spawn ok: line announcing detached start
     - No unit, daemon dead + auto-spawn failed: error line with manual command
@@ -25,6 +29,7 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +37,8 @@ WORKSPACE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WORKSPACE))
 
 from scripts.utils.data_path import DataPathError  # noqa: E402
+from scripts.utils.ops_signals import (  # noqa: E402
+    EXCHANGE_SYNC_STALE_HOURS, exchange_sync_from_log)
 from scripts.utils.pid_liveness import pid_runs_program  # noqa: E402
 from scripts.utils.sync_exchange_paths import daemon_files, last_job_ok  # noqa: E402
 from scripts.utils.clone_guard import require_main_clone
@@ -43,6 +50,7 @@ UNIT = "sync-exchange-daemon.service"
 # writes them (`scripts/utils/sync_exchange_paths.py`), never in the engine checkout.
 PID_FILE: Path
 LOG_FILE: Path
+STARTED_AT_FILE: Path
 
 
 def _daemon_alive() -> tuple[bool, int | None]:
@@ -193,14 +201,14 @@ def main():
     # print. Done here, not at import, so importing this module has no side effect.
     require_main_clone(__file__)
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    global PID_FILE, LOG_FILE
+    global PID_FILE, LOG_FILE, STARTED_AT_FILE
     try:
         files = daemon_files(create=False)
     except DataPathError as exc:
         print(f"🔄 Sync-Exchange: ❌ no data repository on this tree ({exc}); "
               f"the daemon keeps its pid and log there, so nothing was started.")
         return 2
-    PID_FILE, LOG_FILE = files.pid, files.log
+    PID_FILE, LOG_FILE, STARTED_AT_FILE = files.pid, files.log, files.started_at
     unit = _unit_state()
     if unit is not None:
         if unit.get("ActiveState") != "active":
@@ -227,12 +235,55 @@ def main():
         print(f"🔄 Sync-Exchange: daemon was NOT RUNNING — started {tag}")
         return 0
 
+    return _report_running(pid)
+
+
+def _report_running(pid) -> int:
+    """The line for a daemon whose process runs: the process is not the sync.
+
+    Job outcome comes from `ops_signals.exchange_sync_from_log`, the classifier
+    the ops radar uses, so the two cannot disagree (HOS-294: the panel printed
+    "daemon up" while every job failed on a missing `email` extra).
+    """
+    sync = exchange_sync_from_log(LOG_FILE, unit_present=True)
     last_ok = _last_job_ok()
-    if last_ok:
+    why = ""
+    if sync["last_failure"]:
+        why = (f"; last failure {_ago(sync['last_failure_age_hours'])}: "
+               f"{sync['last_failure']}")
+    if not sync["due"]:
         print(f"🔄 Sync-Exchange: ✅ daemon up pid={pid}, last sync {last_ok}")
-    else:
-        print(f"🔄 Sync-Exchange: ✅ daemon up pid={pid}, no sync logged yet")
-    return 0
+        return 0
+    up = _uptime_hours()
+    if last_ok is None and not sync["last_failure"] and up is not None \
+            and up <= EXCHANGE_SYNC_STALE_HOURS:
+        # Started recently and its first job has not finished either way.
+        print(f"🔄 Sync-Exchange: ⏳ daemon up pid={pid}, first sync not finished yet")
+        return 0
+    since = f"last success {last_ok}" if last_ok else "no successful sync on record"
+    print(f"🔄 Sync-Exchange: ❌ daemon runs (pid={pid}) but the sync is FAILING: "
+          f"{since}{why}")
+    # Non-zero, like a dead daemon: the process running is not the sync working.
+    return 1
+
+
+def _ago(hours: float | None) -> str:
+    if hours is None:
+        return "at an unknown time"
+    mins = int(hours * 60)
+    if mins < 60:
+        return f"{mins}m ago"
+    h, m = divmod(mins, 60)
+    return f"{h}h{m}m ago" if h < 24 else f"{h // 24}d ago"
+
+
+def _uptime_hours() -> float | None:
+    """Hours since the daemon wrote its `started_at` (epoch seconds), or None."""
+    try:
+        started = int(STARTED_AT_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return max(0.0, (time.time() - started) / 3600)
 
 
 if __name__ == "__main__":

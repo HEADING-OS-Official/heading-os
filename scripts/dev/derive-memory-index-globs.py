@@ -34,7 +34,7 @@ right while the move was pending and is a defect once the move has run: a dest
 is `<f>/<l>/<src>`, so the bare alternative and any prefixed one claim the SAME
 record at its two addresses, and a record that exists at both is indexed twice
 and answers one query as two documents. Operator instruction that day: "there
-cannot be a file lying at both addresses." (translated)
+cannot be a file lying at both addresses."
 
 So the bare alternative is kept only where the pre-move address STILL HOLDS
 FILES, and that is measured against the live overlay rather than argued from the

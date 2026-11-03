@@ -669,8 +669,8 @@ def scan_dangling_links(memory_dir) -> dict:
 # Until 2026-10-04 this was a knowledge graph, read off its store file. The
 # operator removed that graph from the workspace that day (HOS-198) and made
 # Hindsight the main memory, in his words, translated: "Let Hindsight be the main
-# memory" and "Reconfigure EVERYTHING onto Hindsight." So a record is reachable when
-# MEMORY.md links it OR the bank holds it as a document, and an orphan is a
+# memory" and "Reconfigure EVERYTHING onto Hindsight." So a record is
+# reachable when MEMORY.md links it OR the bank holds it as a document, and an orphan is a
 # record neither of them can reach.
 #
 # THE CONTRACT THIS READS, MEASURED 2026-10-04 against the live server with a

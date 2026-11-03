@@ -52,6 +52,11 @@
       "reason": "The Claude Code harness reads its per-checkout settings from this file inside the project directory, and scripts/setup-platform.sh writes the hook registrations there. Its place is fixed by the harness, not chosen by the engine."
     },
     {
+      "path": "scripts/heading-secrets.py",
+      "statement": "return get_workspace_root() / \".env\"",
+      "reason": "The operator's runtime credentials file. CLAUDE.md setup step 2 and the operational layer place it in the engine clone, gitignored and never committed, and every daemon loads it from there; it is configuration a person writes, not an artifact the engine produces."
+    },
+    {
       "path": "scripts/prime-health-parallel.py",
       "statement": "proc = subprocess.run(\n        [sys.executable, str(script), str(template),\n         str(workspace_root / \".claude\" / \"settings.local.json\"), \"--check\"],\n        cwd=str(workspace_root),\n        capture_output=True,\n        text=True,\n        timeout=CHECK_TIMEOUT,\n    )",
       "reason": "The Claude Code harness reads its per-checkout settings from this file inside the project directory, and scripts/setup-platform.sh writes the hook registrations there. Its place is fixed by the harness, not chosen by the engine."
@@ -108,12 +113,7 @@
     },
     {
       "path": "scripts/utils/gmail_auth.py",
-      "statement": "return os.getenv(\n        \"GOOGLE_GMAIL_CREDENTIALS_PATH\",\n        os.getenv(\n            \"GOOGLE_CONTACTS_CREDENTIALS_PATH\",\n            str(PROJECT_ROOT / \".sessions\" / \"google\" / \"credentials.json\"),\n        ),\n    )",
-      "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
-    },
-    {
-      "path": "scripts/utils/gmail_auth.py",
-      "statement": "return str(PROJECT_ROOT / \".sessions\" / \"google\" / \"gmail_token.json\")",
+      "statement": "return root / \".sessions\" / \"google\"",
       "reason": "Runtime OAuth and Telegram session credentials, gitignored in the engine clone by the same documented design as .env: the daemons that refresh them run from the clone and load them there. Credentials the operator installs, not an artifact the engine writes on its own."
     },
     {

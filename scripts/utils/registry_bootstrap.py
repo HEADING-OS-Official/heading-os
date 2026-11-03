@@ -21,7 +21,7 @@ engine keeps as a literal is exactly what HOS-5 section 7 exists to prevent.
 ## The store key
 
 `runtime_store: <directory name>` at the top level of the registry. Operator
-decision 2026-09-25 ("yes, move it", translated), reversing his ruling of 2026-09-14 that
+decision 2026-09-25 ("yes, move it"), reversing his ruling of 2026-09-14 that
 kept the name an engine constant. Absent from the tree's registry, the engine's
 default file `scripts/data-names.example.yaml` answers, and it answers
 `runtime-junk`, so a tree with no entry resolves exactly as it did before.
@@ -166,7 +166,7 @@ def store_dirname_from_files(data_root: Path, engine_root: Path) -> str:
 #
 # `subject_roots: [<name>, <name>, ...]` at the top level of the registry: the
 # top-level directories of the data repository's subject tree (HOS-234, operator
-# decision 2026-10-13, "NO hardcoded paths", translated). Every guard asking "is this a
+# decision 2026-10-13, "NO hardcoded paths"). Every guard asking "is this a
 # data root" asks `families.subject_roots()`, which reads this line, so adding,
 # renaming or dropping a root is an edit of this one line and nothing else.
 #

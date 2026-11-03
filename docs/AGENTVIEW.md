@@ -1,6 +1,6 @@
 # AgentView: see what your agents do and what they use
 
-AgentView is the name this guide gives to three small tools. Each one shows you a different part of the work your AI assistants do. All three are optional. HEADING OS runs fine without any of them.
+AgentView is the name this guide gives to three small tools. Each one shows you a different part of the work your AI assistants do. All three are part of every HEADING OS install.
 
 | Tool | What it shows you | Where it comes from |
 |---|---|---|

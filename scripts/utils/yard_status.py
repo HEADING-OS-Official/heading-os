@@ -2,7 +2,7 @@
 
 Operator instruction, 2026-09-20: *"think about it: maybe there should be a
 mechanism where HELM itself periodically goes and checks the state of every
-yard it created, instead of waiting for me to tell it to."* (translated)
+yard it created, instead of waiting for me to tell it to."*
 
 THE EVENING THAT PRODUCED THIS. Five yards were working. One finished its
 analysis, wrote a good report into the chat, and stopped: the agent was alive,

@@ -1214,6 +1214,7 @@ def watched_store_roots() -> tuple[Path, ...]:
     read here still has a default store a test could create, and a relocated
     store is watched where the registry now puts it.
     """
+    from scripts.utils.paths import DATA_SIBLING_NAME, sibling_data_root
     from scripts.utils.runtime_dir import RuntimeDirError, default_store_dirname, store_dirname
 
     default = default_store_dirname()
@@ -1221,7 +1222,14 @@ def watched_store_roots() -> tuple[Path, ...]:
     env = os.environ.get("HEADING_OS_DATA")
     if env:
         bases.append(Path(env))
-    bases += [ENGINE_ROOT.parent / ".heading-os-data", ENGINE_ROOT]
+    # The `.heading-os-data` sibling is watched even before it exists, as it
+    # always was; the one sibling rule adds the stamped `data` beside an
+    # `engine` folder (HOS-313).
+    bases.append(ENGINE_ROOT.parent / DATA_SIBLING_NAME)
+    sibling = sibling_data_root(ENGINE_ROOT)
+    if sibling is not None and sibling not in bases:
+        bases.append(sibling)
+    bases.append(ENGINE_ROOT)
     roots = []
     for base in bases:
         try:

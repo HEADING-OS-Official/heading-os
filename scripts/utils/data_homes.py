@@ -79,6 +79,38 @@ def homes(group: str, *, data_root: Path | None = None, existing: bool = True,
     return tuple(out)
 
 
+def thread_homes(data_root: Path) -> tuple[tuple[str, Path], ...]:
+    """Every thread home of one data repository, as (registry name, address).
+
+    Each address of every name in the group `business-threads`, in group order,
+    then the personal threads home when the registry knows `threads-personal`;
+    an address already given is not repeated. It is the same set
+    `_harvest_record_names` in `scripts/utils/content_denylist.py` reads. That
+    guard keeps its own lookup on purpose: it protects the public engine, and
+    HOS-322 left it unedited. The installer and the layout repair create these
+    homes so that guard finds one (HOS-322, 2026-11-01).
+    """
+    from scripts.utils.data_path import known_names
+
+    root = Path(data_root)
+    out: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+
+    def add(name: str, path: Path) -> None:
+        if path not in seen:
+            seen.add(path)
+            out.append((name, path))
+
+    for name in group_names("business-threads", data_root=root):
+        for path in resolve_all(name, root):
+            add(name, path)
+    if "threads-personal" in known_names(data_root=root):
+        personal = resolve("threads-personal", root)
+        if personal is not None:
+            add("threads-personal", personal)
+    return tuple(out)
+
+
 def claimed_children(base: Path, *, data_root: Path | None = None,
                      ignore: tuple[str, ...] = ()) -> frozenset[str]:
     """The immediate child directories of `base` that a registry name places.

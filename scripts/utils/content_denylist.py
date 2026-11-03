@@ -125,9 +125,9 @@ from pathlib import Path
 
 from scripts.utils.markdown import FM_OK, split_frontmatter
 
-#: The name the team bot's data-config files carry, and its cycle-speaker
+#: The name a team bot's data-config files carry, and its cycle-speaker
 #: schedule: the operator's own data shape, harvested where it exists.
-TEAM_BOT_MARK = "fireside"
+TEAM_BOT_MARK = "team-bot"
 SCHEDULE_FILE = f"{TEAM_BOT_MARK}-schedule.json"
 
 # Public identity -- deliberately shareable, NEVER flagged.

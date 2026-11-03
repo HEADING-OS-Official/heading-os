@@ -612,5 +612,14 @@ def test_public_remote_refused_unless_it_is_the_named_official_remote(tmp_path, 
     assert "PUBLIC" in (git_push.remote_objection(
         work, token="x", public_ok="https://github.com/zzqx-org/zzqx-other.git") or "")
     assert git_push.remote_objection(work, token="x", public_ok=official) is None
+    # `git push origin` sends to EVERY pushurl, so a second one is a second
+    # destination the wall must judge. Red before 2026-11-01: only the first
+    # was read, and both refusals below came back None (MEASURED 2026-11-01).
+    _git(work, "config", "--add", "remote.origin.pushurl", official)
+    _git(work, "config", "--add", "remote.origin.pushurl", "https://github.com/zzqx-org/zzqx-other.git")
+    assert "PUBLIC" in (git_push.remote_objection(work, token="x", public_ok=official) or "")
+    _git(work, "config", "--replace-all", "remote.origin.pushurl", engine_url, "zzqx-other")
+    assert "ENGINE remote" in (git_push.remote_objection(work, token="x", public_ok=official) or "")
+    _git(work, "config", "--unset-all", "remote.origin.pushurl")
     _git(work, "remote", "set-url", "origin", engine_url)
     assert "ENGINE remote" in (git_push.remote_objection(work, token="x", public_ok=engine_url) or "")

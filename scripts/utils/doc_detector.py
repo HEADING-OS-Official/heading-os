@@ -176,6 +176,7 @@ CONTAINED_NAME_THRESHOLD = 0.9
 #: only by a day date were labelled versions, saved on different days.
 DATE_CONFLICT_THRESHOLD = 0.9
 
+# Russian on purpose: a Russian variant word the detector finds in file names.
 #: Words that, among the tokens one name has and the other lacks, mark an
 #: ALTERNATIVE (a variant offered beside the other) rather than a revision.
 #: 2026-10-01, HOS-178 tuning half: with/without pairs and a named
@@ -229,6 +230,7 @@ class Detection:
 # Names
 # ============================================================
 
+# Russian on purpose: Cyrillic letters are token characters, because file names can be Russian.
 _TOKEN_SPLIT = re.compile(r"[^0-9a-zа-яё]+")
 # `r02` joined `v2` on 2026-10-01 (HOS-178 tuning half: `-r01-` / `-r02-`
 # estimates labelled versions).
@@ -236,6 +238,7 @@ _NOISE = re.compile(r"^(?:v\d+[a-z]?|r\d{1,3}|final|draft|copy)$")
 # A contract term among the extra tokens (`5yr`): an alternative offer, not a
 # revision. 2026-10-01, HOS-178 tuning half.
 _TERM = re.compile(r"^\d+(?:yr|yrs|year|years)$")
+# Russian on purpose: Cyrillic letters and the Russian amount suffixes the detector parses in file names.
 # A money amount in the original name (`1,5M`, `20k`); two names whose amounts
 # differ are alternatives. 2026-10-01, HOS-178.
 _AMOUNT = re.compile(r"(?<![0-9a-zа-яё])\d+(?:[.,]\d+)?\s?[mkмк](?![0-9a-zа-яё])")
@@ -254,6 +257,7 @@ _MONTHS = {
     "jul": "m07", "august": "m08", "aug": "m08", "september": "m09", "sep": "m09", "sept": "m09",
     "october": "m10", "oct": "m10", "november": "m11", "nov": "m11", "december": "m12", "dec": "m12",
 }
+# Russian on purpose: Russian month stems and the Russian copy word the detector parses in file names.
 _RU_MONTH = re.compile(
     r"^(январ|феврал|март|апрел|ма[йяе]$|июн|июл|август|сентябр|октябр|ноябр|декабр)")
 _YEAR_OR_DAY = re.compile(r"^(?:(?:19|20)\d{2}|\d{1,2})$")

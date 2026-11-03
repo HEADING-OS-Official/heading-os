@@ -6,7 +6,7 @@ HEADING OS is free to download, install and use. This page says where to look wh
 
 - **Installing:** [docs/INSTALL.md](docs/INSTALL.md) covers the prerequisites, what `install.sh` does, how to verify the result, how to update, and how to fix common problems.
 - **Daily use:** [docs/WORKING-WITH-HEADING-OS.md](docs/WORKING-WITH-HEADING-OS.md), [docs/SKILLS.md](docs/SKILLS.md) and [docs/RULES-AND-PROTECTIONS.md](docs/RULES-AND-PROTECTIONS.md).
-- **Optional tools:** each has its own guide in [docs/](docs/): Hindsight, Lific, Herdr, CLIProxyAPI, AgentView, and the HELM and yards method.
+- **Modules:** each has its own guide in [docs/](docs/): Hindsight, Lific, Herdr, CLIProxyAPI, AgentView, and the HELM and yards method.
 - **Online:** the same 17 guides are at [headingos.com/docs](https://headingos.com/docs/).
 - **What changed:** [CHANGELOG.md](CHANGELOG.md) and [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
 

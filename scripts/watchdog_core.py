@@ -29,7 +29,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from scripts.utils import daemon_heartbeat
+from scripts.utils import daemon_heartbeat, install_answers
 from scripts.utils.data_path import DataPathError, data_write_dir
 from scripts.utils.timeparse import parse_iso
 
@@ -103,18 +103,34 @@ def load_expected(workspace_root: Path, cfg: dict | None = None) -> tuple[str, .
     Absent or empty falls back to ``EXPECTED_DAEMONS`` (the full fleet) for
     back-compat with a single-host deployment. Config read is best-effort;
     ``cfg`` is the config already read for this pass, else it is read here.
+
+    Then the install's mail answer, read through ``install_answers.mail``
+    (HOS-312): with ``none`` (connect later) or ``google``, ``sync-exchange``
+    and ``sentinel`` are dropped, because the installer turns neither on and
+    they would otherwise resolve "missing" forever. With ``exchange``, or with
+    the answer unset (HELM's own machine, whose .env predates the intake),
+    nothing is dropped. With any mail answer at all (an install the intake
+    made), only those two mail daemons are kept, because no install turns any
+    other daemon's family on. A ``daemon.watchdog.expect`` list from config is
+    narrowed the same way on such an install.
     """
     if cfg is None:
         cfg = _read_config(workspace_root)
+    names: tuple[str, ...] = EXPECTED_DAEMONS
     try:
         raw = cfg.get("daemon", {}).get("watchdog", {}).get("expect")
         if isinstance(raw, list):
-            names = tuple(str(x).strip() for x in raw if isinstance(x, str) and str(x).strip())
-            if names:
-                return names
+            scoped = tuple(str(x).strip() for x in raw if isinstance(x, str) and str(x).strip())
+            if scoped:
+                names = scoped
     except Exception as exc:  # noqa: BLE001 - malformed config is best-effort; default below
         logger.debug("watchdog: expected-daemons config read failed: %s", exc)
-    return EXPECTED_DAEMONS
+    answer = install_answers.mail(workspace_root)
+    if answer in ("none", "google"):
+        names = tuple(n for n in names if n not in ("sync-exchange", "sentinel"))
+    if answer is not None:
+        names = tuple(n for n in names if n in ("sync-exchange", "sentinel"))
+    return names
 
 
 def load_cadence(workspace_root: Path, cfg: dict | None = None) -> dict[str, tuple[int, int]]:

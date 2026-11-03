@@ -518,7 +518,7 @@ def print_program(program: Path) -> None:
     `.claude/rules/generated-code-execution.md` rests on four sandbox controls,
     and a fifth control that does not exist is worse than four that do.
     """
-    print(f"{BOLD}Программа обхода{RESET} {GRAY}{program}{RESET}")
+    print(f"{BOLD}Traversal program{RESET} {GRAY}{program}{RESET}")
     print(f"{GRAY}{'-' * 60}{RESET}")
     print(program.read_text(encoding="utf-8").rstrip())
     print(f"{GRAY}{'-' * 60}{RESET}")
@@ -527,8 +527,8 @@ def print_program(program: Path) -> None:
 def print_record(record: dict, exit_code: int) -> None:
     if exit_code == EXIT_OK:
         answer = record["answer"]
-        print(f"{GREEN}{BOLD}Ответ{RESET} {GRAY}({record['elapsed_s']} с, "
-              f"{record.get('return_chars', 0)} симв.){RESET}")
+        print(f"{GREEN}{BOLD}Answer{RESET} {GRAY}({record['elapsed_s']} s, "
+              f"{record.get('return_chars', 0)} chars){RESET}")
         print(json.dumps(answer, ensure_ascii=False, indent=2))
         return
     colour = YELLOW if exit_code == EXIT_CORPUS_FITS_WINDOW else RED

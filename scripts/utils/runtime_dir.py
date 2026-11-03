@@ -103,7 +103,7 @@ from scripts.utils.workspace import get_workspace_root
 
 # The store's directory name is NOT a constant here any more. It was
 # `STORE_DIRNAME = "runtime-junk"` on the operator's ruling of 2026-09-14, and on
-# 2026-09-25 he reversed it ("yes, move it", translated, HOS-5 F1): the name is the
+# 2026-09-25 he reversed it ("yes, move it", HOS-5 F1): the name is the
 # registry's `runtime_store:` key, read by `store_dirname()` below, and the
 # engine's default registry answers `runtime-junk` for a tree with no entry.
 

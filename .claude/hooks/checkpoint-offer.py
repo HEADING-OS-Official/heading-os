@@ -18,6 +18,13 @@ written by checkpoint-statusline.py, and decides what this pause does:
     and wakes the model to run /second-wind by itself (`_rewake`). Either way
     a bare "1" or "2" as the next prompt picks an option
     (`.claude/hooks/unattended-resume.py`);
+  - a reset refused only because the operator typed: retried at the next quiet
+    Stop while its handoff is still fresh, refreshed first when it went stale
+    (`_retry_reset`, HOS-315);
+  - handoff freshness, a trigger separate from the menu (HOS-315): once the
+    handoff is 3 events or 60 minutes of work old, unattended asks for a light
+    /handover (write only), attended says so in one line (`_freshness`). Never
+    in a yard;
   - unattended on, any other pause: `checkpoint_autonomy.unattended_turn` hands
     the turn back at once unless state shows open work (`_open_work`), then
     waits out a grace period and continues unless the operator speaks or the
@@ -152,6 +159,10 @@ def _verify_reset(project: Path, session: str, since: float, kind: str) -> tuple
     return archive, missing
 
 
+# The two refusals that mean only "the operator typed": the one kind retried.
+STALE_WAITING = "a message from the operator is waiting"
+STALE_TYPED = "the operator typed something after the check"
+
 # A tool call that starts background work, as the transcript records it.
 STALE_TOOLS = ('"name":"CronCreate"', '"name":"ScheduleWakeup"', '"name":"Agent"', '"name":"Monitor"')
 
@@ -168,7 +179,7 @@ def _stale_since(transcript: str | None, offset: int, session: str) -> str | Non
     # A message queued while the model was writing the handoff sits BEFORE
     # `offset`, so the slice below cannot see it (review finding, 2026-10-14).
     if AU._queue_pending(Path(transcript), session):
-        return "a message from the operator is waiting"
+        return STALE_WAITING
     try:
         with open(transcript, encoding="utf-8", errors="replace") as handle:
             handle.seek(offset)
@@ -176,7 +187,7 @@ def _stale_since(transcript: str | None, offset: int, session: str) -> str | Non
     except OSError as exc:
         return f"the transcript could not be re-read ({exc})"
     if AU._operator_spoke(fresh, session):
-        return "the operator typed something after the check"
+        return STALE_TYPED
     if '"compact_boundary"' in fresh:
         return "a compaction happened after the check"
     if any(tool in fresh.replace(" ", "") for tool in STALE_TOOLS):
@@ -207,8 +218,9 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
 
     unattended = AU.unattended_mode(state)
 
-    def say(text: str) -> bool:
-        AU.persist(state_path, reset_refused_reason=text)
+    def say(text: str, refusals: int = 0) -> bool:
+        # Any refusal but "the operator typed" ends a retry chain: its count resets.
+        AU.persist(state_path, reset_refused_reason=text, reset_refusals=refusals)
         if unattended:
             # Nobody may be there to read a systemMessage: the refusal goes to
             # the continuation in `main` instead, so the stretch does not end
@@ -270,6 +282,21 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
 
     stale = _stale_since(transcript, offset, session)
     if stale:
+        if stale in (STALE_WAITING, STALE_TYPED) and not AU.in_yard():
+            # Retried at the next quiet Stop (`_retry_reset`, HOS-315), until the
+            # RESET_RETRY_MAX-th refusal in a row, which drops it.
+            refusals = int(CP.read_json(state_path).get("reset_refusals") or 0) + 1
+            if refusals >= RESET_RETRY_MAX:
+                return say(f"handover verified ({archive.name}), {command} NOT sent: "
+                           f"{stale}. Refused {refusals} times in a row because the "
+                           f"operator typed, so not retried again. Run {label} once "
+                           "more when you want the context freed.")
+            AU.persist(state_path, reset_retry={
+                "kind": kind, "requested_at": requested, "archive": str(archive),
+                "refused_at": CP.utc_now().isoformat()})
+            return say(f"handover verified ({archive.name}), {command} NOT sent: "
+                       f"{stale}. It is tried again at the next quiet pause.",
+                       refusals=refusals)
         return say(f"handover verified ({archive.name}), {command} NOT sent: {stale}.")
     try:
         HA.submit_command(pane, command)
@@ -277,7 +304,7 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
         return say(f"handover verified ({archive.name}), {command} NOT sent: {exc}.")
     now = CP.utc_now().isoformat()
     sent = {"reset_sent_at": now, "reset_sent_command": command,
-            "reset_sent_pane": pane, "second_wind_attempts": 0}
+            "reset_sent_pane": pane, "second_wind_attempts": 0, "reset_refusals": 0}
     if command == HA.CLEAR_COMMAND:
         sent.update(clear_sent_at=now, clear_sent_pane=pane)
     AU.persist(state_path, **sent)
@@ -289,6 +316,137 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
                       f"{command} sent through HERDR (pane {pane}): {why}."},
                      ensure_ascii=False))
     return True
+
+
+# The refusal for typing that drops a reset instead of recording a retry: the
+# original refusal and two retries (review finding, HOS-315 round 1).
+RESET_RETRY_MAX = 3
+
+RESET_REFRESH = """\
+{label} was refused because the operator typed, and its handoff ({archive}) went \
+stale since: {events} event(s) / {minutes} min of work ({detail}). Refresh it, \
+then the reset is retried: run `python scripts/checkpoint-paths.py --kind {kind}`, \
+then pass a fresh handoff, written per .claude/skills/second-wind/SKILL.md Step 2 \
+with a complete `## Safe resume` block, on stdin to `python \
+scripts/checkpoint-paths.py --write --kind {kind}`, in ONE turn and without the \
+goldfish cold read. Print ONE line naming the archive, then stop. Do NOT run \
+/clear or /compact yourself."""
+
+
+def _retry_reset(payload: dict, state: dict, state_path: Path, project: Path,
+                 started: float) -> bool:
+    """Retry a reset refused only because the operator typed (HOS-315 part 2). True when this Stop was one.
+
+    Waits for a quiet Stop: none in the same hook run that refused it, and none
+    while a message is still queued. A still-fresh handoff is sent again
+    through `_reset`, which re-checks everything; a stale one is refreshed
+    first, by the model, and `_reset` then sends at the following Stop.
+    """
+    retry = state.get("reset_retry")
+    if not isinstance(retry, dict):
+        return False
+    refused = CP.iso_epoch(retry.get("refused_at"))
+    if refused is None:
+        print("checkpoint-offer: unreadable reset_retry record dropped", file=sys.stderr)
+        AU.persist(state_path, _mutate=lambda fresh: {
+            k: v for k, v in fresh.items() if k != "reset_retry"})
+        return False
+    if refused >= started:
+        # Refused by this very hook run: not yet a quiet Stop.
+        return False
+    transcript = payload.get("transcript_path")
+    session = CP.session_id(payload)
+    if transcript and AU._queue_pending(Path(transcript), session):
+        return False
+    AU.persist(state_path, _mutate=lambda fresh: {
+        k: v for k, v in fresh.items() if k != "reset_retry"})
+    kind = retry.get("kind") if retry.get("kind") in ("clear", "second-wind") else "clear"
+    label = "/second-wind" if kind == "second-wind" else "/clear-handover"
+    archive = Path(str(retry.get("archive") or ""))
+    if not archive.is_file():
+        AU.persist(state_path, reset_refusals=0)
+        print(json.dumps({"systemMessage": (
+            f"{label}: not retried, its handoff {archive.name or '(unnamed)'} is no "
+            "longer on disk.")}, ensure_ascii=False))
+        return True
+    fresh = AU.handoff_freshness(payload, project, _ROOT, archive=archive)
+    if fresh["due"]:
+        reason = RESET_REFRESH.format(
+            label=label, archive=archive.name, events=fresh["events"],
+            minutes=fresh["minutes"], detail=AU.freshness_detail(fresh), kind=kind)
+        print(json.dumps({"decision": "block", "reason": reason,
+                          "systemMessage": f"{label}: the handoff went stale while "
+                          "you typed; refreshing it before the reset."},
+                         ensure_ascii=False))
+        return True
+    rearmed = dict(state)
+    rearmed.update(reset_requested_at=retry.get("requested_at"), reset_requested_kind=kind)
+    rearmed.pop("reset_retry", None)
+    AU.persist(state_path, reset_requested_at=retry.get("requested_at"),
+               reset_requested_kind=kind)
+    return _reset(payload, rearmed, state_path, project)
+
+
+def _freshness(payload: dict, state_path: Path, project: Path) -> dict | None:
+    """Measure the handoff's age, record it for the status line, return it. None in a yard.
+
+    A source that cannot be read counts as nothing; each is said once per
+    session, on stderr, and in the attended line when one is printed.
+    """
+    if AU.in_yard():
+        return None
+    try:
+        fresh = AU.handoff_freshness(payload, project, _ROOT)
+    except Exception as exc:  # noqa: BLE001 - a Stop hook never crashes over a measurement
+        print(f"checkpoint-offer: handoff freshness not measured: {exc}", file=sys.stderr)
+        return None
+    archive = fresh["archive"]
+    try:
+        mtime = Path(archive).stat().st_mtime if archive else None
+    except OSError:
+        mtime = None
+    said = list(CP.read_json(state_path).get("freshness_unread_said") or [])
+    names = [u.split(" (", 1)[0] for u in fresh["unread"]]
+    fresh["unread_new"] = [u for u, n in zip(fresh["unread"], names, strict=True) if n not in said]
+    for line in fresh["unread_new"]:
+        print(f"checkpoint-offer: not counted toward handoff freshness: {line}",
+              file=sys.stderr)
+    AU.persist(state_path, handoff_freshness={
+        "archive": archive, "archive_mtime": mtime, "since": fresh["since"],
+        "events": fresh["events"], "minutes": fresh["minutes"], "due": fresh["due"],
+        "measured_at": CP.utc_now().isoformat()},
+        freshness_unread_said=sorted(set(said) | set(names)))
+    return fresh
+
+
+def _freshness_line(fresh: dict | None, state_path: Path) -> int:
+    """Attended: one line when the handoff went stale, once per handoff. Always returns 0."""
+    if not fresh or not fresh["due"]:
+        return 0
+    key = str(fresh["since"])
+    if CP.read_json(state_path).get("freshness_said_for") == key:
+        return 0
+    AU.persist(state_path, freshness_said_for=key)
+    line = AU.FRESH_LINE.format(events=fresh["events"], minutes=fresh["minutes"],
+                                detail=AU.freshness_detail(fresh))
+    if fresh.get("unread_new"):
+        line += " Not counted: " + "; ".join(fresh["unread_new"]) + "."
+    print(json.dumps({"systemMessage": line}, ensure_ascii=False))
+    return 0
+
+
+def _refresh_note(fresh: dict | None, state_path: Path) -> str:
+    """Unattended: the light-refresh instruction, at most FRESH_REFRESH_MAX_ASKS times per handoff."""
+    if not fresh or not fresh["due"]:
+        return ""
+    key = str(fresh["since"])
+    asked = CP.read_json(state_path).get("freshness_refresh_asked") or {}
+    times = int(asked.get("times") or 0) if asked.get("for") == key else 0
+    if times >= AU.FRESH_REFRESH_MAX_ASKS:
+        return ""
+    AU.persist(state_path, freshness_refresh_asked={"for": key, "times": times + 1})
+    return AU.FRESH_REFRESH_NOTE.format(events=fresh["events"], minutes=fresh["minutes"],
+                                        detail=AU.freshness_detail(fresh))
 
 
 # A pending menu mark older than this belongs to an earlier Stop.
@@ -350,6 +508,7 @@ def main() -> int:
               file=sys.stderr)
         return 0
 
+    started = CP.utc_now().timestamp()
     project = CP.project_root(payload)
     state_path = CP.state_path(project, CP.session_slug(payload))
     state = CP.read_json(state_path)
@@ -368,6 +527,8 @@ def main() -> int:
     # hook blocked.
     if _reset(payload, state, state_path, project):
         return 0
+    if _retry_reset(payload, CP.read_json(state_path), state_path, project, started):
+        return 0
 
     # Anti-loop guard, crossed only on a turn this hook itself continued in
     # unattended mode (by `prompt_id`; an absent one never matches).
@@ -381,10 +542,14 @@ def main() -> int:
     if payload.get("stop_hook_active") and not (unattended and ours):
         return 0
 
+    # Measured at every Stop that gets this far, so the status line shows the
+    # handoff's age; acted on only where nothing else spoke (HOS-315).
+    fresh = _freshness(payload, state_path, project)
+
     # Unknown usage stops every path except the unattended continuation.
     used = _used_percentage(state)
     if used is None and not unattended:
-        return 0
+        return _freshness_line(fresh, state_path)
 
     # Something else drives this Stop (`/loop`, a background agent, ralph-loop):
     # it is recorded, the menu still shows (it names what runs), and the plain
@@ -431,8 +596,14 @@ def main() -> int:
     if note:
         AU.persist(state_path, _mutate=lambda fresh: {
             k: v for k, v in fresh.items() if k != "reset_refusal_note"})
+    if unattended:
+        refresh = _refresh_note(fresh, state_path)
+        if refresh:
+            note = f"{note}\n\n{refresh}" if note else refresh
     if unattended and (not claimant or note):
         return AU.unattended_turn(payload, state, state_path, used, turn, note=note)
+    if not unattended:
+        return _freshness_line(fresh, state_path)
     return 0
 
 if __name__ == "__main__":

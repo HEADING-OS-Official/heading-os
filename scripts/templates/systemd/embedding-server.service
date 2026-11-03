@@ -1,0 +1,19 @@
+[Unit]
+Description=Local embedding server (ollama) for the semantic index
+After=network.target
+
+[Service]
+Type=simple
+# The versioned binary scripts/heading-install.py unpacked (HOS-305); no symlink,
+# so an upgrade renders a new path here. Bound to loopback on the port the
+# embedder resolves to when config/inference-hosts.yaml is absent.
+ExecStart={{OLLAMA_BIN}} serve
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_MODELS=%h/.local/share/heading-os/ollama/models
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

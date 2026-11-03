@@ -7,7 +7,7 @@
     hindsight-snapshot-offsite.py self-test      # a fake Drive and an invented snapshot; nothing leaves the machine
 
 Why. Operator decision, 2026-10-07 (HOS-210): Google Drive may hold it, a script
-makes the daily copy, to his personal Gmail, as a separate task (translated). The snapshot under
+makes the daily copy, to his personal Gmail, as a separate task. The snapshot under
 `runtime:hindsight-snapshot/cache` (`hindsight-snapshot.py take`) holds what lives only in
 the Hindsight bank; this sends it off the machine, and only as ciphertext.
 
@@ -44,7 +44,7 @@ once per change from ok to failing, and the run exits 1 so the unit shows `faile
 
 The second kind: machine-config (HOS-219). Operator decision, 2026-10-09: all of it may sit on the
 same external Google Drive as the memory backup, with something like a Readme.md beside
-each file (translated), scope "1, 2 and 3", secrets "B". The same `run` then
+each file, scope "1, 2 and 3", secrets "B". The same `run` then
 copies the files of this machine that live in no repository, listed in the manifest under
 registry name `machine-config-manifest` (each entry: source, file or dir, secret or not, what
 it is, where it goes back, the restore steps). The archive carries each file or directory

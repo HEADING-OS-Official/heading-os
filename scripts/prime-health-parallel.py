@@ -938,8 +938,8 @@ def _dossier_outbox(workspace_root: Path) -> str:
 
 #: The one line this check ever prints, with `{n}` filled in. Named here rather
 #: than only inline so the exact wording has one place to change.
-_DOC_VERSIONS_PENDING_LINE = "Версии документов: ждут выбора {n} (doc-versions.py pending)"
-_DOC_VERSIONS_NEEDS_ATTENTION = "Версии документов: реестр требует внимания (doc-versions.py pending)"
+_DOC_VERSIONS_PENDING_LINE = "Document versions: {n} awaiting a choice (doc-versions.py pending)"
+_DOC_VERSIONS_NEEDS_ATTENTION = "Document versions: the registry needs attention (doc-versions.py pending)"
 
 
 def run_doc_versions_pending(workspace_root: Path) -> dict[str, Any]:

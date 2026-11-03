@@ -1,0 +1,16 @@
+# Written by the HEADING OS service layer from scripts/templates/systemd/lific.service.
+# A lific.service without this first line belongs to someone else and the
+# installer leaves it alone (scripts/utils/install_lific.py, unit_adopted).
+[Unit]
+Description=Lific issue tracker
+After=network.target
+
+[Service]
+ExecStart={{LIFIC_BIN}} start --config {{LIFIC_CONFIG}}
+WorkingDirectory=%h/.config/lific
+UMask=0077
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

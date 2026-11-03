@@ -35,7 +35,7 @@ Exit codes: 0 ok, 2 setup error (no documents, sensitive session, or - under
 --dry-run ONLY - a degenerate width), 3 every enabled runner was unreachable.
 
 "degenerate width" used to be listed unscoped, and a real run does not exit 2
-for one: it tags the cell [ВЫРОЖДЕН], records `degenerate: true` in the
+for one: it tags the cell [DEGENERATE], records `degenerate: true` in the
 report, and exits 0. That is deliberate. A degenerate cell must never read as a
 measurement, and it does not - but throwing away a run whose other widths ARE
 measurements would trade one honest report for none.
@@ -112,7 +112,7 @@ MIN_FILLED_FRACTION = 0.6
 # SAME truth, so the constant answer {"field": null, "checkboxes": 0,
 # "mentions": false} scored 90/90 - and its score ROSE with width, inverting the
 # drift signal the harness exists to detect. The filled-fraction guard saw 28/30
-# filled and printed "годен".
+# filled and printed "fit".
 MIN_DISTINCT_TRUTH_FRACTION = 0.4
 PARALLELISM = 8
 SPEED_SAMPLE = 5
@@ -154,6 +154,7 @@ RUNNERS: tuple[Runner, ...] = (
            "paid API path; only worth enabling when speed matters more than cost"),
 )
 
+# Russian on purpose: the task prompt is a measured benchmark condition; English would break comparison.
 TASK_PROMPT = (
     "Ответь СТРОГО одним JSON-объектом, без пояснений и без markdown-ограждения:\n"
     '{{"field": "YYYY-MM-DD" | null, "checkboxes": <целое>, "mentions": true|false}}\n\n'
@@ -236,7 +237,7 @@ def _candidate_docs(min_len: int, want: int) -> list[Path]:
     `st_size` against `min_len`: on a Cyrillic corpus, where UTF-8 spends two
     bytes per character, a 50,000-byte Russian thread carries ~25,000 characters
     and half-filled every long slice while passing the guard. The degenerate-
-    width check this file exists to protect was reporting ВЫРОЖДЕН for documents
+    width check this file exists to protect was reporting DEGENERATE for documents
     that were long enough by the only unit the script actually measures in.
 
     `st_size` survives as a cheap PRE-filter, which is sound in one direction
@@ -354,7 +355,7 @@ def build_cases(width: int, marker: str, doc_count: int = DOC_COUNT) -> list[Cas
         # available" while the loop took `_candidate_docs`'s output in path
         # order, which `sorted(root.glob(...))` makes lexicographic; `min_len=0`
         # switches off both size filters, so the fallback filled with whatever
-        # sorted first. A slice could then be failed as ВЫРОЖДЕН while the
+        # sorted first. A slice could then be failed as DEGENERATE while the
         # corpus held documents long enough to measure it — the degenerate-width
         # verdict this file exists to produce, produced wrongly.
         #
@@ -529,7 +530,7 @@ def score_accuracy(runner: Runner, cases: list[Case], marker: str) -> dict | Non
         with ThreadPoolExecutor(max_workers=PARALLELISM) as pool:
             raws = list(pool.map(lambda p: call_model(runner, p), prompts))
     except TRANSPORT_FAILURES as exc:
-        print(f"  {runner.label:<34} {RED}пропущена{RESET} {GRAY}{_describe_failure(exc)}{RESET}")
+        print(f"  {runner.label:<34} {RED}skipped{RESET} {GRAY}{_describe_failure(exc)}{RESET}")
         return None
     wall = time.perf_counter() - started
 
@@ -575,14 +576,14 @@ def score_speed(runner: Runner, cases: list[Case], marker: str) -> dict | None:
         # `prompts[0]` below used to raise IndexError on an empty corpus, with
         # nothing catching it -- where the module docstring promises exit 2 for
         # "no documents", and `--dry-run` already refuses the same condition.
-        print(f"  {runner.label:<34} {RED}пропущена{RESET} "
-              f"{GRAY}нет документов для замера{RESET}")
+        print(f"  {runner.label:<34} {RED}skipped{RESET} "
+              f"{GRAY}no documents to measure{RESET}")
         return None
     started = time.perf_counter()
     try:
         call_model(runner, prompts[0])
     except TRANSPORT_FAILURES as exc:
-        print(f"  {runner.label:<34} {RED}пропущена{RESET} {GRAY}{_describe_failure(exc)}{RESET}")
+        print(f"  {runner.label:<34} {RED}skipped{RESET} {GRAY}{_describe_failure(exc)}{RESET}")
         return None
     cold = time.perf_counter() - started
 
@@ -592,7 +593,7 @@ def score_speed(runner: Runner, cases: list[Case], marker: str) -> dict | None:
         try:
             call_model(runner, prompt)
         except TRANSPORT_FAILURES as exc:
-            print(f"  {runner.label:<34} {RED}сбой в прогоне{RESET} {GRAY}{_describe_failure(exc)}{RESET}")
+            print(f"  {runner.label:<34} {RED}failed during the run{RESET} {GRAY}{_describe_failure(exc)}{RESET}")
             return None
         latencies.append(time.perf_counter() - mark)
 
@@ -606,7 +607,7 @@ def score_speed(runner: Runner, cases: list[Case], marker: str) -> dict | None:
         with ThreadPoolExecutor(max_workers=PARALLELISM) as pool:
             list(pool.map(lambda p: call_model(runner, p), batch))
     except TRANSPORT_FAILURES as exc:
-        print(f"  {runner.label:<34} {RED}сбой в параллельном прогоне{RESET} "
+        print(f"  {runner.label:<34} {RED}failed during the parallel run{RESET} "
               f"{GRAY}{_describe_failure(exc)}{RESET}")
         return None
     parallel_wall = time.perf_counter() - started
@@ -633,22 +634,22 @@ def score_speed(runner: Runner, cases: list[Case], marker: str) -> dict | None:
 
 def dry_run(marker: str, doc_count: int) -> int:
     enabled = [r for r in RUNNERS if r.enabled]
-    print(f"{BOLD}План прогона{RESET} {GRAY}(ни одного сетевого вызова){RESET}\n")
-    print(f"{BOLD}Модели{RESET}")
+    print(f"{BOLD}Run plan{RESET} {GRAY}(no network calls){RESET}\n")
+    print(f"{BOLD}Models{RESET}")
     for runner in RUNNERS:
-        flag = f"{GREEN}включена{RESET}" if runner.enabled else f"{GRAY}выключена{RESET}"
+        flag = f"{GREEN}enabled{RESET}" if runner.enabled else f"{GRAY}disabled{RESET}"
         print(f"  {runner.label:<34} {flag}  {GRAY}{runner.reason}{RESET}")
     if len(enabled) != 1:
-        print(f"\n{YELLOW}Включено моделей: {len(enabled)}.{RESET} "
-              f"Решение CEO 2026-08-13 разрешает ровно одну.")
+        print(f"\n{YELLOW}Models enabled: {len(enabled)}.{RESET} "
+              f"The CEO decision of 2026-08-13 allows exactly one.")
 
-    print(f"\n{BOLD}Срезы{RESET}")
+    print(f"\n{BOLD}Slices{RESET}")
     degenerate = []
     total_calls = 0
     for width in SLICE_WIDTHS:
         cases = build_cases(width, marker, doc_count)
         if not cases:
-            print(f"  {width:>6}  {RED}нет документов{RESET}")
+            print(f"  {width:>6}  {RED}no documents{RESET}")
             degenerate.append(width)
             continue
         filled = sum(1 for c in cases if c.filled)
@@ -657,25 +658,25 @@ def dry_run(marker: str, doc_count: int) -> int:
         distinct = distinct_truth_fraction(cases)
         floor_hits, floor_max = constant_baseline(cases)
         ok = fraction >= MIN_FILLED_FRACTION and distinct >= MIN_DISTINCT_TRUTH_FRACTION
-        mark = f"{GREEN}годен{RESET}" if ok else f"{RED}ВЫРОЖДЕН{RESET}"
+        mark = f"{GREEN}fit{RESET}" if ok else f"{RED}DEGENERATE{RESET}"
         if not ok:
             degenerate.append(width)
-        print(f"  {width:>6}  {mark}  документов {len(cases):>2}, "
-              f"заполнено до ширины {filled}/{len(cases)} ({fraction:.0%}), "
-              f"фактическая длина медиана {int(statistics.median(lengths))}, "
-              f"мин {min(lengths)}, макс {max(lengths)}")
+        print(f"  {width:>6}  {mark}  documents {len(cases):>2}, "
+              f"filled to width {filled}/{len(cases)} ({fraction:.0%}), "
+              f"actual length median {int(statistics.median(lengths))}, "
+              f"min {min(lengths)}, max {max(lengths)}")
         total_calls += len(cases)
 
-    print(f"\n{BOLD}Итого{RESET} вызовов точности: {total_calls * len(enabled)} "
-          f"({total_calls} кейсов x {len(enabled)} модель)")
-    print(f"{GRAY}Маркер подстроки: {marker!r} "
-          f"(вживляется в каждый второй кейс, так что истина mentions разделена примерно пополам){RESET}")
+    print(f"\n{BOLD}Total{RESET} accuracy calls: {total_calls * len(enabled)} "
+          f"({total_calls} cases x {len(enabled)} model)")
+    print(f"{GRAY}Substring marker: {marker!r} "
+          f"(planted in every second case, so the mentions truth is split roughly in half){RESET}")
 
     if degenerate:
-        print(f"\n{RED}Вырожденные срезы: {degenerate}.{RESET} "
-              f"Ячейка, которую нельзя цитировать как измерение.")
+        print(f"\n{RED}Degenerate slices: {degenerate}.{RESET} "
+              f"A cell that cannot be cited as a measurement.")
         return 2
-    print(f"\n{GREEN}Все срезы непустые. Готов к прогону.{RESET}")
+    print(f"\n{GREEN}All slices are non-empty. Ready to run.{RESET}")
     return 0
 
 
@@ -703,14 +704,14 @@ def _refuse_if_sensitive() -> None:
     if not is_sensitive():
         return
     if sensitivity_is_declared():
-        cause = "сессия объявлена чувствительной (SENSITIVE_MODE задан явно)"
+        cause = "the session is declared sensitive (SENSITIVE_MODE is set explicitly)"
     else:
-        cause = ("SENSITIVE_MODE не очищен - это умолчание машины, а не "
-                 "объявление оператора; очистите его осознанно "
-                 "(SENSITIVE_MODE=off), чтобы разрешить выгрузку")
-    print(f"{RED}Прогон отменён:{RESET} {cause}. Каждый вызов отправляет текст "
-          f"рабочих документов третьей стороне, а локальной модели во "
-          f"включённом наборе нет, деградировать не во что.", file=sys.stderr)
+        cause = ("SENSITIVE_MODE is not cleared: this is the machine default, not "
+                 "an operator declaration; clear it deliberately "
+                 "(SENSITIVE_MODE=off) to allow the upload")
+    print(f"{RED}Run cancelled:{RESET} {cause}. Every call sends the text "
+          f"of working documents to a third party, and there is no local model in the "
+          f"enabled set, so there is nothing to degrade to.", file=sys.stderr)
     sys.exit(2)
 
 
@@ -748,7 +749,7 @@ def main() -> int:
     _refuse_if_sensitive()
     enabled = [r for r in RUNNERS if r.enabled]
     if not enabled:
-        print(f"{RED}Ни одной включённой модели.{RESET}", file=sys.stderr)
+        print(f"{RED}No model is enabled.{RESET}", file=sys.stderr)
         return 2
 
     report: dict = {
@@ -770,16 +771,16 @@ def main() -> int:
     if args.mode in ("speed", "all"):
         speed_width = SLICE_WIDTHS[0]
         cases = build_cases(speed_width, args.marker, args.docs)
-        # The header used to print "срез 4k" unconditionally while the slices
+        # The header used to print "slice 4k" unconditionally while the slices
         # could be far shorter on a corpus of short documents -- the same
         # degenerate-width hole the accuracy path already measures, unmeasured
         # here. Now it says what it actually sliced.
         speed_filled = sum(1 for c in cases if c.filled)
         speed_degenerate = (not cases
                             or speed_filled / len(cases) < MIN_FILLED_FRACTION)
-        speed_tag = f" {RED}[ВЫРОЖДЕН]{RESET}" if speed_degenerate else ""
-        print(f"\n{BOLD}Скорость{RESET} {GRAY}(срез {speed_width}){RESET}{speed_tag} "
-              f"{GRAY}заполнено {speed_filled}/{len(cases)}{RESET}")
+        speed_tag = f" {RED}[DEGENERATE]{RESET}" if speed_degenerate else ""
+        print(f"\n{BOLD}Speed{RESET} {GRAY}(slice {speed_width}){RESET}{speed_tag} "
+              f"{GRAY}filled {speed_filled}/{len(cases)}{RESET}")
         if not cases:
             # The same condition the accuracy path below records, recorded the
             # same way. Without this, `score_speed` refused every runner on its
@@ -789,8 +790,8 @@ def main() -> int:
             # The docstring assigns "no documents" to exit 2, and `score_speed`'s
             # own comment says so, but only the accuracy path delivered it.
             # Automation reading exit 3 goes and looks at the proxy.
-            print(f"  {RED}нет документов для этого среза; замер не "
-                  f"проводился{RESET}", file=sys.stderr)
+            print(f"  {RED}no documents for this slice; no measurement was "
+                  f"taken{RESET}", file=sys.stderr)
             empty_widths.append(speed_width)
         for runner in enabled if cases else ():
             result = score_speed(runner, cases, args.marker)
@@ -801,9 +802,9 @@ def main() -> int:
                 result["n"] = len(cases)
                 result["degenerate"] = speed_degenerate
                 report["speed"].append(result)
-                print(f"  {runner.label:<34} медиана {result['median_s']:>6.2f}s | "
-                      f"на вызов при {PARALLELISM} параллельно {result['per_call_parallel_s']:>5.2f}s | "
-                      f"200 вызовов ~{result['projected_200_s'] / 60:.1f} мин")
+                print(f"  {runner.label:<34} median {result['median_s']:>6.2f}s | "
+                      f"per call at {PARALLELISM} parallel {result['per_call_parallel_s']:>5.2f}s | "
+                      f"200 calls ~{result['projected_200_s'] / 60:.1f} min")
 
     if args.mode in ("accuracy", "all"):
         for width in SLICE_WIDTHS:
@@ -814,19 +815,19 @@ def main() -> int:
             degenerate = (not cases
                           or filled / len(cases) < MIN_FILLED_FRACTION
                           or distinct < MIN_DISTINCT_TRUTH_FRACTION)
-            tag = f" {RED}[ВЫРОЖДЕН]{RESET}" if degenerate else ""
-            print(f"\n{BOLD}Точность{RESET} {CYAN}срез {width}{RESET}{tag} "
-                  f"{GRAY}заполнено {filled}/{len(cases)}, "
-                  f"различных истин {distinct:.0%}, "
-                  f"пол константного ответа {floor_hits}/{floor_max}{RESET}")
+            tag = f" {RED}[DEGENERATE]{RESET}" if degenerate else ""
+            print(f"\n{BOLD}Accuracy{RESET} {CYAN}slice {width}{RESET}{tag} "
+                  f"{GRAY}filled {filled}/{len(cases)}, "
+                  f"distinct truths {distinct:.0%}, "
+                  f"constant-answer floor {floor_hits}/{floor_max}{RESET}")
             if not cases:
                 # `score_accuracy` on `[]` returns a truthy dict with n=0 and
                 # max=0, `reached` increments, a report is written and the run
                 # exits 0 -- a completed benchmark that measured nothing, which
                 # is exactly the silent success this file exists to prevent.
                 # `--dry-run` already refuses this with exit 2.
-                print(f"  {RED}нет документов для этого среза; замер не "
-                      f"проводился{RESET}", file=sys.stderr)
+                print(f"  {RED}no documents for this slice; no measurement was "
+                      f"taken{RESET}", file=sys.stderr)
                 empty_widths.append(width)
                 continue
             for runner in enabled:
@@ -839,9 +840,9 @@ def main() -> int:
                     result["constant_baseline"] = [floor_hits, floor_max]
                     report["accuracy"].append(result)
                     hits = result["hits"]
-                    print(f"  {runner.label:<34} поле {hits['field']}/{result['n']}  "
-                          f"счёт {hits['checkboxes']}/{result['n']}  "
-                          f"поиск {hits['mentions']}/{result['n']}  "
+                    print(f"  {runner.label:<34} field {hits['field']}/{result['n']}  "
+                          f"count {hits['checkboxes']}/{result['n']}  "
+                          f"search {hits['mentions']}/{result['n']}  "
                           f"= {result['total']}/{result['max']}  "
                           f"JSON {result['parsed_ok']}/{result['n']}  "
                           f"{result['wall_s']:.1f}s")
@@ -856,17 +857,17 @@ def main() -> int:
         # artefact at all. Write what was measured, then refuse.
         if measured:
             path = _write_report(report)
-            print(f"{YELLOW}Частичный отчёт сохранён:{RESET} {path}", file=sys.stderr)
-        print(f"{RED}Нет документов для срез(ов) {empty_widths}; это ошибка "
-              f"настройки, а не результат.{RESET}", file=sys.stderr)
+            print(f"{YELLOW}Partial report saved:{RESET} {path}", file=sys.stderr)
+        print(f"{RED}No documents for slice(s) {empty_widths}; this is a setup "
+              f"error, not a result.{RESET}", file=sys.stderr)
         return 2
 
     if reached == 0:
-        print(f"{RED}Ни одна включённая модель не ответила.{RESET}", file=sys.stderr)
+        print(f"{RED}No enabled model answered.{RESET}", file=sys.stderr)
         return 3
 
     path = _write_report(report)
-    print(f"\n{GREEN}Отчёт:{RESET} {path}")
+    print(f"\n{GREEN}Report:{RESET} {path}")
     return 0
 
 

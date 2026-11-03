@@ -144,17 +144,6 @@ def prompt_archive_section(session: str, cwd: Path) -> tuple[str, str]:
                 f"unknown, withheld because redaction failed ({type(exc).__name__})")
 
 
-def session_tasks(payload: dict) -> list[str]:
-    """This session's Lific task list (task dossier, HOS-256). Never raises."""
-    try:
-        from scripts.utils import dossier
-        return dossier.tasks_for_session(CP.session_id(payload), CP.project_root(payload))
-    except Exception as exc:  # noqa: BLE001 - never lose the handoff
-        print(f"checkpoint-save: task list unreadable ({type(exc).__name__}: {exc})",
-              file=sys.stderr)
-        return []
-
-
 def task_prompts_block(tasks: list[str], session: str, cwd: Path) -> str:
     """The prompts of this session's tasks saved by earlier sessions, redacted, or ""."""
     if not tasks:
@@ -306,7 +295,14 @@ when it has none, continue the latest unfinished task."""
     )
     # First in the header and in every pointer (operator decision 2026-09-27).
     master_line = f"{CP.MASTER_PREFIX} {master}"
-    tasks = session_tasks(payload)
+    # The ids the compaction summary names (HOS-330), never the session's list.
+    try:
+        from scripts.utils import dossier
+        tasks = dossier.record_ids(summary_text)
+    except Exception as exc:  # noqa: BLE001 - never lose the handoff
+        print(f"checkpoint-save: task list unreadable ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+        tasks = []
     task_block = task_prompts_block(
         tasks, CP.session_id(payload) if session_known else "", CP.project_root(payload))
 

@@ -13,7 +13,7 @@
 # proxy-usage-reports, `proxy-usage.html`) only when the usage ledger changed,
 # and exits 0 doing nothing otherwise.
 #
-# Operator approval for this timer: 2026-10-25, his "yes" (translated) to the recommendation of
+# Operator approval for this timer: 2026-10-25, his "yes" to the recommendation of
 # a fixed file, a 5-minute user timer that skips when nothing changed, and a meta
 # refresh in the page.
 #
@@ -61,7 +61,7 @@ if [[ -z "$PYTHON" ]]; then
     echo "No python3 (or python) on PATH" >&2
     exit 4
 fi
-for unit in "${UNITS[@]}"; do
+for unit in ${UNITS[@]+"${UNITS[@]}"}; do
     if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
         echo "Template not found: $TEMPLATE_DIR/$unit" >&2
         exit 3
@@ -70,7 +70,7 @@ done
 
 mkdir -p "$DEST_DIR"
 
-for unit in "${UNITS[@]}"; do
+for unit in ${UNITS[@]+"${UNITS[@]}"}; do
     render_unit "$TEMPLATE_DIR/$unit" "$DEST_DIR/$unit" \
         "$WORKSPACE" "$PYTHON" "$TZ_VALUE"
 done

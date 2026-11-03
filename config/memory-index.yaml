@@ -134,7 +134,7 @@ pagerank:
 # hold for every such glob, checked by hand: no bare option whose address no
 # longer holds a file (a record at two addresses would be indexed twice;
 # operator instruction 2026-09-19, "there cannot be a file lying at both
-# addresses.", translated), and no tail reachable under two prefixes of one glob. A record
+# addresses."), and no tail reachable under two prefixes of one glob. A record
 # written to a dropped address enters no index.
 #
 # REGISTRY-NAMED LAYERS, C3, 2026-10-13. The prefix groups above follow ONE

@@ -9,7 +9,7 @@
 # {{WORKSPACE}}, {{PYTHON}}, {{TZ}}) into ~/.config/systemd/user/, then enables a
 # daily timer that writes what lives only in the Hindsight bank to disk.
 #
-# Operator approval: 2026-10-05, "Yes, let's do it. Go" (translated) on the plan that makes Hindsight
+# Operator approval: 2026-10-05, "Yes, let's do it. Go" on the plan that makes Hindsight
 # the main memory with a daily on-disk snapshot (prompt archive hindsight-primary-memory,
 # HOS-203). Installing it is HELM's, after the merge.
 #

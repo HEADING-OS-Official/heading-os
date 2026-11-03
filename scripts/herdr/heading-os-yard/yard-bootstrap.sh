@@ -69,7 +69,7 @@ fi
 
 # `--dangerously-skip-permissions` is the DEFAULT here, on the operator's
 # instruction of 2026-09-06: "whenever claude starts, no matter where or in which
-# yard, let it always start with --dangerously-skip-permission" (translated).
+# yard, let it always start with --dangerously-skip-permission".
 #
 # It is a default and not a hard-code, so `HEADING_OS_AGENT_CMD` still overrides
 # it in full -- an operator who wants prompts back sets that name in the plugin's
@@ -121,7 +121,7 @@ notify() {          # notify <title> <body> [sound]
   local response reason
   local -a sound=()
   [ -n "${3:-}" ] && sound=(--sound "$3")
-  response="$("$HERDR" notification show "$1" --body "$2" "${sound[@]}" 2>/dev/null)"
+  response="$("$HERDR" notification show "$1" --body "$2" ${sound[@]+"${sound[@]}"} 2>/dev/null)"
   reason="$(printf '%s' "$response" | python3 -c '
 import json, sys
 try:
@@ -350,7 +350,7 @@ cleanup_probe() {
   local dir
   # `rmdir` refuses a directory that is not empty, which is the point: if
   # anything else was written there meanwhile, it stays.
-  for dir in "${PROBE_DIRS[@]}"; do
+  for dir in ${PROBE_DIRS[@]+"${PROBE_DIRS[@]}"}; do
     rmdir "$dir" 2>/dev/null || break
   done
   PROBE_DIRS=()
@@ -447,7 +447,18 @@ if [ "$DOCTOR_ONLY" -eq 0 ]; then
   # reports clean. It is the 2026-06-22 failure shape written in a config file.
   # ───────────────────────────────────────────────────────────
   LAST_STEP=2
-  DATA_ROOT="${HEADING_OS_DATA:-$(cd "$HELM_ROOT/.." && pwd)/.heading-os-data}"
+  # The sibling of HELM by the one rule, `sibling_data_root()` in this
+  # checkout's `scripts/utils/paths.py` (HOS-313), loaded by path with the
+  # system `python3` because `.venv` does not exist yet: `.heading-os-data`, or
+  # the stamped `data` beside a HELM folder named `engine`.
+  DATA_ROOT="${HEADING_OS_DATA:-$(python3 -I -c '
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("_hos_paths", sys.argv[1])
+paths = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(paths)
+print(paths.sibling_data_root(Path(sys.argv[2])) or "")' "$PWD/scripts/utils/paths.py" "$HELM_ROOT")}"
+  [ -n "$DATA_ROOT" ] || fail 2 "no data overlay beside $HELM_ROOT"
   [ -d "$DATA_ROOT" ] || fail 2 "no data overlay at $DATA_ROOT"
   if [ -f "$HELM_ROOT/.env" ]; then cp "$HELM_ROOT/.env" .env; else : > .env; fi
   grep -v -E '^[[:space:]]*(WORKSPACE_ROOT|HEADING_OS_DATA)=' .env > .env.tmp \
@@ -576,7 +587,7 @@ if not any("_dispatch.py" in json.dumps(entry) for entry in pre):
     || fail 6 "the PreToolUse walls are not registered in this copy"
 
   # CodeGraph: this copy's own code map, opened inside each session's own
-  # CodeGraph process. Operator decision 2026-10-09 ("yes" to variant A) (translated).
+  # CodeGraph process. Operator decision 2026-10-09 ("yes" to variant A).
   #
   # Without it a YARD has no `.codegraph/` (it is gitignored), so the
   # graph-first wall in `.claude/hooks/_dispatch.py` stands down here, and

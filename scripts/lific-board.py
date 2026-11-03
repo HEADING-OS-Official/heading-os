@@ -44,6 +44,13 @@ Usage:
     python scripts/lific-board.py --project HOS    # one project
     python scripts/lific-board.py --json           # machine-readable
     python scripts/lific-board.py dossier HOS-9001 [--json]
+    python scripts/lific-board.py wait HOS-9001 HOS-9002 [--interval 60]
+
+THE WAIT AND THE "WAITING ON HELM" PANEL (2026-11-01). Both read each active
+issue's NEWEST non-[dossier] comment by `seq` and report it when it asks for
+HELM: a last line `branch <name> ready for merge`, an ESCALATE line, or the done
+marker. `wait` blocks until that is true for one of the issues named, and
+answers at once when it already is.
 
 Exit codes: 0 read cleanly, or `lific` is not installed (nothing to report).
 2 when `lific` is present and a command failed -- never a silent "all clear".
@@ -58,6 +65,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,6 +101,37 @@ def first_line_requests_done(content: str, marker: str = DONE_REQUEST_MARKER) ->
             continue
         return stripped.casefold() == marker.strip().casefold()
     return False
+
+
+#: The last line of a yard's closing comment (`.claude/rules/lific.md` item 5).
+READY_LINE = re.compile(r"^branch \S+ ready for merge\.?$", re.IGNORECASE)
+#: A line a yard opens with ESCALATE, bare or numbered ("**3. ESCALATE.**").
+ESCALATE_LINE = re.compile(r"^[\s*#\d.)-]*ESCALATE\b")
+
+
+def newest_comment(comments: list) -> dict | None:
+    """The newest comment that is not a `[dossier]` journal record, by `seq`.
+
+    By `seq`, never by list position: `lific comment list` does not return
+    comments newest-last, and taking the last row once missed a yard that had
+    been ready for merge for an hour (HOS-311, MEASURED 2026-11-01: the row last
+    in the list was seq 5207, the newest was seq 5215).
+    """
+    real = [c for c in comments if isinstance(c, dict)
+            and not str(c.get("content", "")).startswith("[dossier]")]
+    return max(real, key=lambda c: (c.get("seq") or 0, c.get("created_at") or ""), default=None)
+
+
+def waiting_on_helm(content: str) -> str | None:
+    """What a yard's comment asks of HELM: "done", "escalate", "ready", or None."""
+    if first_line_requests_done(content):
+        return "done"
+    lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+    if any(ESCALATE_LINE.match(line) for line in lines):
+        return "escalate"
+    if lines and READY_LINE.match(lines[-1]):
+        return "ready"
+    return None
 
 
 def _run_lific(args: list[str]) -> object:
@@ -137,6 +176,7 @@ def collect(project: str | None = None) -> dict:
 
     board: list[dict] = []
     close_requests: list[dict] = []
+    waiting: list[dict] = []
 
     for proj in projects:
         ident = proj.get("identifier")
@@ -150,7 +190,19 @@ def collect(project: str | None = None) -> dict:
             if status != "active":
                 continue
             # Every page: [dossier] records must never push a done marker past the newest 50.
-            for comment in _all_comments(issue["identifier"]):
+            comments = _all_comments(issue["identifier"])
+            newest = newest_comment(comments)
+            state = waiting_on_helm(newest.get("content", "")) if newest else None
+            if state in ("ready", "escalate"):
+                waiting.append({
+                    "project": ident,
+                    "identifier": issue["identifier"],
+                    "title": issue.get("title", ""),
+                    "state": state,
+                    "seq": newest.get("seq"),
+                    "at": newest.get("created_at", ""),
+                })
+            for comment in comments:
                 if not first_line_requests_done(comment.get("content", "")):
                     continue
                 close_requests.append({
@@ -168,7 +220,7 @@ def collect(project: str | None = None) -> dict:
             "total": len(issues),
         })
 
-    return {"board": board, "close_requests": close_requests}
+    return {"board": board, "close_requests": close_requests, "waiting_on_helm": waiting}
 
 
 def render_text(data: dict) -> str:
@@ -198,6 +250,14 @@ def render_text(data: dict) -> str:
             lines.append(f"  {req['identifier']}  {req['title']}")
             lines.append(f"      asked by {req['author']} at {req['at']}")
         lines.append("  Close with: lific issue update <ID> --status done")
+
+    waiting = data.get("waiting_on_helm", [])
+    if waiting:
+        lines.append("")
+        lines.append("Waiting on HELM (the newest comment of an active issue):")
+        for row in waiting:
+            what = "ready for merge" if row["state"] == "ready" else "ESCALATE"
+            lines.append(f"  {row['identifier']}  {what}  (comment seq {row['seq']}, {row['at']})")
 
     return "\n".join(lines)
 
@@ -431,10 +491,72 @@ def main_dossier(argv: list[str]) -> int:
     return 0
 
 
+def _print_hit(ident: str, comment: dict, what: str) -> None:
+    print(f"{ident} seq {comment.get('seq')} {comment.get('created_at', '')}: {what}")
+    print(str(comment.get("content", ""))[-600:])
+
+
+def main_wait(argv: list[str]) -> int:
+    """Block until one of the issues needs HELM, then print it and exit 0.
+
+    It answers AT ONCE when an issue's newest comment already asks for HELM
+    (ready for merge, ESCALATE, the done marker), so a closing comment posted
+    before the wait began is never missed; that was the defect of the scratch
+    watcher this replaces (HOS-311, 2026-11-01). Otherwise it polls and exits
+    on the first newer non-[dossier] comment of any kind. `--seen HOS-N=SEQ`
+    marks a comment HELM has already acted on (a closing comment it answered
+    with a review round): that issue then waits for a comment newer than SEQ.
+    """
+    parser = argparse.ArgumentParser(prog="lific-board.py wait",
+                                     description="Wait until a yard's issue needs HELM.")
+    parser.add_argument("identifiers", nargs="+", help="the issues, e.g. HOS-9001 HOS-9002")
+    parser.add_argument("--interval", type=float, default=60.0, help="seconds between reads (default 60)")
+    parser.add_argument("--seen", action="append", default=[], metavar="HOS-N=SEQ",
+                        help="a comment HELM already acted on; repeatable")
+    args = parser.parse_args(argv)
+    bad = [i for i in args.identifiers if not re.fullmatch(r"[A-Z]{2,5}-\d+", i)]
+    seen: dict[str, int] = {}
+    for item in args.seen:
+        m = re.fullmatch(r"([A-Z]{2,5}-\d+)=(\d+)", item)
+        if not m:
+            bad.append(item)
+            continue
+        seen[m.group(1)] = int(m.group(2))
+    if bad:
+        print(f"lific-board: not an issue id or HOS-N=SEQ: {', '.join(bad)}", file=sys.stderr)
+        return 2
+    base: dict[str, int] = {}
+    try:
+        for ident in args.identifiers:
+            newest = newest_comment(_all_comments(ident))
+            seq = (newest or {}).get("seq") or 0
+            state = waiting_on_helm(newest.get("content", "")) if newest else None
+            if state and seq > seen.get(ident, -1):
+                _print_hit(ident, newest, f"already waiting on HELM ({state})")
+                return 0
+            base[ident] = max(seq, seen.get(ident, 0))
+    except (LificError, subprocess.TimeoutExpired) as exc:
+        print(f"lific-board: {exc}", file=sys.stderr)
+        return 2
+    while True:
+        time.sleep(args.interval)
+        for ident in args.identifiers:
+            try:
+                newest = newest_comment(_all_comments(ident))
+            except (LificError, subprocess.TimeoutExpired) as exc:
+                print(f"lific-board: {ident} not read this round: {exc}", file=sys.stderr)
+                continue
+            if newest and (newest.get("seq") or 0) > base[ident]:
+                _print_hit(ident, newest, waiting_on_helm(newest.get("content", "")) or "new comment")
+                return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["dossier"]:
         return main_dossier(argv[1:])
+    if argv[:1] == ["wait"]:
+        return main_wait(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--project", help="Limit to one project identifier, e.g. HOS")
     parser.add_argument("--json", action="store_true", dest="as_json",

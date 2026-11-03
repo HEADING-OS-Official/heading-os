@@ -145,7 +145,8 @@ from scripts.utils.venv_guard import ensure_venv  # noqa: E402
 from scripts.utils.exchange_conn import build_account  # noqa: E402
 
 ensure_venv()
-from scripts.utils.workspace import load_env  # noqa: E402
+from scripts.utils.workspace import get_default_tz_name, load_env  # noqa: E402
+from scripts.utils.exchange_tz import UnknownZones  # noqa: E402
 from scripts.utils.data_path import DataPathError, data_path  # noqa: E402
 from scripts.utils.sensitivity import publish_refusal  # noqa: E402
 
@@ -814,9 +815,22 @@ def find_message(account, match_id=None, match_from=None, match_subject=None,
     Returns the Message or None.
     """
     folder = _resolve_folder(account, folder_name)
+    # An invite parses its zone fields too (HOS-299, scripts/utils/exchange_tz.py).
+    zones = UnknownZones(get_default_tz_name())
+    try:
+        return _find_message(account, folder, zones, match_id, match_from,
+                             match_subject, folder_name, scan_limit)
+    finally:
+        message = zones.report()
+        if message:
+            print(f"[WARN] {message}")
+
+
+def _find_message(account, folder, zones, match_id, match_from, match_subject,
+                  folder_name, scan_limit):
     if match_id:
         try:
-            return folder.get(id=match_id)
+            return zones.one(lambda: folder.get(id=match_id))
         except Exception as first_error:
             # Second chance ONLY when a different folder was searched. The old
             # comment called this "a cross-folder lookup by id via the account
@@ -828,7 +842,7 @@ def find_message(account, match_id=None, match_from=None, match_subject=None,
                 print(f"[WARN] Item id lookup in Inbox failed: {first_error}")
                 return None
             try:
-                return account.inbox.get(id=match_id)
+                return zones.one(lambda: account.inbox.get(id=match_id))
             except Exception as second_error:
                 print(f"[WARN] Item id lookup failed in {folder_name} "
                       f"({first_error}) and in Inbox ({second_error})")
@@ -840,7 +854,7 @@ def find_message(account, match_id=None, match_from=None, match_subject=None,
     qs = qs.order_by("-datetime_received")
 
     want_from = (match_from or "").strip().lower()
-    for item in qs[:scan_limit]:
+    for item in zones.read(qs[:scan_limit]):
         if want_from:
             sender = getattr(item, "sender", None)
             addr = (getattr(sender, "email_address", "") or "").lower()

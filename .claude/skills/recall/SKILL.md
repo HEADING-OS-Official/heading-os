@@ -167,6 +167,7 @@ NOT a belief and NOT current fact; it only tells you a conversation happened.
 .venv/bin/python scripts/memory-index.py query "<the user's question>" --collection chronicle --json
 ```
 
+<!-- Russian on purpose: the Russian personal tag scripts/chronicle.py writes. -->
 - Append chronicle hits **below** the brain/content answer, never mixed into it.
   The separate collection is what makes this ordering structural: a brain hit
   always precedes a chronicle hit on the same topic. If the primary pass already
@@ -196,6 +197,7 @@ no index exists yet.
 .venv/bin/python scripts/chronicle.py personal-recall "<the user's question>"
 ```
 
+<!-- Russian on purpose: the Russian personal tag scripts/chronicle.py writes. -->
 That command is unchanged: it reads every `*.md` in the `personal` branch of
 `chronicle` ON THE FLY, scores locally (bge-m3, lexical fallback), and
 persists NOTHING. Present the

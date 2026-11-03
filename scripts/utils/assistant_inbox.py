@@ -96,6 +96,7 @@ STOPLIST = {
     "advice's", "employer", "via", "today", "tomorrow", "meeting", "email",
 }
 
+# Russian on purpose: the Cyrillic range lets the word pattern match Russian words.
 _WORD = re.compile(r"[A-Za-zЀ-ӿ]+")
 
 

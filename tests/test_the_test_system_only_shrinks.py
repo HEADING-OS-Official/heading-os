@@ -36,8 +36,8 @@ shorter form.
 THE OPERATOR'S RULE ON THE MANIFEST, in his words (translated), on being shown a
 first draft that carried the parked directory and every filename: **"nothing in
 the system should know where the old tests are, or something could go and run
-them by itself, and we do not want that."** He struck both on sight. A path in a manifest
-is not documentation, it is an instruction something eventually follows. A
+them by itself, and we do not want that."** He struck both on sight. A path in a
+manifest is not documentation, it is an instruction something eventually follows. A
 number is not. So the assertion below is written MECHANICALLY rather than as a
 reading: it refuses the SHAPE of an address, and a future convenience that
 restores one goes red without anyone having to notice.
