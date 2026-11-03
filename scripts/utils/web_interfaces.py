@@ -34,7 +34,7 @@ HINDSIGHT_CONSOLE_URL = "http://127.0.0.1:9999"   # scripts/utils/install_hindsi
 AGENTSVIEW_URL = "http://127.0.0.1:8080"           # scripts/utils/install_agentview.py URL
 
 #: The shape of this list; raised when a field changes meaning (HOS-333).
-FORMAT = 1
+FORMAT = 2
 
 
 @dataclass(frozen=True)
@@ -45,13 +45,17 @@ class WebInterface:
     url: str | None
     sign_in: str | None
     section: str = "systems"
+    #: The variable that holds the sign-in key and the file that holds it, or
+    #: None; `scripts/heading-secrets.py reveal` reads it (HOS-337, FORMAT 2).
+    key: tuple[str, Path] | None = None
 
 
 def web_interfaces(engine: Path | None = None) -> list[WebInterface]:
     """Every web interface: id, name, one-line purpose, address or None, how to sign in or None.
 
     The address is None when the system is not set up here. The CLIProxyAPI
-    sign-in names the engine's .env, so it is None when `engine` is None.
+    sign-in names the engine's .env, so it and its `key` are None when
+    `engine` is None.
 
     Lific serves its browser page at the root of its server address: the
     lific 2.11.1 binary embeds an index.html titled "Lific" whose assets are
@@ -64,7 +68,8 @@ def web_interfaces(engine: Path | None = None) -> list[WebInterface]:
     console_env = "~" / console_env_path(Path("/")).relative_to("/")  # the file as the executive's home names it
     return [WebInterface("hindsight", "Hindsight",
                          "Memory: what HEADING OS remembers, and the knowledge pages built from it.",
-                         HINDSIGHT_CONSOLE_URL, f"sign in with {ENV_CONSOLE_ACCESS} from {console_env}"),
+                         HINDSIGHT_CONSOLE_URL, f"sign in with {ENV_CONSOLE_ACCESS} from {console_env}",
+                         key=(ENV_CONSOLE_ACCESS, console_env_path(Path.home()))),
             WebInterface("lific", "Lific", "The task tracker: your projects and issues.",
                          _base_url(Path.home()), None),
             WebInterface("agentview", "AgentView",
@@ -73,7 +78,8 @@ def web_interfaces(engine: Path | None = None) -> list[WebInterface]:
             WebInterface("cliproxyapi", "CLIProxyAPI",
                          "The model proxy's panel: its sign-ins and the models it offers.",
                          f"http://{PROXY_HOST}:{PROXY_PORT}/management.html",
-                         f"sign in with {MGMT_KEY_ENV} from {engine / '.env'}" if engine else None)]
+                         f"sign in with {MGMT_KEY_ENV} from {engine / '.env'}" if engine else None,
+                         key=(MGMT_KEY_ENV, engine / ".env") if engine else None)]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

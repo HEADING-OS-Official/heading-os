@@ -18,7 +18,8 @@ A browser that refuses a file page's request to 127.0.0.1 makes every check
 reject; the page says so in one line under the cards.
 
 No secret reaches the page: a sign-in line names the setting and the file
-that holds it, never the value.
+that holds it, never the value, and the command that shows it
+(`scripts/heading-secrets.py reveal`, HOS-337).
 
 Usage:
     .venv/bin/python scripts/heading-console.py build [--engine PATH]
@@ -71,7 +72,7 @@ h2 { font-size: 1.1em; margin: 28px 0 12px; }
 .card h3 { margin: 0 0 6px; font-size: 1.05em; }
 .card p { margin: 6px 0; }
 .purpose { color: #4a5262; }
-.signin { font-size: 0.9em; color: #4a5262; }
+.signin, .reveal { font-size: 0.9em; color: #4a5262; }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
 .dot.up { background: #2e9d57; }
 .dot.down { background: #c94a3b; }
@@ -240,12 +241,20 @@ def build_guides(engine: Path, out: Path) -> list[tuple[str, str]]:
 
 # ---- the page ---------------------------------------------------------------
 
+def reveal_command(name: str) -> str:
+    """The command that shows one sign-in key (scripts/heading-secrets.py reveal, HOS-337); never the key."""
+    return f".venv/bin/python scripts/heading-secrets.py reveal {name}"
+
+
 def card(wi: WebInterface, up: bool | None, at: str) -> str:
     parts = [f'<section class="card">\n<h3>{esc(wi.name)}</h3>', f'<p class="purpose">{esc(wi.purpose)}</p>']
     if wi.url:
         parts.append(f'<p><a href="{esc(wi.url)}">{esc(wi.url)}</a></p>')
     if wi.sign_in:
         parts.append(f'<p class="signin">{esc(wi.sign_in)}</p>')
+    if wi.key:
+        parts.append(f'<p class="reveal">{esc("Show the key in a terminal in the engine folder:")} '
+                     f'<code>{esc(reveal_command(wi.key[0]))}</code></p>')
     if wi.url:
         state = f"answering at {at}" if up else f"not answering at {at}"
         parts.append(f'<p class="status"><span class="dot {"up" if up else "down"}" data-url="{esc(wi.url)}">'
@@ -313,7 +322,8 @@ def cmd_list(engine: Path) -> int:
             print(f"{wi.name}: not set up")
             continue
         state = "answering" if answers(wi.url) else "not answering"
-        print(f"{wi.name}: {wi.url} ({state})" + (f"; {wi.sign_in}" if wi.sign_in else ""))
+        print(f"{wi.name}: {wi.url} ({state})" + (f"; {wi.sign_in}" if wi.sign_in else "")
+              + (f"; show the key: {reveal_command(wi.key[0])}" if wi.key else ""))
     return 0
 
 

@@ -5,6 +5,7 @@ Usage:
     .venv/bin/python scripts/heading-secrets.py set ANTHROPIC_API_KEY
     .venv/bin/python scripts/heading-secrets.py list
     .venv/bin/python scripts/heading-secrets.py check EXCHANGE_PASSWORD
+    .venv/bin/python scripts/heading-secrets.py reveal HINDSIGHT_CP_ACCESS_KEY
 
 `set NAME` asks for the value twice at a hidden terminal prompt and writes
 `NAME=value` into the engine's `.env`, atomically and at mode 600, through the
@@ -25,6 +26,18 @@ written, byte for byte, through the same writer as `set`. It prints only
 Cancel or a closed window, 2 for a bad name or a failed write (the values
 written before the failure stay), 3 when no window can be opened here.
 
+`reveal NAME` shows one sign-in key so the executive can copy it (HOS-337).
+NAME is a `key` of an entry in `scripts/utils/web_interfaces.py`, the one
+list, and the value is the FIRST one that entry's file assigns. It opens a
+window titled NAME with the value in a read-only field, a Copy button and a
+Close button, and prints only `NAME shown in a window`. With no window it
+prints the value only when stdin and stdout are both a terminal and
+CLAUDECODE is not set: Claude Code sets CLAUDECODE=1 in the shells it runs,
+and what such a shell prints reaches the chat transcript. Otherwise it
+refuses with one line naming NAME, never the value. Exit 0 shown, 1 no value
+(file missing, name absent or value empty), 2 bad or unknown name or a read
+error, 3 no window and no terminal.
+
 `list` prints names only: every name `.env.example` declares and every name
 `.env` assigns, each marked `set` or `unset`. `check NAME` prints one such line
 and exits 0 when the name is set, 1 when it is not.
@@ -34,13 +47,16 @@ wizard asked for the Anthropic API key in the chat, so the key landed in the
 session transcript. The wizard now tells the executive to run `set` in a
 terminal instead.
 
-Exit codes: 0 ok, 1 not set (`check`) or refused input or a cancelled window,
-2 usage or write error, 3 no window can be opened (`window`).
+Exit codes: 0 ok, 1 not set (`check`, `reveal`) or refused input or a
+cancelled window, 2 usage, unknown name, read or write error, 3 no window can
+be opened (`window`), or no window and no terminal (`reveal`).
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import os
+import stat
 import sys
 import warnings
 from pathlib import Path
@@ -50,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.colors import GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.env_file import ENV_LINE_BREAKERS, is_valid_env_var_name, upsert_env_value  # noqa: E402
 from scripts.utils.paths import iter_env_pairs  # noqa: E402
+from scripts.utils.web_interfaces import web_interfaces  # noqa: E402
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
 
 EXIT_OK = 0
@@ -241,10 +258,116 @@ def cmd_check(name: str) -> int:
     return EXIT_OK if assigned.get(name) else EXIT_UNSET
 
 
+def _key_file(name: str) -> Path | None:
+    """The file holding NAME, from the one list of web interfaces; None when no entry has it."""
+    for wi in web_interfaces(get_workspace_root()):
+        if wi.key and wi.key[0] == name:
+            return wi.key[1]
+    return None
+
+
+def _reveal_window(tkinter, root, name: str, value: str) -> dict[str, object]:
+    """The reveal window's widgets on `root`; the value goes only into the field and the clipboard."""
+    root.title(name)
+    # A failing callback prints its kind only: the default handler prints the
+    # exception's message, and nothing here may vouch that it never holds the value.
+    root.report_callback_exception = lambda kind, _exc, _tb: print(
+        f"{RED}The window failed ({kind.__name__}).{RESET}", file=sys.stderr)
+    tkinter.Label(root, text=name).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+    field = tkinter.Entry(root, width=48, textvariable=tkinter.StringVar(root, value=value),
+                          state="readonly")
+    field.grid(row=1, column=0, columnspan=2, padx=8, pady=4)
+
+    def copy() -> None:
+        root.clipboard_clear()
+        root.clipboard_append(value)
+
+    copy_button = tkinter.Button(root, text="Copy", command=copy)
+    copy_button.grid(row=3, column=0, padx=8, pady=8)
+    tkinter.Button(root, text="Close", command=root.destroy).grid(row=3, column=1, padx=8, pady=8)
+    return {"field": field, "copy": copy_button}
+
+
+def cmd_reveal(name: str) -> int:
+    if not is_valid_env_var_name(name):
+        print(f"{RED}{name!r} is not a valid name: use A-Z, 0-9 and _, "
+              f"not starting with a digit.{RESET}", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        path = _key_file(name)
+    except OSError as e:
+        # get_workspace_root() stats WORKSPACE_ROOT, which raises under a directory
+        # this user cannot search. No value has been read yet.
+        where = f" ({e.filename})" if e.filename else ""
+        print(f"{RED}Cannot find the file holding {name}: {e.strerror or type(e).__name__}{where}{RESET}",
+              file=sys.stderr)
+        return EXIT_ERROR
+    if path is None:
+        print(f"{RED}{name} is not the sign-in key of any system in the list.{RESET}", file=sys.stderr)
+        return EXIT_ERROR
+    # The status is read in the try, never through `is_file()`: that raises an
+    # unsearchable directory's PermissionError and turns ENOTDIR into "missing".
+    # Only FileNotFoundError means no file; any other failure, or something there
+    # that is not a regular file, is a read error (HOS-337 review, 2026-11-03).
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        print(f"{RED}{name} has no value: {path} does not exist.{RESET}", file=sys.stderr)
+        return EXIT_UNSET
+    except OSError as e:
+        print(f"{RED}Cannot read {path}: {e.strerror or type(e).__name__}{RESET}", file=sys.stderr)
+        return EXIT_ERROR
+    if not stat.S_ISREG(mode):
+        print(f"{RED}Cannot read {path}: it is not a regular file.{RESET}", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        assigned = _assigned(path)
+    except OSError as e:
+        print(f"{RED}Cannot read {path}: {e.strerror or type(e).__name__}{RESET}", file=sys.stderr)
+        return EXIT_ERROR
+    except UnicodeDecodeError:
+        # Its message quotes a byte of the file, which may be a byte of a key.
+        print(f"{RED}Cannot read {path}: it is not UTF-8 text.{RESET}", file=sys.stderr)
+        return EXIT_ERROR
+    if name not in assigned:
+        print(f"{RED}{name} has no value: {path} does not assign it.{RESET}", file=sys.stderr)
+        return EXIT_UNSET
+    value = assigned[name]
+    if not value:
+        print(f"{RED}{name} has no value: it is empty in {path}.{RESET}", file=sys.stderr)
+        return EXIT_UNSET
+    root = None
+    try:
+        import tkinter
+    except ImportError:
+        root = None  # no window here; the terminal path below decides
+    else:
+        try:
+            root = tkinter.Tk()
+        except tkinter.TclError:
+            root = None  # no display; the terminal path below decides
+    if root is not None:
+        _reveal_window(tkinter, root, name, value)
+        print(f"{name} shown in a window", flush=True)
+        root.mainloop()
+        return EXIT_OK
+    if "CLAUDECODE" in os.environ:
+        print(f"{RED}{name} is not shown: this shell belongs to Claude Code, so the key would reach "
+              f"the chat. Run the command in a terminal of its own, outside Claude.{RESET}", file=sys.stderr)
+        return EXIT_NO_WINDOW
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"{RED}{name} is not shown: no window can be opened here and this is not a terminal. "
+              f"Run the command yourself in a terminal window.{RESET}", file=sys.stderr)
+        return EXIT_NO_WINDOW
+    print(value)
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Put a secret into .env from a hidden terminal prompt, "
-                    "and show which names are set. Values are never printed.")
+                    "and show which names are set. Values are never printed, "
+                    "except by reveal at a terminal outside Claude.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_set = sub.add_parser("set", help="ask for NAME at a hidden prompt and write it to .env")
     p_set.add_argument("name")
@@ -253,7 +376,11 @@ def main(argv: list[str] | None = None) -> int:
     p_check.add_argument("name")
     p_window = sub.add_parser("window", help="one window with a field per NAME; Save writes them to .env")
     p_window.add_argument("names", nargs="+", metavar="NAME")
+    p_reveal = sub.add_parser("reveal", help="show one sign-in key in a window, or at a terminal outside Claude")
+    p_reveal.add_argument("name")
     args = parser.parse_args(argv)
+    if args.cmd == "reveal":
+        return cmd_reveal(args.name)
     if args.cmd == "window":
         return cmd_window(args.names)
     if args.cmd == "set":
