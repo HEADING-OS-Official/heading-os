@@ -120,10 +120,8 @@ EXEMPT: dict[str, str] = {
     "docs-theme-css": "an operator's own stylesheet for the portable guides; the public default may name no .css file",
     "heading-os-logo": "the HEADING OS site's own logo image inside one dated site work directory, not structure",
     "heading-os-favicon": "the HEADING OS site's own favicon inside one dated site work directory, not structure",
-    "tribe-workbook": "one operator's own team roster spreadsheet; the public default may name no office document",
     "cognee-pilot-outputs": "the outputs of one dated pilot run on one operator's tree, never structure",
     "ho2-migration-workdir": "the archived working directory of one dated migration of one operator's tree, never structure",
-    "xpager-reference": "one dated xPager deliverable kept for visual continuity, never structure",
 }
 
 def tracked(root: Path) -> list[str]:

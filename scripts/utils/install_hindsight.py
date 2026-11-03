@@ -694,8 +694,9 @@ def check_claude(ctx) -> bool:
             and not bare_home_tools(home, home_tools(home, ctx.engine)))
 
 
-_NO_NODE = ("a Claude Code hook calls node, but Node.js is not where the prerequisites "
-            "step installs it; run the installer again from the start")
+_NO_NODE = ("a Claude Code hook calls node, but no Node.js was found, neither the installer's own "
+            "copy nor one on PATH; install Node.js 22 or newer, or run the installer again so its "
+            "prerequisites step installs one")
 
 
 def _read_config(path: Path, what: str):
@@ -761,7 +762,8 @@ def absolute_hooks(ctx) -> None:
     replaced: list[tuple[str, str]] = []
     for _event, hook in hook_commands(settings):
         command = hook["command"]
-        if (command == "node" or command.startswith("node ")) and "node" not in tools:
+        # A system Node.js on PATH (HOS-339) stays bare, as install_commands allows for system programs.
+        if (command == "node" or command.startswith("node ")) and "node" not in tools and not _tool(ctx, "node"):
             raise HindsightError(_NO_NODE)
         for name, absolute in tools.items():
             if command == name or command.startswith(name + " "):
@@ -795,7 +797,8 @@ def absolute_mcp_commands(ctx) -> None:
         command = entry.get("command") if isinstance(entry, dict) else None
         if not isinstance(command, str) or command.startswith("/"):
             continue
-        if command == "node" and "node" not in tools:
+        # A system Node.js on PATH (HOS-339) stays bare, as install_commands allows for system programs.
+        if command == "node" and "node" not in tools and not _tool(ctx, "node"):
             raise HindsightError(_NO_NODE)
         if command in tools:
             entry["command"] = tools[command]

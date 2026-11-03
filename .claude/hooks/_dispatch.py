@@ -6422,40 +6422,18 @@ def _yard_homes() -> list[Path]:
 # resolved under every data root at check time. The official tree ships no
 # daemon whose state needs this, so the list is empty.
 _YARD_HELM_ONLY_DATA: tuple[str, ...] = ()
-# Every spelling of the places above, filled by `_yard_machine_places(helm)`, so
-# that `_yard_machine_reason` can say which refusal it is giving.
+# Every spelling of the places above. Nothing fills it in this tree; it stays so
+# that `_yard_machine_reason` keeps one shape with the maintainer's copy.
 _YARD_HELM_ONLY_PLACES: set[Path] = set()
 
 
 def _yard_machine_places(helm: Path | None = None) -> tuple[list[Path], list[Path]]:
     """(guarded, exempt): every spelling of the places above, raw and resolved.
 
-    With `helm`, the live daemon state of `_YARD_HELM_ONLY_DATA` under each data
-    root is guarded too (HOS-281).
+    `helm` changes nothing in this tree: no live daemon state is shipped.
     """
     guarded: list[Path] = [Path("/etc")]      # root-owned; reached through `sudo`
     exempt: list[Path] = []
-    if helm is not None:
-        from scripts.utils.data_path import DataPathError
-        for root in _yard_data_roots(helm):
-            for name in _YARD_HELM_ONLY_DATA:
-                try:
-                    raise ValueError(f"no resolver for {name}")
-                except (DataPathError, OSError, ValueError) as exc:
-                    # Fails open for this one root, on purpose: a root whose
-                    # registry has no row for the name holds no daemon state
-                    # to protect, and refusing every write under it would close
-                    # the whole overlay to yards.
-                    print(f"[_dispatch:yard] HOS-281: {name} did not resolve "
-                          f"under {root} ({type(exc).__name__}); not guarded "
-                          f"there", file=sys.stderr)
-                    continue
-                guarded.append(place)
-                _YARD_HELM_ONLY_PLACES.add(place)
-                with contextlib.suppress(OSError):
-                    real = place.resolve()
-                    guarded.append(real)
-                    _YARD_HELM_ONLY_PLACES.add(real)
     for env_name in ("CLAUDE_CONFIG_DIR", "XDG_RUNTIME_DIR"):
         raw = os.environ.get(env_name, "")
         if raw and os.path.isabs(raw):

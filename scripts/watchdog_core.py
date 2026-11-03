@@ -301,10 +301,13 @@ def _load_state(state_path: Path | None) -> dict:
         return {}
 
 
-def _save_state(state_path: Path | None, state: dict) -> None:
-    """Atomically persist the dedup state. Best-effort: never raises."""
+def _save_state(state_path: Path | None, state: dict) -> bool:
+    """Atomically persist the dedup state. Best-effort: never raises.
+
+    True when the state was written, False when the write failed (HOS-339).
+    """
     if state_path is None:
-        return
+        return False
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(state_path.parent))
@@ -312,6 +315,7 @@ def _save_state(state_path: Path | None, state: dict) -> None:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(state, indent=2) + "\n")
             os.replace(tmp, state_path)
+            return True
         except Exception:
             try:
                 os.unlink(tmp)
@@ -320,6 +324,7 @@ def _save_state(state_path: Path | None, state: dict) -> None:
             raise
     except OSError as e:
         logger.warning("watchdog state write failed: %s", e)
+        return False
 
 
 # ============================================================
@@ -394,6 +399,21 @@ def check_once(
     realert_window = timedelta(minutes=realert_min)
 
     state = _load_state(state_path)
+    # HOS-339: a daemon with no first beat yet may be reported `starting` only
+    # when the dedup state can be trusted: a fresh install (no file yet) or a
+    # file that parsed as an object. No state path or an unreadable file keeps
+    # the loud direction above, where every missing daemon alerts.
+    if state_path is None:
+        trusted = False
+    elif not state_path.exists():
+        trusted = True
+    else:
+        try:
+            trusted = isinstance(json.loads(state_path.read_text(encoding="utf-8")), dict)
+        except (OSError, UnicodeError, ValueError) as exc:
+            logger.warning("watchdog: dedup state unreadable (%s); no daemon is "
+                           "given a start-up grace this pass", type(exc).__name__)
+            trusted = False
     daemons: list[dict] = []
     # `alerts_fired` counts alerts RAISED. `alerts_undelivered` counts the ones
     # that reached no channel beyond the log, which is the number that decides
@@ -415,8 +435,20 @@ def check_once(
         prev_state = prev.get("state", "ok")
         last_alert = parse_iso(prev.get("last_alert_ts"))
         fired = False
+        starting_since = None
+        if status == "missing" and trusted:
+            if name not in state:
+                # Started, first beat not yet written (HOS-339): no alert yet.
+                starting_since = now
+            elif prev_state == "starting":
+                since = parse_iso(prev.get("since"))
+                if since is not None and (now - since).total_seconds() <= threshold:
+                    starting_since = since
 
-        if status in ("silent", "missing"):
+        if starting_since is not None:
+            status = "starting"
+            state[name] = {"state": "starting", "since": starting_since.isoformat()}
+        elif status in ("silent", "missing"):
             should_alert = (
                 prev_state != "down"
                 or last_alert is None
@@ -472,8 +504,22 @@ def check_once(
             "fired": fired,
         })
 
-    _save_state(state_path, state)
-    verdict = "down" if any(d["status"] != "ok" for d in daemons) else "ok"
+    if not _save_state(state_path, state):
+        # HOS-339: `starting` rests on the saved state; a failed save would
+        # restart its clock every pass, so each such daemon alerts as missing.
+        for d in daemons:
+            if d["status"] != "starting":
+                continue
+            delivered = _delivered(alert_fn(
+                "critical", f"daemon {d['daemon']} missing - no heartbeat",
+                f"expected a liveness beat within {d['threshold_s']}s; "
+                f"watchdog at {now.isoformat()}",
+                source="watchdog"))
+            d["status"], d["fired"] = "missing", True
+            alerts_fired += 1
+            if not delivered:
+                alerts_undelivered += 1
+    verdict = "down" if any(d["status"] not in ("ok", "starting") for d in daemons) else "ok"
     return {
         "verdict": verdict,
         "checked_at": now.isoformat(),

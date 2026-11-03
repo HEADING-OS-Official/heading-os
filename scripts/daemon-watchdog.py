@@ -17,7 +17,8 @@ Usage:
   python scripts/daemon-watchdog.py --once --stale-default 90
 
 Exit codes:
-  0 - all configured daemons ok
+  0 - all configured daemons ok, or starting (started, first beat not yet
+      written, within its threshold)
   1 - one or more daemons silent or missing
 
 CEO-only: alerts route to the CEO's Telegram via scripts/utils/alert.py.
@@ -38,7 +39,7 @@ from scripts.utils.trace_filter import attach
 from scripts.utils.workspace import get_workspace_root
 from scripts.utils.clone_guard import require_main_clone
 
-_STATUS_COLOR = {"ok": GREEN, "silent": YELLOW, "missing": RED}
+_STATUS_COLOR = {"ok": GREEN, "starting": YELLOW, "silent": YELLOW, "missing": RED}
 
 
 def _print_grid(report: dict) -> None:

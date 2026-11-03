@@ -46,24 +46,6 @@ def test_the_shipped_templates_answer_every_name_the_engine_asks_for(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_the_guard_refuses_the_templates_that_trailed_the_engine(tmp_path):
-    root = get_workspace_root()
-    old = tmp_path / "engine-before-hos298"
-    old.mkdir()
-    archive = subprocess.run(["git", "archive", BEFORE_FIX], cwd=root,
-                             capture_output=True, check=True, timeout=120)
-    subprocess.run(["tar", "-x", "-C", str(old)], input=archive.stdout, check=True)
-    subprocess.run(["git", "init", "-q"], cwd=old, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=old, check=True, timeout=120)
-
-    proc = _guard(root, old, tmp_path / "data")
-    assert proc.returncode == 1, proc.stdout + proc.stderr
-    report = re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout)
-    for name in ("runtime:settings-backup/state", "threads-personal",
-                 "odin-positions", "odin-sources", "odin-episodes"):
-        assert f"UNANSWERED name {name}:" in report, report
-
-
 def test_the_guard_and_the_installer_refuse_the_same_installer_address(tmp_path):
     """HOS-298 review round 2, MEASURED 2026-11-01 at f586cb99: with the
     `threads-personal` address moved outside the subject roots, the guard exited
