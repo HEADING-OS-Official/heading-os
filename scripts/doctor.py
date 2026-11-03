@@ -483,18 +483,53 @@ def check_google(p: Probes, env: dict[str, str] | None) -> list[Row]:
     return rows
 
 
+def _layer_collection(layer: str) -> str | None:
+    """The collection memory-index queries `layer` under, or None when no collection holds it.
+
+    Read from the `collections` map of config/memory-index.yaml, the map
+    memory-index.py's `load_config` loads as it stands (it only defaults the
+    key) and `cmd_query` routes `--collection` by. Read from OWN_ROOT, the tree
+    whose memory-index.py the round trip runs, so the map and the query agree.
+    The first collection listing the layer wins, as `_layer_store_map` refuses
+    a layer in two stores. Raises OSError or ValueError when the file cannot
+    be read.
+    """
+    import yaml
+    cfg = yaml.safe_load((OWN_ROOT / "config" / "memory-index.yaml").read_text(encoding="utf-8")) or {}
+    colls = cfg.get("collections") if isinstance(cfg, dict) else None
+    if not isinstance(colls, dict):
+        raise ValueError("config/memory-index.yaml has no collections map")
+    return next((name for name, layers in colls.items() if isinstance(layers, list) and layer in layers), None)
+
+
 def _index_roundtrip(p: Probes) -> Row:
-    """A real query: the text of one indexed chunk must come back with that chunk first (HOS-305)."""
+    """A real query: the text of one indexed chunk must come back with that chunk first (HOS-305).
+
+    Asked under the collection the chunk's own layer belongs to: on a fresh
+    install the only content row is the data repository's first commit, layer
+    `commit-data`, collection `history`, and `--collection content` cannot
+    return it (measured on a fresh guest, HOS-312, 2026-11-03).
+    """
     build = ".venv/bin/python scripts/memory-index.py build"
     import sqlite3
+    import yaml
     try:
         sample = p.index_sample()
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         return Row("index", "query", RED, f"index store not read: {exc}"[:160], build)
     if sample is None:
         return Row("index", "query", RED, "the index is empty", _remedy(p.engine_root, build))
+    try:
+        collection = _layer_collection(sample["layer"])
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        return Row("index", "query", RED, f"collections map not read: {exc}"[:160],
+                   "check config/memory-index.yaml")
+    if collection is None:
+        return Row("index", "query", RED,
+                   f"layer {sample['layer']} of {sample['path']} is in no collection"[:160],
+                   "check the collections map of config/memory-index.yaml")
     rc, out = p.run([str(OWN_ROOT / ".venv" / "bin" / "python"), str(OWN_ROOT / "scripts" / "memory-index.py"),
-                     "query", sample["text"], "--collection", sample["collection"], "--top-k", "1", "--json"])
+                     "query", sample["text"], "--collection", collection, "--top-k", "1", "--json"])
     hits: list = []
     # `run` joins stdout and stderr: the payload is the last line that parses as an object.
     for line in reversed(out.splitlines() if rc == 0 else []):
@@ -508,7 +543,7 @@ def _index_roundtrip(p: Probes) -> Row:
     first = hits[0] if hits and isinstance(hits[0], dict) else {}
     where = f"{sample['path']}#{sample['chunk']}"
     if first.get("path") == sample["path"] and first.get("chunk") == sample["chunk"]:
-        return Row("index", "query", OK, f"{where} found itself first ({sample['collection']})"[:160])
+        return Row("index", "query", OK, f"{where} found itself first ({collection})"[:160])
     got = f"{first.get('path')}#{first.get('chunk')}" if first else (out.splitlines() or [f"exit {rc}"])[-1]
     return Row("index", "query", RED, f"asked for {where}, got {got}"[:160],
                "start the embedding server, then " + build)

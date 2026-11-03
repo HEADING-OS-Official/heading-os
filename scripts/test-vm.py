@@ -974,8 +974,11 @@ def cmd_install(cfg: Config, r: Runner, args) -> int:
             state = json.loads(status[len(STATUS_PREFIX):]).get("state")
         except (ValueError, AttributeError) as exc:
             print(f"{RED}the HEADING-INSTALL line is not JSON ({exc}){RESET}", file=sys.stderr)
-    doctor = r.guest(user, ["bash", "-c", '"$HOME/HeadingOS/engine/.venv/bin/python" '
-                                          '"$HOME/HeadingOS/engine/scripts/doctor.py"'],
+    # A login shell, as a new terminal runs it: `bash -c` reads no profile, so
+    # its PATH lacks ~/.local/bin and lific, herdr, hindsight and claude read as
+    # missing (HOS-312 rehearsal 2, 2026-11-03). The exit code is doctor's.
+    doctor = r.guest(user, ["bash", "-lc", '"$HOME/HeadingOS/engine/.venv/bin/python" '
+                                           '"$HOME/HeadingOS/engine/scripts/doctor.py"'],
                      check=False, timeout=600, what="doctor")
     if r.dry_run:
         return 0

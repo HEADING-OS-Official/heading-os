@@ -1163,9 +1163,46 @@ def run_verify(ctx: Ctx) -> None:
         raise StepFailed(f"a new terminal resolves the data at {found!r}, not {ctx.data}")
 
 
-# ---- Later slices register their steps here --------------------------------
-# secrets (heading-secrets.py), doctor: one `@step(...)` each, in this
-# order, above `verify` when a new terminal must see what they install.
+# ---- The last check: doctor (HOS-312) ----
+# Last, after `verify`, so `done` and DONE_SAY ("every check is green") follow
+# only from doctor exiting 0. A warn row does not fail it; a red row does.
+
+def _doctor(ctx: Ctx) -> tuple[int, list[str], str]:
+    """`scripts/doctor.py --json` of the installed engine: (exit code, red rows as "component: check", tail).
+
+    The install's own environment (ctx.env()), without an inherited
+    WORKSPACE_ROOT, which would repoint doctor at another tree. Read-only, so
+    running it again changes nothing.
+    """
+    env = ctx.env()
+    env.pop("WORKSPACE_ROOT", None)
+    proc = subprocess.run([str(ctx.python), str(ctx.engine / "scripts" / "doctor.py"), "--json"],
+                          cwd=str(ctx.engine), env=env, capture_output=True, text=True, errors="replace")
+    tail = "\n".join(((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()[-15:])
+    try:
+        rows = json.loads(proc.stdout).get("rows") or []
+    except (ValueError, AttributeError):
+        rows = []  # no parsable rows: the caller reports the exit code and the tail instead
+    red = [f"{r.get('component')}: {r.get('check')} ({r.get('detail')})"
+           for r in rows if isinstance(r, dict) and r.get("status") == "red"]
+    return proc.returncode, red, tail
+
+
+def check_doctor(ctx: Ctx) -> bool:
+    if ctx.dry_run or not ctx.python.exists():
+        return False  # a dry run asks nothing
+    return _doctor(ctx)[0] == 0
+
+
+@step("doctor", "Every HEADING OS check is green (scripts/doctor.py)", check_doctor)
+def run_doctor(ctx: Ctx) -> None:
+    rc, red, tail = _doctor(ctx)
+    if rc == 0:
+        return
+    if red:
+        raise StepFailed(f"doctor found {len(red)} red: " + "; ".join(red)
+                         + ". Each row's fix is printed by: .venv/bin/python scripts/doctor.py")
+    raise StepFailed(f"doctor exited {rc}" + (f"\n{tail}" if tail else ""))
 
 
 # ============================================================

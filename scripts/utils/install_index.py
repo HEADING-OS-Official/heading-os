@@ -168,7 +168,12 @@ def check_model(ctx) -> bool:
 
 
 def _stores(engine_root: Path, data_root: Path | None) -> list[tuple[str, Path]]:
-    """(collection, store) for the content store (under the data root) and the code store (engine)."""
+    """(store, path) for the content store (under the data root) and the code store (engine).
+
+    The first item names the physical STORE, not a query collection: the content
+    store also holds the `history` and `chronicle` layers, the code store holds
+    `commit-engine` beside `rule` and `skill` (config/memory-index.yaml).
+    """
     stores = []
     if data_root is not None:
         from scripts.utils.runtime_dir import runtime_root  # engine environment only
@@ -194,22 +199,26 @@ def chunk_count(engine_root: Path, data_root: Path | None) -> int:
 
 
 def sample_chunk(engine_root: Path, data_root: Path | None) -> dict | None:
-    """One indexed chunk with real text, content store first: {collection, path, chunk, text}.
+    """One indexed chunk with real text, content store first: {store, layer, path, chunk, text}.
 
     Deterministic (the first by path and chunk, long bodies first), so two
-    doctor runs ask the same question; None only when no store holds any text. On a fresh install the data repository holds nothing the content
-    layers read, and the chunk comes from the engine's code collection.
+    doctor runs ask the same question; None only when no store holds any text.
+    On a fresh install the content store holds one row, the data repository's
+    first commit, in layer `commit-data` (measured on a fresh guest, HOS-312,
+    2026-11-03). Which collection a layer is queried under is memory-index's
+    decision, so the caller resolves it from `layer`, never from `store`.
     """
-    for collection, store in _stores(engine_root, data_root):
+    for store_name, store in _stores(engine_root, data_root):
         if not store.is_file():
             continue
         with _read_only(store) as conn:
             # A body of 200 characters or more is preferred, as a sharper question;
             # any non-empty one still counts, so an index of short chunks is not "empty".
-            row = conn.execute("SELECT path, chunk, body FROM notes WHERE length(trim(body)) > 0 "
+            row = conn.execute("SELECT path, chunk, body, layer FROM notes WHERE length(trim(body)) > 0 "
                                "ORDER BY length(body) >= 200 DESC, path, chunk LIMIT 1").fetchone()
         if row:
-            return {"collection": collection, "path": row[0], "chunk": int(row[1]), "text": row[2][:4000]}
+            return {"store": store_name, "layer": row[3], "path": row[0], "chunk": int(row[1]),
+                    "text": row[2][:4000]}
     return None
 
 
