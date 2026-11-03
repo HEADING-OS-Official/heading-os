@@ -121,6 +121,7 @@ from scripts.utils import install_answers  # noqa: E402 - stdlib only, imports n
 from scripts.utils import install_lific as lific  # noqa: E402 - stdlib only, like this file (HOS-306)
 from scripts.utils import install_person as person  # noqa: E402 - stdlib only (HOS-312)
 from scripts.utils.install_person import WaitingForPerson  # noqa: E402 - stdlib only, the one class (HOS-312)
+from scripts.utils import install_progress as progress  # noqa: E402 - stdlib only (HOS-336)
 
 DEFAULT_FROM = "https://github.com/HEADING-OS-Official/heading-os.git"
 DEFAULT_REPO_NAME = "heading-os-data"
@@ -1254,29 +1255,95 @@ def print_web_interfaces(ctx: Ctx) -> None:
 DONE_SAY = "HEADING OS is installed and every check is green."
 
 
-def hand_off(ctx: Ctx) -> str:
-    """Open one new window running Claude in the engine with /setup-wizard; return the `done` say.
+HANDOFF_CLOSE = ("The terminal where the install ran is no longer needed and can be closed; "
+                 "the setup continues in the new window.")
+HANDOFF_HERDR = (f"{DONE_SAY} A new terminal window is opening with Herdr and Claude in the HEADING OS "
+                 f"folder, and the setup wizard starts there. {HANDOFF_CLOSE} If the wizard does not start "
+                 "in it, type heading /setup-wizard there.")
+HANDOFF_IN_HERDR = (f"{DONE_SAY} You are already in Herdr, so no second Herdr starts: a new workspace named "
+                    "HEADING OS is opening in it with Claude in the HEADING OS folder, and the setup wizard "
+                    "starts there. The pane where the install ran is no longer needed and can be closed; "
+                    "the setup continues in the new workspace.")
+HANDOFF_PLAIN = (f"{DONE_SAY} Herdr could not be started, so a new terminal window is opening with Claude "
+                 f"in the HEADING OS folder, without Herdr, and the setup wizard starts there. {HANDOFF_CLOSE}")
+HANDOFF_TYPE = (f"{DONE_SAY} To continue with the setup, open a new terminal and type: heading /setup-wizard. "
+                "The terminal where the install ran is then no longer needed and can be closed.")
 
-    Only on a Linux desktop that is not WSL and has x-terminal-emulator; every
-    other case, and a window that cannot be started, starts nothing and the say
-    tells the person to type `heading /setup-wizard` in a new terminal. Windows
-    Terminal from WSL is not attempted (design § 9: unverified).
 
-    The argv is a list, run with no shell. `-e <command> <args...>` is the form
-    Debian Policy § 11.8.3 requires of x-terminal-emulator; UNVERIFIED on Linux
-    Mint until the machine rehearsal.
+def _announce(ctx: Ctx, say: str) -> None:
+    """Tell the person what is about to open, before it opens: stdout and the progress window.
+
+    Returns once the window has drawn it (at most progress.SHOWN_WAIT_S), so
+    the handoff never opens under a window still showing the last step.
     """
+    print(say, flush=True)
+    progress.wait_shown(ctx, progress.write(ctx, "done", len(STEPS), len(STEPS), "", say))
+
+
+def hand_off(ctx: Ctx) -> str:
+    """Open Claude with /setup-wizard inside Herdr, announced first; return the `done` say.
+
+    Three cases (HOS-336), each announced on stdout and in the progress window
+    before anything opens:
+      * the installer runs inside a Herdr pane (HERDR_PANE_ID or HERDR_ENV set):
+        no second Herdr ever starts; a HEADING OS workspace is created in the
+        running one and the wizard typed into it;
+      * a Linux desktop that is not WSL, with x-terminal-emulator and the Herdr
+        the install's herdr step put in place: a new window runs that Herdr by
+        absolute path, and a detached helper (scripts/utils/heading_launcher.py
+        --herdr-workspace) waits for it, creates the workspace in the engine
+        folder and runs `heading /setup-wizard` in its pane;
+      * the same desktop without a runnable Herdr: today's plain Claude window.
+    Every other case, and a window that cannot be started, starts nothing and
+    the say tells the person to type `heading /setup-wizard` in a new terminal.
+    Windows Terminal from WSL is not attempted (design § 9: unverified).
+
+    Every argv is a list, run with no shell. `-e <command> <args...>` is the
+    form Debian Policy § 11.8.3 requires of x-terminal-emulator; Herdr in that
+    window and the helper's socket calls are UNVERIFIED on Linux Mint until the
+    machine rehearsal.
+    """
+    from scripts.utils import heading_launcher as launcher
+
     heading = Path.home() / ".local" / "bin" / "heading"
-    if person.has_display() and not is_wsl() and which("x-terminal-emulator", ctx):
-        argv = ["x-terminal-emulator", "-e", str(heading), "/setup-wizard"]
+    herdr = hc.herdr_bin(hc.host(ctx))
+    herdr_ok = os.access(herdr, os.X_OK)
+    if launcher.in_herdr(os.environ) and herdr_ok:
+        _announce(ctx, HANDOFF_IN_HERDR)
         try:
-            person.start_detached(ctx, "handoff", argv, env=ctx.env(), cwd=ctx.engine)
+            launcher.open_in_herdr(herdr, ctx.engine, heading, env=ctx.env())
+        except (launcher.HerdrHandoffError, OSError, subprocess.SubprocessError) as exc:
+            print(f"  note: the HEADING OS workspace could not be opened in Herdr ({exc})")
+            _announce(ctx, HANDOFF_TYPE)
+            return HANDOFF_TYPE
+        return HANDOFF_IN_HERDR
+    if person.has_display() and not is_wsl() and which("x-terminal-emulator", ctx):
+        if herdr_ok and not launcher.in_herdr(os.environ):
+            _announce(ctx, HANDOFF_HERDR)
+            try:
+                person.start_detached(ctx, "handoff", ["x-terminal-emulator", "-e", str(herdr)],
+                                      env=ctx.env(), cwd=ctx.engine)
+            except OSError as exc:
+                print(f"  note: the new window with Herdr could not be opened ({exc})")
+            else:
+                helper = [str(ctx.python), str(ctx.engine / "scripts" / "utils" / "heading_launcher.py"),
+                          "--herdr-workspace", str(herdr), "--engine", str(ctx.engine), "--heading", str(heading)]
+                try:
+                    person.start_detached(ctx, "handoff-herdr", helper, env=ctx.env(), cwd=ctx.engine)
+                except OSError as exc:
+                    # The window with Herdr is open; the say already tells them to type the command there.
+                    print(f"  note: the setup wizard could not be started in Herdr ({exc})")
+                return HANDOFF_HERDR
+        _announce(ctx, HANDOFF_PLAIN)
+        try:
+            person.start_detached(ctx, "handoff", ["x-terminal-emulator", "-e", str(heading), "/setup-wizard"],
+                                  env=ctx.env(), cwd=ctx.engine)
         except OSError as exc:
             print(f"  note: the new window could not be opened ({exc})")
         else:
-            return (f"{DONE_SAY} A new window is opening with Claude in the HEADING OS folder; "
-                    "the setup continues there.")
-    return f"{DONE_SAY} To continue with the setup, open a new terminal and type: heading /setup-wizard"
+            return HANDOFF_PLAIN
+    _announce(ctx, HANDOFF_TYPE)
+    return HANDOFF_TYPE
 
 
 # ---- HOS-312: the intake, the status line and the install report ----------
@@ -1552,6 +1619,7 @@ def main(argv: list[str] | None = None) -> int:
                        "never stops to ask.")
             print(refusal)
             return status_line("failed", refusal, "", code=2)
+        progress.write(ctx, "need-answer", 0, len(STEPS), "")
         return status_line("need-answer", say, rerun_command(ap, args, ask=flag), options)
     inherited = os.environ.get("HEADING_OS_DATA")
     if inherited and Path(inherited).expanduser().absolute() != ctx.data:
@@ -1561,19 +1629,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"HEADING OS install into {ctx.target}" + (" (dry run: nothing is changed)" if ctx.dry_run else ""))
     state = load_state(ctx)
     total = len(STEPS)
+    progress.start(ctx)
     for i, s in enumerate(STEPS, 1):
         label = f"[{i}/{total}] {s.title}"
+        progress.write(ctx, "running", i, total, s.title)
         try:
             in_place = run_step(ctx, s, label, state)
         except WaitingForPerson as wait:
+            progress.write(ctx, "waiting-for-person", i, total, s.title)
             return status_line("waiting-for-person", str(wait), rerun_command(ap, args))
         except (StepFailed, OSError, subprocess.SubprocessError) as exc:
+            progress.write(ctx, "failed", i, total, s.title)
             return step_failed(ctx, s, f"{label}: FAILED. {exc}", rerun_command(ap, args))
         except Exception as exc:  # noqa: BLE001 - any other error still ends with the report and the status line
             traceback.print_exc()
+            progress.write(ctx, "failed", i, total, s.title)
             return step_failed(ctx, s, f"{label}: FAILED. Unexpected error: {type(exc).__name__}: {exc}",
                                rerun_command(ap, args))
         if not in_place:
+            progress.write(ctx, "failed", i, total, s.title)
             return step_failed(ctx, s, f"{label}: FAILED. It ran, but its result is still not in place.",
                                rerun_command(ap, args))
 

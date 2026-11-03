@@ -109,7 +109,7 @@ You do three things before the first question: install Claude Code, sign in to i
 2. **Secrets in a window on your screen.** You type a secret such as your Exchange password into a window on your screen, never into the chat. On a computer without a desktop, you type it into one terminal line the installer prints.
 3. **Your computer password, once.** On Linux with a desktop, one system window asks for it. WSL has no such window, so there you type it into one terminal line. The installer tells you before the run starts.
 4. **One unattended run.** The installer then installs everything without stopping. For a sign-in or the computer password, it opens the window or the browser page itself. Claude tells you which one to look at.
-5. **The finish.** The install ends when every check is green. The installer then opens a new window with Claude running `/setup-wizard`. Where it cannot open a window, it tells you to open a new terminal and type `heading /setup-wizard`.
+5. **The finish.** The install ends when every check is green. The installer first tells you what opens next. It then opens a new terminal window with Herdr and Claude in the HEADING OS folder. The setup wizard starts there. If you ran the install inside Herdr, it opens a new Herdr workspace instead. You can then close the terminal where the install ran. Where it cannot open a window, it tells you to open a new terminal and type `heading /setup-wizard`.
 
 ## Run the installer
 
@@ -157,7 +157,7 @@ Each step prints one line.
 7. **Settings and gates.** It copies `.env.example` to `.env` when `.env` does not exist. It arms the commit-time secret scanner, the pre-push gate and the Claude Code session hooks, and confirms each one.
 8. **Shell startup files.** It adds `~/.local/bin` to `PATH` and sets `HEADING_OS_DATA`. For bash it writes the login file bash reads (`~/.bash_profile` or `~/.profile`) and `~/.bashrc`. For zsh it writes `~/.zprofile` and `~/.zshrc`.
 9. **Check.** It opens a new login shell and confirms that the engine finds your data there.
-10. **The finish.** The doctor reads all green. The installer then opens a new window with Claude running `/setup-wizard`.
+10. **The finish.** The doctor reads all green. The installer says what opens next. It opens a new window with Herdr and Claude running `/setup-wizard`. Inside Herdr it opens a new workspace instead. Without Herdr it opens a plain Claude window.
 
 The installer is safe to run again. A step that is already in place is skipped, and a broken step is repaired. It records its progress in `<target>/.heading-install/state.json`. It refuses to overwrite a non-empty `data` folder that is not a HEADING OS data repository.
 
@@ -167,7 +167,7 @@ The installer is safe to run again. A step that is already in place is skipped, 
 
 > **Warning:** never trust a system folder such as `/mnt/c/WINDOWS/system32` at the trust prompt. Exit, `cd` to the engine, and start `claude` again.
 
-1. The new window the installer opened runs Claude with `/setup-wizard`. Where no window opened, open a new terminal and type `heading /setup-wizard`. The wizard asks about you and your business and writes your voice, business and personal documents.
+1. The new window the installer opened runs Herdr, and Claude with `/setup-wizard` inside it. Where no window opened, open a new terminal and type `heading /setup-wizard`. The wizard asks about you and your business and writes your voice, business and personal documents.
 2. Run `/prime`. It loads context and reports problems.
 
 You never edit `.env` by hand: the installer writes your answers there, and each secret goes in through a window on your screen.
