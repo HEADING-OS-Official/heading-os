@@ -35,10 +35,7 @@ Three lanes, cheapest first, each bounded:
            (hyphens normalise to underscores, which is the mapping that would
            have caught the rename above). Files under `tests/contract/` are
            matched, then skipped and counted: a frozen contract is red between
-           the approval commit and the implementation, on purpose. Tests marked
-           `slow` are deselected and counted for the same class of reason: they
-           sleep for real, they belong to the once-per-push suite, and a lane
-           that takes a minute is a lane the operator learns to dread.
+           the approval commit and the implementation, on purpose.
 
 Every lane that spawns a child runs it under `PYTHON` below, never under
 `sys.executable`. MEASURED 2026-08-31: run as the documented `python
@@ -244,18 +241,7 @@ def _spent() -> bool:
 # the hook's budget at all.
 PARALLEL_FILE_THRESHOLD = 20
 
-# What `_deselected` returns when the count cannot be read at all.
-#
-# NOT zero. Under `-n auto` pytest stops printing "N deselected" in its summary
-# entirely: measured on a fixture holding one fast and one slow test, the serial
-# run says "1 passed, 1 deselected" and the parallel run says "1 passed". Zero
-# would be a claim that nothing was excluded, and `.claude/rules/scope-claims.md`
-# is explicit that silence about an exclusion reads as coverage. So the renderer
-# gets a value it can tell apart from a real zero and says the count is unknown.
-DESELECTED_UNKNOWN = -1
-
-# Pytest's exit code for "no tests were collected". Ordinary here, because the
-# test lane deselects the slow marker and a matched file can hold nothing else.
+# Pytest's exit code for "no tests were collected": none of the matched files holds a test. Reported, not failed.
 NO_TESTS_COLLECTED = 5
 
 # xdist's own wording when two workers collected different suites. Matched as a
@@ -552,93 +538,11 @@ def is_contract(path: Path) -> bool:
     return _rel(path).replace("\\", "/").startswith(CONTRACT_PREFIX)
 
 
-def _deselected(body: str, parallel: bool = False) -> int:
-    """How many tests pytest dropped for the marker expression.
-
-    Read back from pytest's own summary rather than counted here, because this
-    lane never imports the target files and so cannot see their markers. A line
-    it cannot parse reports 0, which under-claims the exclusion instead of
-    inventing one.
-    """
-    match = re.search(r"(\d+) deselected", body)
-    if match:
-        return int(match.group(1))
-    if parallel:
-        # xdist prints no deselection summary at all, so "no match" here means
-        # "cannot tell", not "none". Returning 0 would print nothing and read as
-        # full coverage over tests that really were dropped.
-        return DESELECTED_UNKNOWN
-    return 0
-
-
-def _files_holding_no_test(targets: list[Path], timeout: int) -> int:
-    """How many of the matched files hold no test AT ALL.
-
-    Reached only when pytest answers exit 5, which says zero tests ran across
-    the whole matched set and carries no per-file breakdown. Two different
-    things produce it - a file whose only tests carry the `slow` marker this
-    lane deselects, and a file with no test in it - and the lane used to guess
-    between them with `0 if dropped else len(targets)`. That guess is wrong the
-    moment both are present: MEASURED 2026-08-30 over one all-slow file beside
-    one holding a bare helper, the lane reported zero empties while neither file
-    ran anything, so the empty one went unnamed. A silent exclusion reads as
-    coverage (`.claude/rules/scope-claims.md`).
-
-    So the answer is resolved rather than guessed, by collecting the same files
-    WITHOUT the marker filter and asking which of them yielded no node id. That
-    is a second subprocess, and it is affordable precisely because it only runs
-    on the path where nothing executed: collection, not execution.
-
-    Any probe that does not come back clean returns `len(targets)`, widening to
-    every matched file rather than reporting a zero nothing established -
-    obligation 3 of the same rule.
-
-    Node ids are relative to the rootdir PYTEST picks, which is the repo for a
-    file under `tests/` and the containing directory for a probe somewhere else,
-    so the id cannot be compared to a repo-relative path directly. Matching is
-    by path suffix, and an id that could belong to two different targets makes
-    the whole answer unknown rather than an arbitrary pick.
-    """
-    args = [
-        PYTHON, "-m", "pytest", "-q", "-p", "no:randomly",
-        "--collect-only", "--no-header", *[str(t) for t in targets],
-    ]
-    cap = _cap(timeout)
-    if cap <= 0:
-        return len(targets)
-    try:
-        out = subprocess.run(
-            args, cwd=str(ROOT), capture_output=True, text=True,
-            errors="replace", timeout=cap
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return len(targets)
-    if out.returncode not in (0, NO_TESTS_COLLECTED):
-        return len(targets)
-
-    node_paths = {line.strip().split("::", 1)[0].replace("\\", "/")
-                  for line in (out.stdout or "").splitlines()
-                  if "::" in line}
-    node_paths.discard("")
-    holds_a_test = set()
-    for node in node_paths:
-        owners = [t for t in targets
-                  if t.as_posix() == node or t.as_posix().endswith("/" + node)]
-        if len(owners) != 1:
-            return len(targets)
-        holds_a_test.add(owners[0])
-    return sum(1 for t in targets if t not in holds_a_test)
-
-
 def lane_tests(paths: list[Path],
-               timeout: int) -> tuple[list[str], int, int, int, int, int]:
-    """Run the matched tests, minus the ones marked slow.
+               timeout: int) -> tuple[list[str], int, int, int, int]:
+    """Run the matched tests.
 
-    Returns (failures, test files run, contract files skipped, tests deselected,
-    files that collected nothing, files left unmeasured).
-
-    The annotation said four values while the body returned five, which is the
-    kind of stale contract nothing checks.
+    Returns (failures, test files run, contract files skipped, files that collected nothing, files left unmeasured).
 
     A run that never finished reports `tests_run=0` and counts its files as
     unmeasured. Until 2026-08-29 both non-completion paths, the wall-clock
@@ -648,25 +552,17 @@ def lane_tests(paths: list[Path],
     Stop hook rendered "a failure here is almost always real" over it. A number
     for work that did not happen is worse than no number.
 
-    `-m "not slow"` is the difference between a check that runs at the end of
-    every turn and one the operator learns to dread. Measured 2026-08-22: an edit
-    to `.claude/hooks/checkpoint-offer.py` matched a checkpoint/unattended set
-    whose tests sleep for real - 122s over 273 tests, one of them 22.8s alone -
-    and the Stop hook duly sat there for about a minute after every answer. Those
-    tests are not wrong; they are timing tests, and a timing test that does not
-    wait proves nothing. They belong to `scripts/run-tests.py`, which runs once
-    per push and where a minute is affordable. The count comes back so the drop
-    can be named rather than swallowed.
+    The lane runs every matched test. The `-m "not slow"` filter and its deselection count were removed 2026-11-16 (HOS-364) because the `slow` marker was dropped from pyproject.toml in aae0db09 and, under --strict-markers, the filter made pytest refuse to run.
     """
     picked = matching_tests(paths)
     targets = [t for t in picked if not is_contract(t)]
     skipped = len(picked) - len(targets)
     if not targets:
-        return [], 0, skipped, 0, 0, 0
+        return [], 0, skipped, 0, 0
     parallel = len(targets) >= PARALLEL_FILE_THRESHOLD
     args = [
         PYTHON, "-m", "pytest", "-q", "-p", "no:randomly",
-        "-m", "not slow", "--no-header", "-x",
+        "--no-header", "-x",
         # PARALLEL above PARALLEL_FILE_THRESHOLD only. Serial did not fit the
         # hook budget at campaign size (2026-08-31: 40 files serial 25.95s,
         # parallel 18.90s), while xdist worker start-up costs about seven
@@ -703,36 +599,20 @@ def lane_tests(paths: list[Path],
         return [
             f"the matched tests did not finish in {timeout}s "
             f"({len(targets)} file(s)); run them yourself or raise --timeout"
-        ], 0, skipped, 0, 0, len(targets)
+        ], 0, skipped, 0, len(targets)
     except OSError as e:
-        return [f"pytest could not run: {e}"], 0, skipped, 0, 0, len(targets)
+        return [f"pytest could not run: {e}"], 0, skipped, 0, len(targets)
     body = (out.stdout or "") + (out.stderr or "")
-    dropped = _deselected(body, parallel=parallel)
-    # Exit 5 is "no tests collected", and in NO form of it did a test fail.
-    # Two causes reach it: the marker expression deselected everything (the
-    # ordinary outcome for an all-slow file), or a matched file collected
-    # nothing at all - a test file created empty at the start of a TDD slice,
-    # or one holding only helpers. Requiring `dropped` conflated the two and
-    # blocked the turn on the second, which is the exact false block this lane
-    # exists to avoid. The second case is reported instead, because a matched
-    # file that ran nothing is an exclusion, and a silent exclusion reads as
+    # Exit 5 means no matched file collected a test. That is reported as
+    # `collected_nothing`, not as a failure, because a silent exclusion reads as
     # coverage.
-    #
-    # The two causes are NOT exclusive, which `0 if dropped else len(targets)`
-    # assumed. A matched set holding one all-slow file and one file with no test
-    # in it exits 5 with `dropped >= 1`, and that expression then reported zero
-    # empties, so the file that ran nothing went completely unnamed. MEASURED
-    # 2026-08-30 over exactly that pair. `_files_holding_no_test` resolves the
-    # split by collecting without the marker filter instead of guessing from
-    # `dropped`.
     if out.returncode == NO_TESTS_COLLECTED:
-        return ([], len(targets), skipped, dropped,
-                _files_holding_no_test(targets, timeout), 0)
+        return [], len(targets), skipped, len(targets), 0
     if out.returncode != 0:
         tail = [ln for ln in body.strip().splitlines() if ln.strip()][-12:]
         return (["\n".join(tail) or f"pytest exited {out.returncode}"],
-                len(targets), skipped, dropped, 0, 0)
-    return [], len(targets), skipped, dropped, 0, 0
+                len(targets), skipped, 0, 0)
+    return [], len(targets), skipped, 0, 0
 
 
 def _out_of_budget(budget: int, lane: str, files: int, foreign: int,
@@ -760,7 +640,7 @@ def _out_of_budget(budget: int, lane: str, files: int, foreign: int,
                      f"a longer --timeout"],
         "files": files, "tests_run": 0, "skipped_foreign": foreign,
         "scope_unknown": not scope_known, "skipped_contract": 0,
-        "deselected_slow": 0, "collected_nothing": 0, "unmeasured": files,
+        "collected_nothing": 0, "unmeasured": files,
     }
 
 
@@ -824,14 +704,13 @@ def _run_lanes(timeout: int, use_cache: bool, transcript) -> dict:
         failures, lane = lane_import(paths), "import"
     tests_run = 0
     skipped_contract = 0
-    deselected_slow = 0
     collected_nothing = 0
     unmeasured = 0
     if not failures:
         if _spent():
             return _out_of_budget(timeout, "tests", len(paths), foreign,
                                   scope_known)
-        (failures, tests_run, skipped_contract, deselected_slow,
+        (failures, tests_run, skipped_contract,
          collected_nothing, unmeasured) = lane_tests(paths, timeout)
         lane = "tests"
 
@@ -841,7 +720,6 @@ def _run_lanes(timeout: int, use_cache: bool, transcript) -> dict:
                 "skipped_foreign": foreign,
                 "scope_unknown": not scope_known,
                 "skipped_contract": skipped_contract,
-                "deselected_slow": deselected_slow,
                 "collected_nothing": collected_nothing,
                 "unmeasured": unmeasured}
 
@@ -849,7 +727,6 @@ def _run_lanes(timeout: int, use_cache: bool, transcript) -> dict:
     return {"status": "pass", "files": len(paths), "tests_run": tests_run,
             "skipped_foreign": foreign, "scope_unknown": not scope_known,
             "skipped_contract": skipped_contract,
-            "deselected_slow": deselected_slow,
             "collected_nothing": collected_nothing,
             "unmeasured": unmeasured}
 
@@ -884,35 +761,8 @@ def _contract_note(result: dict) -> str:
             f"until the slice implements them]{RESET}")
 
 
-def _slow_note(result: dict) -> str:
-    """The timing tests this lane hands to the full suite. Named for the same
-    reason as the two notes above: an exclusion nobody can see reads as
-    coverage."""
-    count = result.get("deselected_slow") or 0
-    if count == DESELECTED_UNKNOWN:
-        # The parallel lane. Saying nothing here would be the exact defect this
-        # note exists to prevent, one level up: the exclusion is still happening,
-        # only the COUNT is unreadable, so name the state instead of the number.
-        return (f" {GRAY}[slow test(s) deselected here, count unavailable "
-                f"under the parallel lane: run `python scripts/run-tests.py` "
-                f"for those]{RESET}")
-    if not count:
-        return ""
-    return (f" {GRAY}[{count} slow test(s) not run here: "
-            f"run `python scripts/run-tests.py` for those]{RESET}")
-
-
 def _empty_note(result: dict) -> str:
-    """The matched files that collected no test at all.
-
-    Same reason as the three notes above, and one more: pytest answers exit 5
-    for this, which the lane used to read as a failure and block the turn on.
-    Not failing it must not mean saying nothing about it, or a `test_*.py` that
-    holds no test reads as a passing lane.
-
-    The count comes from `_files_holding_no_test`, so it names files with no
-    test in them and not files whose tests were merely deselected; `_slow_note`
-    reports those separately."""
+    """The matched files that collected no test at all. Pytest answers exit 5 for this, which the lane once read as a failure; not failing it must not mean saying nothing about it, or a test_*.py that holds no test reads as a passing lane. Every matched file is counted, because exit 5 means none of them collected a test."""
     count = result.get("collected_nothing") or 0
     if not count:
         return ""
@@ -935,7 +785,7 @@ def _unmeasured_note(result: dict) -> str:
 
 
 def _notes(result: dict) -> str:
-    return (_foreign_note(result) + _contract_note(result) + _slow_note(result)
+    return (_foreign_note(result) + _contract_note(result)
             + _empty_note(result) + _unmeasured_note(result))
 
 

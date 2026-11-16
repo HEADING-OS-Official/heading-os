@@ -238,30 +238,6 @@ def main() -> int:
     if contract:
         exclusions.append(f"{contract} frozen-contract file(s) not run: red by "
                           f"design until the slice implements them")
-    slow = result.get("deselected_slow") or 0
-    if slow < 0:
-        # The checker's sentinel for "the count could not be read at all".
-        # `DESELECTED_UNKNOWN` is -1 in `scripts/turn-check.py`, returned when
-        # the lane ran under `-n auto`: xdist prints no deselection summary, so
-        # the number is unavailable while the exclusion is still happening. The
-        # checker's own renderer (`_slow_note`) has always said that in words;
-        # this hook read the value as a count and printed "-1 slow test(s) not
-        # run here" to the operator. MEASURED 2026-09-01 by driving the real
-        # hook over a failing result carrying `deselected_slow: -1`: that
-        # sentence appeared verbatim in the block message. A negative count is
-        # not a smaller claim, it is a nonsense one, and the honest answer here
-        # is the state rather than the number
-        # (obligation 3, `.claude/rules/scope-claims.md`).
-        #
-        # Reached whenever a campaign-sized changed set fails: the parallel lane
-        # starts at 20 matched files, which the 2026-08-31 run passed on its way
-        # from 74 to 111.
-        exclusions.append("an unknown number of slow test(s) not run here: the "
-                          "parallel lane reports no deselection count, so run "
-                          "`python scripts/run-tests.py` for those")
-    elif slow:
-        exclusions.append(f"{slow} slow test(s) not run here: run "
-                          f"`python scripts/run-tests.py` for those")
     if unmeasured:
         exclusions.append(f"{unmeasured} matched file(s) left unmeasured: the "
                           f"lane did not finish, so nothing about them is known")

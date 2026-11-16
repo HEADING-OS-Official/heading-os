@@ -514,6 +514,7 @@ SERVICE_FAMILIES: tuple[ServiceFamily, ...] = (
     _timer_family("backup-pull", False, "pulls a backup repository from the operator's own database server; a fresh install has none"),
     _timer_family("chronicle"),
     _timer_family("council-models-check", installer="install-council-models-timer.sh"),
+    _timer_family("dashboard-telegram", False, "sends one operator's morning dashboard to his own Telegram; opt-in, a fresh install does not send it"),
     _timer_family("daemon-watchdog"),
     _timer_family("datastore-map"),
     _timer_family("dream-shadow"),

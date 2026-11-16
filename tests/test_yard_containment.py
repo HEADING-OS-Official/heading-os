@@ -1850,13 +1850,14 @@ def test_the_bootstrap_never_types_its_launch_line_into_an_occupied_pane(
         tmp_path, "claude" if occupant == "pane-agent" else None)
     squatter = None
     if occupant == "claude-process":
-        # A process whose argv[0] is `claude`, standing in the checkout. A copy
-        # of `sleep`, because this repository uses no symlinks.
-        binary = tmp_path / "bin" / "claude"
-        binary.parent.mkdir()
-        binary.write_bytes(Path("/bin/sleep").read_bytes())
-        binary.chmod(0o755)
-        squatter = subprocess.Popen(["claude", "30"], executable=str(binary), cwd=str(fake))
+        # A process whose argv[0] is `claude`, standing in the checkout: bash
+        # run under that name, blocked on a builtin `read` so it has no child.
+        # Not a copy of `sleep`: a multi-call coreutils (uutils, Ubuntu 26
+        # runners) dispatches on argv[0], printed "coreutils: unknown program
+        # 'claude'" and exited before the scan (MEASURED 2026-11-16, CI run
+        # 43860920721), so the test saw a free pane.
+        squatter = subprocess.Popen(["claude", "-c", "read -t 30 _"], executable="/bin/bash",
+                                    cwd=str(fake), stdin=subprocess.PIPE)
     try:
         result = _bootstrap(fake, env)
     finally:
