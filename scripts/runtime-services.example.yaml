@@ -52,6 +52,7 @@ services:
   clip: "clip.py: the last clipboard grab"
   docparse: "docparse.py: extracted-document cache"
   design: "design-studio.py: intermediate HTML before screenshot or PDF"
+  fig-design: "fig-design.py: the decoded node tree of a Figma .fig file (rebuildable from the .fig) and its intermediate SVG and HTML renders"
   implement: "implement-trajectory-log.py: per-run trajectory event streams and their lock"
   action-queue: "action-queue.py, the Action Queue store (queue.json, disposition-log.jsonl) and dead_letter.py's failed-send payloads"
   mullvad: "mullvad-fastest.py: relay latency benchmarks"

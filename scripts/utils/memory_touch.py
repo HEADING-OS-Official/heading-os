@@ -226,7 +226,7 @@ def touch_if_stale(raw_path: str, auto_memory_dir: Path, today: str) -> int | No
     hard timeout would cost more than the count it protects.
     """
     resolved = _resolve(raw_path, auto_memory_dir)
-    meta, _ = parse_frontmatter(resolved.read_text(encoding="utf-8"))
+    meta, _ = parse_frontmatter(resolved.read_text(encoding="utf-8"), source=str(resolved))
     nested = meta.get("metadata")
     nested = nested if isinstance(nested, dict) else {}
     last = str(nested.get("last_accessed") or meta.get("last_accessed") or "").strip()

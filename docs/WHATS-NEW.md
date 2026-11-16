@@ -2,9 +2,67 @@
 
 This page lists what the Official distribution gained since its first release, newest first. Each entry says what changed for you and, where it matters, what you do about it.
 
-The current version is HEADING OS 3.1. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.1.1`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
+The current version is HEADING OS 3.2. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.2.0`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
 
 To move an existing installation to a newer release, follow "Update" in `INSTALL.md`.
+
+## 3.2.0 (2026-11-16)
+
+Tagged `v3.2.0`; `install.sh` installs it. New tools for design files and for watching a push, a new status line and context bar, two Hindsight parts that update themselves, and every dependency brought up to date. Every command from 3.1.4 still works.
+
+What you do:
+
+- Check your Python: 3.11.5 or newer is now required (`python3 --version`). Before, 3.11.0 was enough.
+- After updating, run `uv sync --all-extras` and `.venv/bin/playwright install chromium` in the engine folder, so the new library versions and the matching browser are in place. On Linux, Playwright 1.65 needs the system library `libatomic.so.1` (the `libatomic1` package on Debian and Ubuntu).
+- Run `bash scripts/setup-platform.sh` once, so the status line picks up its new refresh setting.
+
+### New: read and render Figma design files
+
+`scripts/fig-design.py <name> <command>` opens a Figma `.fig` design-system file kept in your data repository (`<name>` is its data registry name) and works with it from the terminal. `info` prints its counts and fonts; `render` turns frames into SVG and PNG pictures; `shells` draws empty app screens; `kit` writes the design tokens as `tokens.css` and a plain-text list of components; `shot` turns SVG or HTML files into PNG. A `.fig` file is treated as untrusted: nothing from it is written to your disk, every size is capped, and a damaged or hostile file ends with one plain line and exit 2 instead of a crash.
+
+### New: see a push while it runs
+
+`scripts/push-all.py` now records each step as it goes (checks, commit, push and tests, per repository). The status line under the prompt shows a short bar: which step of how many, how long it has run, and how long is left, estimated from your last five pushes. When it ends, the result stays there for ten minutes. `scripts/push-progress.py` prints the same line in any terminal. Each run also sends you two Telegram messages, at the start and at the end, to your own notification chat only; `--no-notify` turns them off. If anything about the progress record fails, the push itself carries on exactly as before.
+
+### New: a status line that tells you where you are
+
+The line under the prompt now has two rows. The first shows whether this session is HELM or a yard, the folder and branch when they are not the obvious ones, whether unattended mode is on with two counters (rounds it continued on its own, and context resets it sent), the Lific issue in work, how many yards are open and how many wait for you, the state of each repository and the model. When unattended work is paused for your answer, the badge turns yellow. The second row names the yards waiting for you, and the push bar sits under it while a push runs. Nothing is cut off: a long row wraps. Drawing the line never waits on git, Lific or Herdr; a helper reads them in the background at most every 30 seconds.
+
+### New: find broken headers in your notes
+
+`scripts/check-frontmatter.py` lists every Markdown file in your data repository, and every skill file, whose header (the block between `---` lines at the top) is not valid YAML. It only reads; it changes nothing. Until now such a header was read partly and silently, so a field such as `metadata.type` could vanish without a word. Now the reader also writes a warning naming the file, and a bad date or an unknown tag in a header no longer stops it with an error.
+
+### New: Hindsight keeps two of its parts up to date
+
+The update manager now installs new releases of the Hindsight command-line tool and the Hindsight coding-agents plugin by itself. Each update checks the download's checksum, keeps a backup, checks the result, and puts the backup back if anything fails. The CLI waits until your Hindsight server already runs the matching version. The Hindsight server and its web console are still only watched: their updaters ship too, but they work on a separate server reached over ssh (`HINDSIGHT_ADMIN_SSH_HOST` in `.env`), so on a standard install you update those two by hand as before.
+
+### Changed: the context bar
+
+The band above the prompt shows what fills Claude's working memory, by kind: the fixed part, skills, memory files and messages. It now measures against the whole window and marks four points on it: where to pay attention, where `/second-wind` saves and resets, where Claude Code would compact on its own, and the end of the window. On the right it says how many turns are left before `/second-wind` at your current pace. Labels sit on their own rows and never cover the bar, and the bar never runs past the edge of a narrow terminal.
+
+### Changed: libraries brought up to date
+
+Every library the engine uses is on its current release, including the big jumps: anthropic 2.8, openai 3.49, langfuse 5.2, ruff 0.17, playwright 1.65, fastapi 0.162 and pymdown-extensions 13.1. With the new Anthropic library, requests to Claude models no longer send a `temperature` setting, which that version of the API refuses. This is why Python 3.11.5 is now the minimum.
+
+### Fixed
+
+- Exchange calendar sync failed completely when one meeting had an attendee without an email address, such as a room. It now uses the attendee's name, or leaves the attendee out.
+- Langfuse traces lost their trace id and their vendor, model, skill and fallback tags after the langfuse 5 update, with no visible error. They carry them again.
+- The hourly memory index refresh could fail because it walked into the engine's runtime store. It now skips that store at every level.
+- A session started in a subfolder of the engine wrote its checkpoint file inside the engine folder, where the commit guard then refused it. It now keeps it where the engine root keeps it.
+- The unit drift check told you to re-run the installer for services the installer deliberately leaves alone. It now marks them `[adopted]`.
+
+## 3.1.4 (2026-11-04)
+
+The installer asks for your consent before its first change, can be paused and stopped, and reports what a removal took away. macOS support: Hindsight runs under launchd, the time zone is set before the first timer, and a free-space check runs first.
+
+## 3.1.3 (2026-11-03)
+
+A new installer. `install.sh` starts one resumable installer that sets up and wires every module (Lific, Herdr, CLIProxyAPI, Hindsight, the local search index, Exchange and Google mail and calendar), with a progress window and the setup wizard inside Herdr. One service layer installs every background job on systemd or launchd, `doctor` checks every component end to end, and the `heading` command opens Claude in the engine. Secrets are typed into a hidden terminal prompt, never into the chat. Also new: the HEADING OS Admin Console, one page linking every web interface and the guides, and the context bar above the prompt.
+
+## 3.1.2 (2026-11-01)
+
+Your own Telegram chat can receive files, through the same allowlist as notifications. The outbound wall also covers MCP sends, shares and deletes, Exchange invites and mail deletion. Branch review uses a voting panel of reviewers. Several status reports and background waiters were fixed.
 
 ## 3.1.1 (2026-10-30)
 

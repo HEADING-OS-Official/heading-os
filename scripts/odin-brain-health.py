@@ -141,7 +141,7 @@ def parse_frontmatter(filepath):
               f"({type(exc).__name__}: {exc}); it is absent from every count "
               f"in this report.", file=sys.stderr)
         return None
-    data, _ = _parse_frontmatter_text(text)
+    data, _ = _parse_frontmatter_text(text, source=str(filepath))
     if not data:
         return None
     return data

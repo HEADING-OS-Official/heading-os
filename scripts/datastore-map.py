@@ -153,16 +153,18 @@ def _walk(root: Path) -> list[Path]:
     The skip set is imported from `heading_os_2.manifest` rather than restated,
     because a map that counts a directory the migration never classifies would
     report an unclassified bucket that is an artifact of two lists disagreeing.
+    The runtime store is pruned by its registry name at its root-relative
+    address, at every level (`runtime_dir.prune_store`), because it is nested
+    since HOS-241 and a root-level name match never reached it (HOS-345).
     """
-    from scripts.utils.runtime_dir import store_dirname
+    from scripts.utils.runtime_dir import prune_store, store_dirname
 
     store = store_dirname(Path(root))
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
                        if d not in SKIP_DIRS and not d.startswith(".memory-index")]
-        if os.path.relpath(dirpath, root) == ".":
-            dirnames[:] = [d for d in dirnames if d != store]  # the store, by its registry name
+        prune_store(dirnames, dirpath, root, store)
         for name in filenames:
             out.append(Path(dirpath) / name)
     return out

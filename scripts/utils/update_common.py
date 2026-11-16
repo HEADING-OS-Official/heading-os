@@ -42,6 +42,9 @@ def resolve_current(comp: Component) -> str:
       venv nobody measured as up to date.
     - `claude_plugins`: `"<n> outdated"` for the Claude Code plugins, from the
       two local files Claude Code itself keeps; see `claude_plugins_outdated`.
+    - `script`: run `current.script` (a path inside the engine) with the
+      engine's venv Python and `current.args`, list arguments, 120 s; the
+      first output line, "" on any failure, like `shell` (HOS-359).
     """
     # Every failure inside here is "unknown", which is what "" means. Only
     # TimeoutExpired was caught once, so two ordinary config-data faults
@@ -61,7 +64,29 @@ def resolve_current(comp: Component) -> str:
     if via == "claude_plugins":
         return claude_plugins_outdated(Path(comp.current.get("plugins_dir")
                                             or Path.home() / ".claude" / "plugins"))
+    if via == "script":
+        return _script_probe(comp.current.get("script", ""), comp.current.get("args") or [])
     return ""
+
+
+def _script_probe(script: str, args: list) -> str:
+    """The first output line of an engine script run with the venv Python, or ""."""
+    if not isinstance(script, str) or not script or not isinstance(args, list) \
+            or not all(isinstance(a, str) for a in args):
+        return ""
+    path = (ENGINE_ROOT / script).resolve()
+    if not path.is_relative_to(ENGINE_ROOT.resolve()) or not path.is_file():
+        return ""
+    try:
+        res = subprocess.run([str(ENGINE_ROOT / ".venv" / "bin" / "python"), str(path), *args],
+                             capture_output=True, text=True, errors="replace", timeout=120,
+                             check=False, cwd=str(ENGINE_ROOT))
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    out = res.stdout.strip()
+    if res.returncode != 0 or not out:
+        return ""
+    return out.splitlines()[0].strip()
 
 
 def _outdated_count(cmd: str) -> str:

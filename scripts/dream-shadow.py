@@ -63,7 +63,7 @@ def _memory_meta(path: Path) -> tuple[str, int, str]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "", 0, ""
-    meta, _ = parse_frontmatter(text)
+    meta, _ = parse_frontmatter(text, source=str(path))
     nested = meta.get("metadata")
     nested = nested if isinstance(nested, dict) else {}
     mem_type = str(meta.get("type") or nested.get("type") or "")

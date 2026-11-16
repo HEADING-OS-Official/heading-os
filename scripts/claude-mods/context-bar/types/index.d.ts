@@ -3,6 +3,9 @@ declare module 'claude-code' {
     'context-bar': {
       isBandOn: boolean
       figures: SessionContextBreakdown | null
+      window: number | null
+      tokens: number | null
+      history: { total: number; messages: number }[]
     }
   }
 }

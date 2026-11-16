@@ -467,6 +467,24 @@ def store_dirname(data_root: Path | None = None) -> str:
         raise ServicesConfigMalformed(str(exc)) from exc
 
 
+def prune_store(dirnames: list[str], dirpath, data_root: Path, store: str) -> None:
+    """Remove the runtime store from an `os.walk` `dirnames` list, IN PLACE.
+
+    `store` is what `store_dirname(data_root)` answers, and it may be several
+    segments (nested since HOS-241), so a name compared with it never matches:
+    the comparison is by the child's address relative to `data_root`. Both sides
+    are resolved first, so a relative or symlinked `dirpath` from an explicit
+    target compares correctly. A `dirpath` outside `data_root` prunes nothing;
+    every other name keeps its place in the list.
+    """
+    base = Path(data_root).resolve()
+    here = Path(dirpath).resolve()
+    if not here.is_relative_to(base):
+        return
+    dirnames[:] = [d for d in dirnames
+                   if (here / d).relative_to(base).as_posix() != store]
+
+
 def default_store_dirname() -> str:
     """The name the ENGINE's default registry gives the store: `runtime-junk`, unless the default changes."""
     from scripts.utils.data_path import RegistryMalformed, template_store_dirname
@@ -570,6 +588,6 @@ __all__ = [
     "ServicesConfigMalformed", "UnknownKind", "UnknownService",
     "default_store_dirname", "example_services_block", "ensure_store_root",
     "example_services_path", "example_services_text", "known_services",
-    "load_services", "runtime_root", "seed_services",
+    "load_services", "prune_store", "runtime_root", "seed_services",
     "services_path", "store_dirname", "store_ignore_problems", "template_services",
 ]

@@ -1423,10 +1423,12 @@ def exchange_sync_state(now: float | None = None) -> dict:
     return exchange_sync_from_log(log, unit_present, now)
 
 
-def classify_unit_drift(drifted: list[str] | None) -> dict:
+def classify_unit_drift(drifted: list[str] | None, adopted: list[str] | None = None) -> dict:
     """Pure: installed user units whose DIRECTIVES differ from their template -> signal dict.
 
     `drifted` None means the survey could not run: not due, and the summary says so.
+    `adopted` names units the installer adopts and leaves as it is (HOS-354): named
+    in the summary, never counted as drift, never due.
     A drifted unit is re-rendered by re-running its installer (engine audit K3-1,
     2026-10-16: a unit installed before its template gained `Environment=TZ=`
     ran on the host zone with nothing reporting it).
@@ -1435,8 +1437,13 @@ def classify_unit_drift(drifted: list[str] | None) -> dict:
         return {"key": "unit_drift", "value": None, "threshold": 0, "due": False,
                 "severity": "ok", "tier": "B",
                 "summary": "unit drift: not checked (survey failed)"}
-    summary = ("unit drift: " + ", ".join(sorted(drifted)) + " (re-run the installer)"
-               if drifted else "unit drift: none")
+    left = ", ".join(sorted(adopted or []))
+    if drifted:
+        summary = "unit drift: " + ", ".join(sorted(drifted)) + " (re-run the installer)"
+        if left:
+            summary += f"; adopted, left as installed: {left}"
+    else:
+        summary = f"unit drift: none (adopted, left as installed: {left})" if left else "unit drift: none"
     return {"key": "unit_drift", "value": sorted(drifted), "threshold": 0,
             "due": bool(drifted), "severity": "warn" if drifted else "ok",
             "tier": "B", "summary": summary}
@@ -1460,7 +1467,10 @@ def unit_drift_state(engine_root: Path) -> dict:
         return classify_unit_drift(None)
     return classify_unit_drift([r["unit"]
                                 for r in result["results"]
-                                if r.get("verdict") == "directive-drift"])
+                                if r.get("verdict") == "directive-drift"],
+                               [r["unit"]
+                                for r in result["results"]
+                                if r.get("verdict") == "adopted"])
 
 
 # ============================================================

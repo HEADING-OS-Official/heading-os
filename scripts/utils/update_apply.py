@@ -89,8 +89,10 @@ def _default_applier(comp: Component) -> Callable[[], None]:
             subprocess.run(["bash", "-c", comp.apply["cmd"]], check=True, timeout=600)
         elif "script" in comp.apply:
             root = Path(__file__).resolve().parent.parent.parent
+            # A script may need longer than the default (the Hindsight server
+            # build, backup and migration, HOS-359): the registry's `timeout_s`.
             subprocess.run([sys.executable, str(root / comp.apply["script"])],
-                          check=True, timeout=900)
+                          check=True, timeout=int(comp.apply.get("timeout_s", 900)))
         else:
             raise ValueError(f"{comp.name}: apply block has neither cmd nor script")
     return _run

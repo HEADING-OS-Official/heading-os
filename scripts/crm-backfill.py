@@ -107,14 +107,14 @@ def load_cards():
         if not C.is_contact_file(path):
             continue
         text = path.read_text(encoding="utf-8")
-        fm, _ = parse_frontmatter(text)
+        fm, _ = parse_frontmatter(text, source=str(path))
         if not fm:
             continue
         ent, ent_path = {}, None
         if fm.get("entity_ref"):
             ent_path = ab / f"{fm['entity_ref']}.md"
             if ent_path.exists():
-                ent, _ = parse_frontmatter(ent_path.read_text(encoding="utf-8"))
+                ent, _ = parse_frontmatter(ent_path.read_text(encoding="utf-8"), source=str(ent_path))
         addrs = {str(fm.get(k) or "") for k in ("email", "secondary_email")}
         addrs.add(str((ent or {}).get("canonical_email") or ""))
         addrs |= set(frontmatter_list((ent or {}).get("other_emails")))
@@ -345,7 +345,7 @@ def apply(r, today):
     for addr, slug in r["aliases"].items():
         path = r["cards"][slug]["entity_path"]
         text = path.read_text(encoding="utf-8")
-        fm, _ = parse_frontmatter(text)
+        fm, _ = parse_frontmatter(text, source=str(path))
         oe = frontmatter_list(fm.get("other_emails"))
         if addr not in [x.lower() for x in oe]:
             atomic_write(path, set_frontmatter_field(text, "other_emails", json.dumps(oe + [addr])))

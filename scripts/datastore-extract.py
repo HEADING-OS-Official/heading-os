@@ -79,7 +79,7 @@ from scripts.utils.atomic import atomic_write_text
 from scripts.utils.colors import GREEN, YELLOW, RED, BOLD, RESET
 from scripts.utils.data_path import data_path
 from scripts.utils.excluded_dirs import NAMES as SHARED_EXCLUDED_NAMES
-from scripts.utils.runtime_dir import store_dirname
+from scripts.utils.runtime_dir import prune_store, store_dirname
 from scripts.utils.data_homes import homes
 from scripts.utils.ocr import OCR_LANGUAGE
 from scripts.utils.workspace import get_default_tz, get_data_root
@@ -885,8 +885,11 @@ def document_roots() -> tuple[Path, ...]:
     name-ordered walk, so nothing here names them.
 
     Outside, as before: the runtime store (caches and scratch, under its
-    registry name), and whatever `_skip_dir` prunes, which is dot directories,
-    archives and the shared exclusions.
+    registry name) when it is a single top-level directory, and whatever
+    `_skip_dir` prunes, which is dot directories, archives and the shared
+    exclusions. A store nested inside a root (`store_dirname` answers several
+    segments, since HOS-241) matches no name here; `find_documents` prunes it
+    at its root-relative address instead.
     """
     root = get_data_root()
     store = store_dirname(root)
@@ -895,11 +898,23 @@ def document_roots() -> tuple[Path, ...]:
 
 
 def find_documents(scan_dirs) -> list:
-    """Every document under `scan_dirs`, pruning what `_skip_dir` names."""
+    """Every document under `scan_dirs`, pruning what `_skip_dir` names.
+
+    The runtime store is pruned too, at its root-relative address at every
+    level (`runtime_dir.prune_store`), because a nested store is no top-level
+    name `document_roots` could leave out. MEASURED 2026-11-07 (HOS-345): the
+    walk entered a nested store, reached three deliberately broken fixtures in
+    checkout scratch and failed the hourly extraction. A walk reaching the store
+    from above skips it; a target that is itself inside the store is walked,
+    because the operator named it.
+    """
+    root = get_data_root()
+    store = store_dirname(root)
     found = []
     for top in scan_dirs:
         for dirpath, dirnames, filenames in os.walk(top):
             dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d))
+            prune_store(dirnames, dirpath, root, store)
             for name in filenames:
                 path = Path(dirpath) / name
                 if _is_document(path):

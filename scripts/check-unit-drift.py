@@ -69,6 +69,12 @@ A unit with no template at all is neither passed nor failed: it is an installed
 program this workspace talks to rather than a thing it renders, and it is listed
 as out of scope. The report prints how many there are on the machine it runs on.
 
+A unit the service layer ADOPTS is neither passed nor failed either: one listed
+by a family in `scripts/utils/schedule.py` that the installer leaves as it is
+(`is_adopted_unit`: no installer script, no service-layer marker), reported as
+`[adopted]` with no directive comparison, because re-running the installer, the
+advice for drift, does not touch it.
+
 Tests: none live since the 2026-09-21 test-suite split. The case that mattered
 was an installed unit still carrying a template the repository had since fixed,
 which is what this script exists to surface; the detection is unchanged, and the
@@ -84,6 +90,11 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.utils.schedule import family_of_unit, is_adopted_unit  # noqa: E402
+
 DEFAULT_TEMPLATES = ROOT / "scripts" / "templates" / "systemd"
 UNIT_SUFFIXES = (".service", ".timer", ".path", ".socket")
 TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
@@ -269,6 +280,15 @@ def survey(units_dir: Path, templates_dir: Path,
             errors.append(f"unreadable: {path}: {exc}")
             results.append(entry)
             continue
+        family = family_of_unit(path.name)
+        if family is not None and is_adopted_unit(family, path):
+            # The installer leaves an adopted unit as it is (HOS-354), so its
+            # differences from the template are not drift it would repair.
+            entry["verdict"] = "adopted"
+            entry["findings"] = []
+            entry["template"] = str(template)
+            results.append(entry)
+            continue
         entry.update(compare(template_text, disk_text))
         entry["template"] = str(template)
         results.append(entry)
@@ -279,7 +299,7 @@ def survey(units_dir: Path, templates_dir: Path,
 
 def counts(survey_result: dict[str, Any]) -> dict[str, int]:
     tally = {"match": 0, "comment-drift": 0, "directive-drift": 0,
-             "no-template": 0, "unreadable": 0}
+             "no-template": 0, "unreadable": 0, "adopted": 0}
     for entry in survey_result["results"]:
         tally[entry["verdict"]] = tally.get(entry["verdict"], 0) + 1
     tally["template-rendered"] = (tally["match"] + tally["comment-drift"]
@@ -329,6 +349,9 @@ def render(survey_result: dict[str, Any], installer_hint: bool = True) -> str:
             lines.append(f"  [skip] {entry['unit']} has no template here (out of scope)")
         elif verdict == "unreadable":
             lines.append(f"  [ERROR] {entry['unit']}: {entry['error']}")
+        elif verdict == "adopted":
+            lines.append(f"  [adopted] {entry['unit']} was not written by HEADING OS; "
+                         "the installer leaves it as it is")
         else:
             label = "STALE" if verdict == "comment-drift" else "DRIFT"
             lines.append(f"  [{label}] {entry['unit']} was rendered from an OLDER template")
@@ -347,7 +370,8 @@ def render(survey_result: dict[str, Any], installer_hint: bool = True) -> str:
     lines.append(
         f"  {tally['template-rendered']} template-rendered, {tally['match']} match, "
         f"{tally['directive-drift']} directive drift, {tally['comment-drift']} comment-only drift, "
-        f"{tally['no-template']} out of scope, {tally['unreadable']} unreadable")
+        f"{tally['no-template']} out of scope, {tally['unreadable']} unreadable"
+        + (f", {tally['adopted']} adopted" if tally["adopted"] else ""))
     if installer_hint and tally["directive-drift"]:
         lines.append("")
         lines.append("  A drifted unit is re-rendered by re-running its own installer, in HELM,")

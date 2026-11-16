@@ -155,7 +155,7 @@ def build_proposal(
         return {"ok": False, "error": f"principle unreadable: {e}"}
     slug = principle_file.stem
 
-    fm, body = parse_frontmatter(text)
+    fm, body = parse_frontmatter(text, source=str(principle_file))
     if fm.get("type") != "principle":
         return {"ok": False, "error": f"not a principle (type={fm.get('type')!r})"}
 

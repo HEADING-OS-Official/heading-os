@@ -20,7 +20,7 @@ VALID_TIERS = {"auto", "notify", "observed"}
 # `update_sources.latest_version` answer. A kind outside these sets used to be
 # accepted here and then answered "" on every run, which reads as a probe that
 # ran and found nothing rather than as the typo it is.
-CURRENT_KINDS = {"shell", "outdated_count", "claude_plugins"}
+CURRENT_KINDS = {"shell", "outdated_count", "claude_plugins", "script"}
 COUNT_KINDS = {"outdated_count", "claude_plugins"}
 LATEST_KINDS = {"github_release", "pypi", "npm", "https", "node_lts", "shell",
                 "zero_outdated"}
@@ -146,6 +146,15 @@ def load_registry(path: Path) -> list[Component]:
         if cur_via not in CURRENT_KINDS:
             raise RegistryError(
                 f"component {name!r}: current.via {cur_via!r} not in {sorted(CURRENT_KINDS)}")
+        if cur_via == "script":
+            script = body["current"].get("script")
+            args = body["current"].get("args", [])
+            if not isinstance(script, str) or not script:
+                raise RegistryError(
+                    f"component {name!r}: current.via script needs a `script` path")
+            if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+                raise RegistryError(
+                    f"component {name!r}: current.args must be a list of strings")
         if lat_via not in LATEST_KINDS:
             raise RegistryError(
                 f"component {name!r}: latest.via {lat_via!r} not in {sorted(LATEST_KINDS)}")

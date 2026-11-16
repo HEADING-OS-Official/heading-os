@@ -29,6 +29,7 @@ Langfuse Cloud chosen in the 2026-05-14 workspace deep audit (P2.1).
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import inspect
 import logging
@@ -38,6 +39,8 @@ from typing import Any, Callable
 from scripts.utils.sensitive import is_sensitive
 
 __all__ = ["observe", "is_enabled", "flush"]
+
+_log = logging.getLogger("scripts.utils.observability")
 
 
 def is_enabled() -> bool:
@@ -118,39 +121,85 @@ def _get_real_observe():
     return _langfuse_observe_cache or None
 
 
-def _stamp_trace_id() -> None:
-    """Best-effort: attach the X31C trace ID to the current Langfuse trace's
-    metadata so Langfuse traces correlate with our ``[trace_id]`` log lines.
+def _trace_id_context() -> "contextlib.AbstractContextManager[Any]":
+    """Best-effort: return a context that propagates the X31C trace ID to the
+    current Langfuse trace's metadata, so Langfuse traces correlate with our
+    ``[trace_id]`` log lines.
 
-    Runs from inside the observed function's span (a trace is active by then).
-    Never raises - observability must never break the traced call, and the
-    ``update_current_trace`` API may be absent on some SDK versions.
+    langfuse 5 has no ``update_current_trace``; the trace ID travels through
+    ``langfuse.propagate_attributes(metadata={"x31c_trace_id": tid})``, which
+    sets it on the currently active span and on every span created inside the
+    context. Returns ``contextlib.nullcontext()`` when ``X31C_TRACE_ID`` is
+    unset, or when importing or building the context raises (logged at debug):
+    observability must never break the traced call.
     """
     tid = os.environ.get("X31C_TRACE_ID")
     if not tid:
-        return
+        return contextlib.nullcontext()
     try:
-        from langfuse import get_client  # type: ignore[import-not-found]
+        from langfuse import propagate_attributes  # type: ignore[import-not-found]
 
-        get_client().update_current_trace(metadata={"x31c_trace_id": tid})
+        return propagate_attributes(metadata={"x31c_trace_id": tid})
     except Exception as exc:  # noqa: BLE001 - best-effort trace stamp; observability must never break the traced call
-        logging.getLogger("scripts.utils.observability").debug("trace stamp failed: %s", exc)
+        _log.debug("trace stamp failed: %s", exc)
+        return contextlib.nullcontext()
+
+
+def _enter_trace_id(stack: contextlib.ExitStack) -> None:
+    """Enter the trace-ID context on ``stack``; on failure log at debug and go on
+    without it, so the traced function still runs exactly once."""
+    try:
+        stack.enter_context(_trace_id_context())
+    except Exception as exc:  # noqa: BLE001 - best-effort trace stamp; observability must never break the traced call
+        _log.debug("trace stamp failed: %s", exc)
+
+
+def _close_trace_id(stack: contextlib.ExitStack, exc: BaseException | None) -> None:
+    """Exit the trace-ID context, handing it the traced function's exception if
+    one is propagating. An exit failure is logged at debug and never raised:
+    after a normal return the value is kept, and while the traced function's own
+    exception propagates, the caller re-raises that original exception
+    unchanged (a context that tries to suppress it is ignored)."""
+    try:
+        if exc is None:
+            stack.__exit__(None, None, None)
+        else:
+            stack.__exit__(type(exc), exc, exc.__traceback__)
+    except Exception as exit_exc:  # noqa: BLE001 - best-effort trace stamp; observability must never break the traced call
+        _log.debug("trace stamp failed: %s", exit_exc)
 
 
 def _apply(real, func, *dargs, **dkwargs):
-    """Wrap ``func`` so it stamps the X31C trace ID from within its span, then
-    apply the real Langfuse ``observe`` decorator to the wrapper. Preserves
-    async-ness so coroutine functions stay coroutines under tracing."""
+    """Wrap ``func`` so it runs inside the X31C trace-ID context
+    (``_trace_id_context``), then apply the real Langfuse ``observe`` decorator
+    to the wrapper, so the context sits inside the observed span. ``func`` runs
+    exactly once and its exceptions propagate unchanged; only entering and
+    exiting the context are guarded. Preserves async-ness so coroutine
+    functions stay coroutines under tracing."""
     if inspect.iscoroutinefunction(func):
         @functools.wraps(func)
         async def inner(*args, **kwargs):
-            _stamp_trace_id()
-            return await func(*args, **kwargs)
+            stack = contextlib.ExitStack()
+            _enter_trace_id(stack)
+            try:
+                result = await func(*args, **kwargs)
+            except BaseException as exc:
+                _close_trace_id(stack, exc)
+                raise
+            _close_trace_id(stack, None)
+            return result
     else:
         @functools.wraps(func)
         def inner(*args, **kwargs):
-            _stamp_trace_id()
-            return func(*args, **kwargs)
+            stack = contextlib.ExitStack()
+            _enter_trace_id(stack)
+            try:
+                result = func(*args, **kwargs)
+            except BaseException as exc:
+                _close_trace_id(stack, exc)
+                raise
+            _close_trace_id(stack, None)
+            return result
     if dargs or dkwargs:
         return real(*dargs, **dkwargs)(inner)
     return real(inner)
@@ -159,8 +208,10 @@ def _apply(real, func, *dargs, **dkwargs):
 def observe(*dargs, **dkwargs):
     """Lazy ``@observe`` - applies real Langfuse decorator on first decoration; no-op fallback.
 
-    R12: when active, the decorated function is wrapped so the X31C trace ID is
-    stamped onto the current Langfuse trace metadata at call time.
+    R12: when active, the decorated function runs inside
+    ``langfuse.propagate_attributes(metadata={"x31c_trace_id": ...})`` within its
+    observed span, so the X31C trace ID lands in the Langfuse trace metadata
+    (langfuse 5 removed ``update_current_trace``, which did this before).
     """
     if not is_enabled():
         return _noop_decorator(*dargs, **dkwargs)

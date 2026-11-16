@@ -206,11 +206,17 @@ def _tag_langfuse(result: LLMResult, skill_name: str) -> None:
     """Best-effort: tag the current Langfuse trace with vendor + fallback +
     downgrade signals.
 
+    Runs after the call, inside the caller's observed span. langfuse 5 has no
+    ``update_current_trace``: the tags go through
+    ``langfuse.propagate_attributes(tags=...)``, entered and left at once,
+    which sets them on the currently active span as trace tags; the metadata
+    goes onto that span through ``get_client().update_current_span``.
+
     Silent on any failure - observability stuttering must never crash a
     daemon tick.
     """
     try:
-        from langfuse import get_client  # type: ignore[import-not-found]
+        from langfuse import get_client, propagate_attributes  # type: ignore[import-not-found]
         tags = [
             f"vendor:{result.vendor}",
             f"model:{result.model_id}",
@@ -232,7 +238,9 @@ def _tag_langfuse(result: LLMResult, skill_name: str) -> None:
                 metadata["downgrade_signals"] = signals
                 if signals["downgrade_candidate"]:
                     tags.append("downgrade_candidate")
-        get_client().update_current_trace(tags=tags, metadata=metadata)
+        with propagate_attributes(tags=tags):
+            pass
+        get_client().update_current_span(metadata=metadata)
     except Exception as exc:  # noqa: BLE001 - best-effort Langfuse tagging; must never break the LLM call
         logger.debug("llm_fallback: Langfuse tagging failed: %s", exc)
 
@@ -266,8 +274,8 @@ def call_anthropic_with_fallback(
     Model-dependent parameters come from ``claude_models.request_params``:
     ``max_tokens`` is the size of the visible reply and is raised on a model
     that thinks; ``effort`` is required, so every caller decides it, and is
-    sent only where the model accepts it; ``temperature`` is sent to Anthropic
-    only where it does not raise a 400, and still reaches a fallback vendor.
+    sent only where the model accepts it; ``temperature`` is never sent to
+    Anthropic, and still reaches a fallback vendor.
     ``output_schema`` asks Anthropic for structured output; the fallback path
     has no schema, so the prompt must still ask for the same JSON in words and
     the caller keeps its text parser for that path.

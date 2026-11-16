@@ -307,7 +307,7 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
             "reset_sent_pane": pane, "second_wind_attempts": 0, "reset_refusals": 0}
     if command == HA.CLEAR_COMMAND:
         sent.update(clear_sent_at=now, clear_sent_pane=pane)
-    AU.persist(state_path, **sent)
+    AU.persist(state_path, _mutate=_count_second_wind, **sent)
     if command == HA.CLEAR_COMMAND:
         why = "nothing runs in the background; the next session receives the handoff"
     else:
@@ -316,6 +316,21 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
                       f"{command} sent through HERDR (pane {pane}): {why}."},
                      ensure_ascii=False))
     return True
+
+
+def _count_second_wind(fresh: dict) -> dict:
+    """One more /clear or /compact sent after a verified handoff (HOS-349).
+
+    Session-wide, carried across /clear by `CARRIED_KEYS` in
+    `checkpoint-inject.py`, never reset by a new stretch; the status line shows
+    it as `⟳N`. Not `second_wind_attempts`, which is an attempt budget.
+    """
+    try:
+        done = max(0, int(fresh.get("second_wind_total") or 0))
+    except (TypeError, ValueError):
+        done = 0
+    fresh["second_wind_total"] = done + 1
+    return fresh
 
 
 # The refusal for typing that drops a reset instead of recording a retry: the

@@ -323,7 +323,8 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "python3 -c \"import sys,runpy;from pathlib import Path;n='checkpoint-statusline.py';p=next((str(d/'.claude'/'hooks'/n) for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/n).is_file()),None)\nif p: sys.argv=[p]+sys.argv[1:]; runpy.run_path(p,run_name='__main__')\""
+    "command": "python3 -c \"import sys,runpy;from pathlib import Path;n='checkpoint-statusline.py';p=next((str(d/'.claude'/'hooks'/n) for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/n).is_file()),None)\nif p: sys.argv=[p]+sys.argv[1:]; runpy.run_path(p,run_name='__main__')\"",
+    "refreshInterval": 2
   },
   "env": {
     "CLAUDE_HANDOFF_SOFT_THRESHOLD": "45",

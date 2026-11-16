@@ -362,6 +362,15 @@ def state_root(project: Path) -> Path:
                 print(f"checkpoint: {project} is inside the data repository; "
                       f"keeping state with this checkout", file=sys.stderr)
                 return _state_dir_override() or checkout_state_root(engine_root())
+            if project.resolve().is_relative_to(engine_root()):
+                # A subdirectory of this clone is not a plugin bundle's project
+                # either. A session whose cwd was a mod's directory put its
+                # checkpoint and lock in `<that dir>/.claude/state`, inside the
+                # public engine tree (MEASURED 2026-11-08, HOS-350), and the
+                # engine-tree test refused the commit.
+                print(f"checkpoint: {project} is inside this clone; "
+                      f"keeping state with this checkout", file=sys.stderr)
+                return _state_dir_override() or checkout_state_root(engine_root())
             return default
     except OSError as exc:  # pragma: no cover - an unresolvable root is not fatal
         print(f"checkpoint: cannot resolve {project} ({exc}); "

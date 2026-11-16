@@ -104,7 +104,7 @@ def _load_principles(brain_root: Path | None) -> list[dict]:
             # in cp1251 is the ordinary way to hit it. "Never raises" has to
             # cover the decode as well as the read.
             continue  # skip an unreadable file; do not fail the whole query
-        fm, _body = parse_frontmatter(text)
+        fm, _body = parse_frontmatter(text, source=str(f))
         # `keywords:` with no value after it is valid YAML and parses to None,
         # so `.get("keywords", [])` returns None, not the default - the key is
         # present. `[str(k) for k in None]` then raises TypeError out of a

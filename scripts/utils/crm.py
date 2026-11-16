@@ -199,14 +199,14 @@ def owner_for_type(rel_type: str, owner_map: dict) -> str:
     return owner_map[max(prefixes, key=len)] if prefixes else ""
 
 
-def parse_frontmatter(content: str) -> dict:
+def parse_frontmatter(content: str, *, source: str | None = None) -> dict:
     """Parse YAML frontmatter from a contact file (string-coerced values).
 
     Thin wrapper that delegates to
     :func:`scripts.utils.markdown.parse_frontmatter_str` and drops the body.
     Preserves the historical crm-health.py contract: all values are strings.
     """
-    fm, _body = _parse_frontmatter(content)
+    fm, _body = _parse_frontmatter(content, source=source)
     return fm
 
 
@@ -492,7 +492,7 @@ def scan_contacts(config: dict, today=None, contacts_dir: Path | None = None,
                            "absent from CRM health and every count derived "
                            "from it", file_path, exc_info=True)
             continue
-        fm = parse_frontmatter(content)
+        fm = parse_frontmatter(content, source=str(file_path))
 
         if not fm.get("name") and not fm.get("entity_ref"):
             continue
@@ -717,7 +717,7 @@ def load_entity(slug: str, workspace_root: Path | None = None) -> dict | None:
                        "contact referencing it will be reported as a dangling "
                        "ref", entity_file, exc_info=True)
         return None
-    parsed = parse_frontmatter(text)
+    parsed = parse_frontmatter(text, source=str(entity_file))
     # `parse_frontmatter` returns `{}` for a file with no frontmatter block, and
     # `{}` is not None, so `scan_contacts`' dangling-ref branch never fired for
     # it: the contact was merged to nothing, failed the `if not fm.get("name")`
@@ -777,7 +777,7 @@ def contact_index_by_email(contacts_dir: Path | None = None,
 
     for card in sorted(Path(contacts_dir).glob("*.md")):
         try:
-            relationship, _body = _parse_frontmatter(card.read_text(encoding="utf-8"))
+            relationship, _body = _parse_frontmatter(card.read_text(encoding="utf-8"), source=str(card))
         except (OSError, UnicodeDecodeError):
             # `UnicodeDecodeError` is a `ValueError`, NOT an `OSError`, so a
             # single card that is not valid UTF-8 did not skip this iteration:

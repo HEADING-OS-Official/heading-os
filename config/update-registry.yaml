@@ -17,6 +17,11 @@
 # meets both, so none is `auto`. A binary a live service runs (lific, herdr)
 # carries no `apply` at all: replacing it changes a running process, which is
 # HELM's by hand. apt and snap need sudo, so they are watched only.
+# Hindsight is `auto` by the operator's decision of 2026-11-13 although a live
+# service depends on it, because each updater verifies what it installs, rolls
+# back code on its own before any database change, and after a migration
+# failure stops the server and notifies instead of guessing; the database is
+# never restored automatically.
 #
 # Paths are spelled out under $HOME because the timer runs under systemd with a
 # minimal PATH, and npm/node probes load nvm themselves for the same reason; a
@@ -400,10 +405,28 @@ components:
       via: zero_outdated
 
   hindsight-server:
-    # The Hindsight memory server, reached over the existing SSH tunnel. The
-    # version is asked of the server through its own CLI (`hindsight version`),
-    # which is the recorded route, rather than of a guessed HTTP path. Watched
-    # only: the server is upgraded on its host by hand.
+    # The Hindsight memory server. `auto` since 2026-11-13: the operator decided
+    # that day that Hindsight updates itself, server included, rather than
+    # being upgraded on its host by hand. The version is still asked of the
+    # server through its own CLI over the tunnel.
+    #
+    # scripts/updaters/hindsight_server_update.py runs, over the root ssh alias
+    # in `.env` HINDSIGHT_ADMIN_SSH_HOST, the steps of the two manual upgrades
+    # that ran clean (2026-10-23 and 2026-11-13): the tag's commit is resolved
+    # through the GitHub API and the clone refused unless HEAD equals it; the
+    # new tree is built beside the running one while the services keep
+    # running; the services are stopped only within 600 s of the start and
+    # never during a laptop sync pass; a pgBackRest diff backup is taken with
+    # nothing writing, and a failed backup starts the old services again; the
+    # migration runs with the new tree. Safe because every failure before the
+    # migration leaves or puts the old version running, and a failure at or
+    # after the migration stops both services and notifies the operator with
+    # the backup label instead of starting old code on a migrated schema; the
+    # database is never restored automatically. `timeout_s` 3000 covers the
+    # 600 s cutoff, every per-call limit after the stop (2021 s) and the
+    # notification with a margin; the script re-checks that sum right before
+    # the stop and answers "not now" when it does not fit. The script is its
+    # own health gate.
     tier: observed
     display: Hindsight server
     current:
@@ -413,11 +436,50 @@ components:
     latest:
       via: github_release
       repo: vectorize-io/hindsight
+    apply:
+      script: scripts/updaters/hindsight_server_update.py
+      timeout_s: 3000
+
+  hindsight-control-plane:
+    # The Hindsight web console, on the memory server under
+    # /opt/hindsight-cp/<version>/package. `auto` since 2026-11-13 by the
+    # operator's decision that Hindsight updates itself. `current` is read
+    # from the version path in its unit file over HINDSIGHT_ADMIN_SSH_HOST,
+    # because the console does not run on this laptop.
+    #
+    # scripts/updaters/hindsight_console_update.py waits until the server
+    # reports the same version, packs the npm release on the server, refuses
+    # it unless its sha512 equals the registry's `dist.integrity`, unpacks it
+    # beside the running tree, repoints the unit (backup kept) and restarts.
+    # Safe because a console that does not answer within 30 s gets its old
+    # unit back and is restarted, and the operator is notified; no old tree is
+    # deleted. `timeout_s` 1500 covers every per-call limit (850 s before
+    # the unit swap, 182 s after it) and the notification with a margin.
+    tier: observed
+    display: Hindsight web console
+    current:
+      via: script
+      script: scripts/updaters/hindsight_console_update.py
+      args: ["--print-current"]
+    latest:
+      via: npm
+      package: "@vectorize-io/hindsight-control-plane"
+    apply:
+      script: scripts/updaters/hindsight_console_update.py
+      timeout_s: 1500
 
   hindsight-cli:
-    # The release binary in ~/.local/bin, downloaded from the same repository's
-    # releases (the install log in the data repository records the asset URL).
-    tier: observed
+    # The release binary in ~/.local/bin. `auto` since 2026-11-13 by the
+    # operator's decision that Hindsight updates itself.
+    #
+    # scripts/updaters/hindsight_cli_update.py waits until the server reports
+    # the same version, downloads the release asset over https and refuses it
+    # unless its sha256 equals the digest in the GitHub release API, keeps the
+    # running binary under a dated backup name and installs by an atomic
+    # rename. Safe because the new binary must print its version and reach
+    # the server, and otherwise the kept binary is put back and the operator
+    # is notified.
+    tier: auto
     display: Hindsight CLI
     current:
       via: shell
@@ -426,24 +488,24 @@ components:
     latest:
       via: github_release
       repo: vectorize-io/hindsight
-
-  hindsight-control-plane:
-    # The Hindsight web console (HOS-312), unpacked from its npm package by
-    # scripts/utils/install_hindsight_console.py; exactly one version folder exists.
-    tier: observed
-    display: Hindsight web console
-    current:
-      via: shell
-      cmd: "cat $HOME/.local/share/heading-os/hindsight-control-plane/*/package.json"
-      regex: '"version":\s*"([^"]+)"'
-    latest:
-      via: npm
-      package: "@vectorize-io/hindsight-control-plane"
+    apply:
+      script: scripts/updaters/hindsight_cli_update.py
 
   hindsight-coding-agents:
-    # The Claude Code plugin behind the memory banner. Current is its own
-    # package.json, which also names the npm package and the repository.
-    tier: observed
+    # The Claude Code plugin behind the memory banner, versioned on its own.
+    # Current is its own package.json. `auto` since 2026-11-13 by the
+    # operator's decision that Hindsight updates itself.
+    #
+    # scripts/updaters/hindsight_plugin_update.py packs the npm release into
+    # scratch and refuses it unless its sha512 equals the registry's
+    # `dist.integrity`; a release that changes hooks/hooks.json is refused and
+    # reported, because a new hook set needs a human look. Otherwise the
+    # installed directory and the skill file are kept under dated backup
+    # names, the package replaces them, the install origin is carried over and
+    # ~/.hindsight/coding-agent.json is never touched. Safe because every hook
+    # script must pass `node --check`, and otherwise the backups are put back
+    # and the operator is notified.
+    tier: auto
     display: Hindsight coding-agents plugin
     current:
       via: shell
@@ -452,6 +514,8 @@ components:
     latest:
       via: npm
       package: "@vectorize-io/hindsight-coding-agents"
+    apply:
+      script: scripts/updaters/hindsight_plugin_update.py
 
 # Documentation watch: `update-manager.py docs`, run by the daily `check` at most
 # once every 14 days. Each page is snapshotted as text in the data repository and

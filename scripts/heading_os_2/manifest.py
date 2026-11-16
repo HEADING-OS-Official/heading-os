@@ -236,18 +236,18 @@ def walk(root: Path) -> list[tuple[str, Path, str]]:
     Never the runtime store: `SKIP_DIRS` holds its default name, which also
     prunes the migration's own report directories of that name at any depth,
     and the tree's registry name (`runtime_dir.store_dirname`, HOS-5 F1) is
-    pruned at its root-relative address, the one place a store sits, nested
-    since HOS-241 (two segments inside a subject root).
+    pruned at its root-relative address by `runtime_dir.prune_store`, the one
+    place a store sits, nested since HOS-241 (two segments inside a subject
+    root).
     """
-    from scripts.utils.runtime_dir import store_dirname
+    from scripts.utils.runtime_dir import prune_store, store_dirname
 
     store = store_dirname(Path(root))
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
-        here = os.path.relpath(dirpath, root).replace(os.sep, "/")
         dirnames[:] = [d for d in dirnames
-                       if d not in SKIP_DIRS and not d.startswith(".memory-index")
-                       and (d if here == "." else f"{here}/{d}") != store]
+                       if d not in SKIP_DIRS and not d.startswith(".memory-index")]
+        prune_store(dirnames, dirpath, root, store)
         for fn in filenames:
             p = Path(dirpath) / fn
             rel = p.relative_to(root).as_posix()

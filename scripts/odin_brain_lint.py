@@ -147,7 +147,7 @@ def _frontmatter(path: Path):
         # lint with a traceback and no report, so hardening the engine alone
         # left the crash exactly where it was.
         return None
-    data, _ = _parse_fm(text)
+    data, _ = _parse_fm(text, source=str(path))
     return data or None
 
 

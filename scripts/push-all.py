@@ -77,6 +77,7 @@ from scripts.utils.engine_guard import (
     scan_engine_repo,
 )
 from scripts.utils.git_push import ahead_behind, remote_objection, supervised_push
+from scripts.utils import push_progress
 from scripts.utils.data_path import DataPathError, data_write_dir
 from scripts.utils.push_ratchets import (
     DATA_CONFIG_PATHS,
@@ -1629,6 +1630,7 @@ def push_repo(name: str, repo: Path, message: str, do_commit: bool, dry_run: boo
     the tip origin will have once this run's data step is done.
     """
     print(f"\n{BOLD}{CYAN}== {name}: {repo} =={RESET}")
+    push_progress.step(name.lower(), "checks")
 
     # 0-. refresh the one tracked Lific archive, DATA only, before anything reads
     # the tree. Every path Lific writes is ignored by the overlay (its database,
@@ -1736,6 +1738,7 @@ def push_repo(name: str, repo: Path, message: str, do_commit: bool, dry_run: boo
         sys.exit(2)
 
     # 3. commit staged changes
+    push_progress.step(name.lower(), "commit")
     status = run(["git", "status", "--short"], repo).stdout.strip()
     if status and do_commit:
         if dry_run:
@@ -1763,6 +1766,7 @@ def push_repo(name: str, repo: Path, message: str, do_commit: bool, dry_run: boo
 
 
     # 4. per-repository push preconditions.
+    push_progress.step(name.lower(), "push + tests")
     #
     # Three refusals sit here, AFTER the commit above, and that position is the
     # decision rather than an accident: a repo that cannot be pushed still gets
@@ -1991,6 +1995,51 @@ def _report_skips(skipped: list[tuple[str, str]], args, attempted: int) -> None:
     sys.exit(3)
 
 
+def _push_notify(args, text: str) -> None:
+    """One message to the operator's own Telegram sink; a failure is one note.
+
+    The self-notification exception of .claude/rules/lethal-trifecta.md: the
+    target is the operator's own sink and `notify` refuses any other.
+    """
+    if args.no_notify:
+        return
+    try:
+        from scripts.utils import telegram_notify
+        from scripts.utils.alert import _telegram_target
+        sent = telegram_notify.notify(_telegram_target(get_workspace_root()), text)
+    except Exception as exc:  # noqa: BLE001 - a lost message never stops a push
+        print(f"  note: the push message was not sent ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+        return
+    if not sent:
+        print("  note: the push message was not sent", file=sys.stderr)
+
+
+def _finish_progress(args, failure: BaseException | None,
+                     skipped: list[tuple[str, str]]) -> None:
+    """Record how the run ended (HOS-346) and send the end message.
+
+    Called from `main()`'s `finally`, so it never raises: an exception here
+    would replace the run's own exit code.
+    """
+    try:
+        if failure is None:
+            code = 0
+        elif isinstance(failure, SystemExit):
+            code = failure.code if isinstance(failure.code, int) else (0 if failure.code is None else 1)
+        else:
+            code = None
+        push_progress.finish(code, [name for name, _reason in skipped], failure)
+        rec = push_progress.last()
+        if not rec or not rec.get("ended_at"):
+            return  # start() or finish() failed and said so; there is no end to tell
+        took = push_progress.duration(rec["ended_at"] - rec["started_at"])
+        _push_notify(args, f"HEADING OS push {rec['state']}: {rec['result']} ({took})")
+    except Exception as exc:  # noqa: BLE001 - the run's own exit must stand
+        print(f"  note: the push end was not recorded ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+
+
 def main() -> None:
     # The pre-push hooks' entry: read-only, so it runs before the HELM check,
     # in whichever repository git is pushing.
@@ -2008,6 +2057,7 @@ def main() -> None:
     ap.add_argument("-m", "--message", help="commit message (default: dated backup message)")
     ap.add_argument("--no-commit", action="store_true", help="push existing commits only; do not commit working-tree changes")
     ap.add_argument("--dry-run", action="store_true", help="show what would happen; make no commits or pushes")
+    ap.add_argument("--no-notify", action="store_true", help="send no Telegram message at the start and the end of the run")
     args = ap.parse_args()
 
     message = args.message or f"chore: workspace backup {datetime.now(get_default_tz()).strftime('%Y-%m-%d %H:%M')}"
@@ -2025,63 +2075,80 @@ def main() -> None:
     data = get_data_root()
     skipped: list[tuple[str, str]] = []
     attempted = 1 if data == engine else 2
-    if data == engine:
-        # Pre-cutover single repo: data files are legitimately tracked here, so the
-        # engine-clean gate would flag everything. Do not arm it in this mode.
-        #
-        # test_gate=True even so, and that is the point of the flag being separate
-        # from is_engine. This mode pushes the ENGINE clone, to the engine remote,
-        # whose pre-push hook is the single authoritative suite gate. The check used
-        # to sit above this branch in main() and so covered this call; keying it on
-        # is_engine would have dropped it here while looking like a pure move.
-        print(f"{YELLOW}Data root == engine root (pre-cutover/single repo). Pushing one repo.{RESET}")
-        _attempt(skipped, "repo", engine, message, not args.no_commit, args.dry_run,
-                 push_env, test_gate=True)
-    else:
-        # DATA FIRST, and the reason is measured rather than aesthetic: the
-        # engine's pre-push hook runs the full regression suite inside the push
-        # and took 320 seconds on the machine this was written on. The data
-        # overlay is the only half that cannot be reconstructed, so it does not
-        # queue behind a several-minute gate that may fail, stall, or be
-        # interrupted.
-        #
-        # This costs nothing in safety, which is worth saying because the phrase
-        # "stop the world" invites the opposite conclusion. Each scan protects the
-        # repository it runs on: the engine scans look for a problem in the
-        # ENGINE's files, while the DATA overlay runs its own content_scan over
-        # its own files and legitimately carries private content. No engine
-        # refusal carries any information about whether DATA is safe to push.
-        _attempt(skipped, "DATA", data, message, not args.no_commit, args.dry_run, push_env,
-                 test_gate=True, gate_marker=DATA_GATE_MARKER)
-        # The data tip the engine is judged against (HOS-139). After a real data
-        # step, pushed or already in sync, `origin/main` IS that tip, since the
-        # push verified [0 0]; after a skipped one it is what origin still
-        # holds. A dry run pushed nothing, so where data was not skipped the tip
-        # it WOULD push is the local HEAD.
-        data_skipped = any(name == "DATA" for name, _reason in skipped)
-        data_ref = "HEAD" if args.dry_run and not data_skipped else "origin/main"
-        if data_ref == "HEAD" and not args.no_commit and run(
-                ["git", "status", "--porcelain"], data).stdout.strip():
-            # A real run would commit these and push them before the engine is
-            # judged, so a dry run cannot see the tip that run would produce.
-            print(f"{YELLOW}[dry-run]{RESET} the data repository has uncommitted "
-                  f"changes; the engine/data compatibility check below judges "
-                  f"its HEAD without them, so its verdict may differ from a "
-                  f"real run's.")
-        _attempt(skipped, "ENGINE", engine, message, not args.no_commit, args.dry_run,
-                 push_env, is_engine=True, data_root=data, test_gate=True,
-                 data_ref=data_ref)
+    # The progress record and its two messages (HOS-346) open here, after every
+    # early refusal and the hook entry above, so those never create a record; a
+    # dry run writes and sends nothing. Every call is best-effort and never
+    # changes what this run checks, prints or exits with.
+    track = not args.dry_run
+    repos = ["repo"] if data == engine else ["data", "engine"]
+    if track:
+        push_progress.start("repo" if data == engine else "full", repos)
+        _push_notify(args, f"HEADING OS push started: {' + '.join(repos)}")
+    failure: BaseException | None = None
+    try:
+        if data == engine:
+            # Pre-cutover single repo: data files are legitimately tracked here, so the
+            # engine-clean gate would flag everything. Do not arm it in this mode.
+            #
+            # test_gate=True even so, and that is the point of the flag being separate
+            # from is_engine. This mode pushes the ENGINE clone, to the engine remote,
+            # whose pre-push hook is the single authoritative suite gate. The check used
+            # to sit above this branch in main() and so covered this call; keying it on
+            # is_engine would have dropped it here while looking like a pure move.
+            print(f"{YELLOW}Data root == engine root (pre-cutover/single repo). Pushing one repo.{RESET}")
+            _attempt(skipped, "repo", engine, message, not args.no_commit, args.dry_run,
+                     push_env, test_gate=True)
+        else:
+            # DATA FIRST, and the reason is measured rather than aesthetic: the
+            # engine's pre-push hook runs the full regression suite inside the push
+            # and took 320 seconds on the machine this was written on. The data
+            # overlay is the only half that cannot be reconstructed, so it does not
+            # queue behind a several-minute gate that may fail, stall, or be
+            # interrupted.
+            #
+            # This costs nothing in safety, which is worth saying because the phrase
+            # "stop the world" invites the opposite conclusion. Each scan protects the
+            # repository it runs on: the engine scans look for a problem in the
+            # ENGINE's files, while the DATA overlay runs its own content_scan over
+            # its own files and legitimately carries private content. No engine
+            # refusal carries any information about whether DATA is safe to push.
+            _attempt(skipped, "DATA", data, message, not args.no_commit, args.dry_run, push_env,
+                     test_gate=True, gate_marker=DATA_GATE_MARKER)
+            # The data tip the engine is judged against (HOS-139). After a real data
+            # step, pushed or already in sync, `origin/main` IS that tip, since the
+            # push verified [0 0]; after a skipped one it is what origin still
+            # holds. A dry run pushed nothing, so where data was not skipped the tip
+            # it WOULD push is the local HEAD.
+            data_skipped = any(name == "DATA" for name, _reason in skipped)
+            data_ref = "HEAD" if args.dry_run and not data_skipped else "origin/main"
+            if data_ref == "HEAD" and not args.no_commit and run(
+                    ["git", "status", "--porcelain"], data).stdout.strip():
+                # A real run would commit these and push them before the engine is
+                # judged, so a dry run cannot see the tip that run would produce.
+                print(f"{YELLOW}[dry-run]{RESET} the data repository has uncommitted "
+                      f"changes; the engine/data compatibility check below judges "
+                      f"its HEAD without them, so its verdict may differ from a "
+                      f"real run's.")
+            _attempt(skipped, "ENGINE", engine, message, not args.no_commit, args.dry_run,
+                     push_env, is_engine=True, data_root=data, test_gate=True,
+                     data_ref=data_ref)
 
-    if skipped:
-        _report_skips(skipped, args, attempted)
+        if skipped:
+            _report_skips(skipped, args, attempted)
 
-    # Branched on `attempted`, because "Both repos pushed." over the pre-cutover
-    # mode -- which announces "Pushing one repo." nine lines up -- is the closing
-    # headline claiming a second off-machine copy that does not exist. Every
-    # other summary line in this file is careful about exactly that, and this one
-    # was not until 2026-08-30.
-    headline = "Both repos pushed." if attempted > 1 else "Repo pushed."
-    print(f"\n{GREEN}{BOLD}{headline}{RESET}" if not args.dry_run else f"\n{YELLOW}dry-run complete.{RESET}")
+        # Branched on `attempted`, because "Both repos pushed." over the pre-cutover
+        # mode -- which announces "Pushing one repo." nine lines up -- is the closing
+        # headline claiming a second off-machine copy that does not exist. Every
+        # other summary line in this file is careful about exactly that, and this one
+        # was not until 2026-08-30.
+        headline = "Both repos pushed." if attempted > 1 else "Repo pushed."
+        print(f"\n{GREEN}{BOLD}{headline}{RESET}" if not args.dry_run else f"\n{YELLOW}dry-run complete.{RESET}")
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        if track:
+            _finish_progress(args, failure, skipped)
 
 
 if __name__ == "__main__":

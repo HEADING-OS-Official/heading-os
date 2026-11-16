@@ -736,6 +736,9 @@ files:
 - path: scripts/claude-mods/context-bar/hooks/register.tsx
   class: engine-code
   reason: the context-bar mod itself, the hooks module Claude Code runs (band above the prompt with the context fill by category, /context-bar panel); HOS-331.
+- path: scripts/claude-mods/context-bar/hooks/layout.ts
+  class: engine-code
+  reason: the context-bar mod's layout, imported by its hooks module register.tsx (the band's rows, the /second-wind limit, the turns-left forecast); HOS-348.
 - path: scripts/claude-mods/context-bar/types/index.d.ts
   class: engine-code
   reason: the context-bar mod's state contract, named in its plugin.json as "types" and checked by claude plugin validate against every $.state key the module uses; HOS-331.
@@ -802,7 +805,7 @@ files:
   reason: scripts/sentinel.py (config_file()) and scripts/email-intelligence.py (sentinel_config()) load it as the fallback when the private config is absent; lists emptied (decision 8).
 - path: scripts/service-host.example.json
   class: example-template
-  reason: scripts/pull-service-state.py loads it as the fallback when the private config is absent; its values are emptied, apart from any that equal a reader's own defaults (decision 8).
+  reason: scripts/utils/service_host.py loads it as the fallback when the private config is absent; its values are emptied, apart from any that equal a reader's own defaults (decision 8).
 
 # Files that left the engine for the data repository and may not come back.
 # A tracked path listed here refuses as `departed`. HOS-159, 2026-09-28: nine

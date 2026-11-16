@@ -552,3 +552,30 @@ def test_a_teach_course_symlinked_into_the_engine_is_refused(tmp_path, monkeypat
     lessons.rmdir()
     lessons.symlink_to(target, target_is_directory=True)
     assert mod.main(["next", "plain", "lessons"]) == 2, "next numbered inside the engine"
+
+
+def test_checkpoint_state_from_a_clone_subdirectory_stays_out_of_the_engine_tree(
+        tmp_path_factory, monkeypatch):
+    """A session working in a subdirectory of the clone keeps its checkpoint state
+    where the clone root keeps it, never under that subdirectory.
+
+    MEASURED 2026-11-08, before the fix: `state_root(<clone>/scripts/utils)`
+    returned `<clone>/scripts/utils/.claude/state`, inside the public engine
+    tree, while `state_root(<clone>)` returned this checkout's state directory
+    in the data repository, so the first assertion failed. A session whose cwd
+    was `scripts/claude-mods/context-bar` had left `checkpoint-<id>.json` and
+    its lock there. A foreign project keeps its own `.claude/state` (the
+    plugin-bundle contract); it comes from `tmp_path_factory`, not `tmp_path`,
+    because the conftest pins `HEADING_OS_DATA` to `tmp_path`, which would make
+    it the data repository.
+    """
+    from scripts.utils import checkpoint_paths as cp
+    monkeypatch.delenv("HEADING_OS_STATE_DIR", raising=False)
+    engine = cp.engine_root()
+
+    sub = cp.state_root(engine / "scripts" / "utils")
+    assert sub == cp.state_root(engine)
+    assert not sub.resolve().is_relative_to(engine / "scripts")
+
+    foreign = tmp_path_factory.mktemp("foreign-project")
+    assert cp.state_root(foreign) == foreign / ".claude" / "state"

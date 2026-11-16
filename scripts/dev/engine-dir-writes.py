@@ -268,11 +268,11 @@ class _Module:
                             val = self.value(node.value, env)
                             if isinstance(val, str):
                                 env[target.id] = val
-                    elif isinstance(node, ast.AnnAssign) and node.value is not None:
-                        if isinstance(node.target, ast.Name):
-                            val = self.value(node.value, env)
-                            if isinstance(val, str):
-                                env[node.target.id] = val
+                    elif (isinstance(node, ast.AnnAssign) and node.value is not None
+                          and isinstance(node.target, ast.Name)):
+                        val = self.value(node.value, env)
+                        if isinstance(val, str):
+                            env[node.target.id] = val
 
 
 def _joins_a_literal(node) -> bool:

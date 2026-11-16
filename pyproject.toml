@@ -19,25 +19,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "heading-os-engine"
-version = "3.1.4"
+version = "3.2.0"
 description = "The operating system an executive runs their company from, built on Claude Code — this repository is the engine (code only; it resolves a separate private data repository at runtime)."
 readme = "README.md"
 license = "LicenseRef-PolyForm-Internal-Use-1.0.0 OR PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Misha Hanin", email = "misha.hanin@headingos.com" }]
 keywords = ["claude-code", "ai-agent", "workspace", "automation", "security", "heading-os"]
-requires-python = ">=3.11"
+requires-python = ">=3.11.5"
 # Core: light, broadly-imported packages installed on every `uv sync`. Heavy
 # integration packages live in [project.optional-dependencies] below (F-7.1).
 dependencies = [
-    "anthropic==1.8.0",
+    "anthropic==2.8.0",
     "requests==2.34.2",
     "pyyaml==6.0.3",
-    "markdown==3.11",
-    "pymdown-extensions==12.1",
+    "markdown==3.11.3",
+    "pymdown-extensions==13.1",
     "lxml==6.1.3",
     "Pillow==13.0.0",
-    "liteparse==2.14.7",
+    "liteparse==2.18.0",
     "apscheduler==3.11.3",
     # numpy powers the memory-index / recall engine (scripts/memory-index.py), a
     # core capability - it was only ever present transitively (via magika /
@@ -67,7 +67,7 @@ telegram = [
     "Telethon==1.45.0",
 ]
 browser = [
-    "playwright==1.63.0",
+    "playwright==1.65.1",
     "greenlet==3.5.6",   # playwright transitive, pinned; travels with browser
     # SOCKS5 with a username and password, for `scripts/linkedin-activity.py`
     # when a proxy slot is `socks5h://`. `requests` reaches such a slot only
@@ -77,20 +77,20 @@ browser = [
     # and has no dependencies of its own.
     "PySocks==1.7.1",
     # Imported directly by scripts/utils/chromium_cookies.py (cookie decryption).
-    "cryptography==50.0.1",
+    "cryptography==50.0.2",
 ]
 documents = [
     "python-docx==1.2.0",
     "python-pptx==1.0.2",
     "openpyxl==3.1.5",
-    "markitdown[pdf,docx,pptx,xlsx,outlook]==0.1.8",
+    "markitdown[pdf,docx,pptx,xlsx,outlook]==0.1.9",
     # Pinned directly because markitdown's `pdf` extra and scripts/convert-to-md.py
     # reach it, and as a transitive only it would vanish silently (2026-09-02).
     "pdfminer.six==20260107",
 ]
 media = [
-    "youtube-transcript-api==1.2.4",
-    "yt-dlp==2026.8.19",
+    "youtube-transcript-api==1.2.5",
+    "yt-dlp==2026.10.26",
     # Local speech-to-text (scripts/transcribe-media.py). CTranslate2 backend, so
     # it pulls NO torch - the heavy transitives are ctranslate2 + av, and
     # onnxruntime is already in the graph via magika. Runs fully on-machine, so
@@ -101,25 +101,25 @@ media = [
     "av==18.1.0",
 ]
 dashboard = [
-    "fastapi==0.141.1",
+    "fastapi==0.162.5",
     "uvicorn[standard]==0.54.0",
 ]
 ai-extra = [
-    "google-api-python-client==2.200.0",
-    "google-auth==2.58.1",
-    "google-auth-oauthlib==1.4.1",
-    "google-auth-httplib2==0.4.2",
+    "google-api-python-client==2.202.0",
+    "google-auth==2.62.2",
+    "google-auth-oauthlib==1.5.0",
+    "google-auth-httplib2==0.4.4",
     # Imported directly by scripts/utils/google_user_agent.py and
     # scripts/hindsight-snapshot-offsite.py (engine audit, 2026-10-16).
-    "httplib2==0.32.0",
-    # 2.54.0 until a decision to upgrade to 3.x (the cognee hold ended 2026-10-04).
-    "openai==2.54.0",
+    "httplib2==0.32.1",
+    # 3.x taken on 2026-11-12 under HOS-356 (the cognee hold ended 2026-10-04).
+    "openai==3.49.0",
 ]
 observability = [
-    "langfuse==4.15.6",
+    "langfuse==5.2.0",
 ]
 research = [
-    "firecrawl-py==4.44.0",   # added per F-H4; never silently missing again
+    "firecrawl-py==4.55.0",   # added per F-H4; never silently missing again
 ]
 # Meta-extra: the full integration surface (operator/CI parity). Self-references
 # the project's own extras so it stays in sync automatically.
@@ -135,11 +135,11 @@ Issues = "https://github.com/HEADING-OS-Official/heading-os/issues"
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-cov==7.1.0",
     "bandit==1.9.4",
-    "ruff==0.16.9",
-    "pre-commit==4.6.2",
+    "ruff==0.17.4",
+    "pre-commit==4.7.0",
     "detect-secrets==1.5.0",
     "pip-audit==2.10.1",
     "pytest-xdist==3.8.0",

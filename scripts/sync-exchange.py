@@ -382,13 +382,15 @@ def sync_calendar(account, days=7, timezone_str=None):
                 lines.append("")
 
                 if event.required_attendees:
-                    attendees = [a.mailbox.email_address for a in event.required_attendees if a.mailbox]
+                    attendees = [label for a in event.required_attendees
+                                 if (label := _attendee_label(a))]
                     if attendees:
                         lines.append(f"**Attendees:** {', '.join(attendees)}")
                         lines.append("")
 
                 if event.optional_attendees:
-                    optional = [a.mailbox.email_address for a in event.optional_attendees if a.mailbox]
+                    optional = [label for a in event.optional_attendees
+                                if (label := _attendee_label(a))]
                     if optional:
                         lines.append(f"**Optional:** {', '.join(optional)}")
                         lines.append("")
@@ -625,6 +627,26 @@ EXPORT_FIELDS = ("subject", "sender", "to_recipients", "cc_recipients",
 
 def _addr(mailbox):
     return (getattr(mailbox, "email_address", None) or "").strip().lower() if mailbox else ""
+
+
+def _attendee_label(attendee) -> str | None:
+    """The attendee's address as Exchange gives it, else its display name, else None.
+
+    An attendee can arrive with a mailbox whose `email_address` is None, and
+    `', '.join` over a list holding that None raised `TypeError: sequence item
+    0: expected str instance, NoneType found`, failing the whole calendar lane
+    (HOS-352, MEASURED 2026-11-12: every 2-hourly run failing since
+    2026-11-08). Not lowercased: the calendar output keeps the address as
+    Exchange gives it, apart from surrounding whitespace.
+    """
+    mailbox = getattr(attendee, "mailbox", None)
+    if not mailbox:
+        return None
+    for field in ("email_address", "name"):
+        value = (getattr(mailbox, field, None) or "").strip()
+        if value:
+            return value
+    return None
 
 
 def _export_folders(account):

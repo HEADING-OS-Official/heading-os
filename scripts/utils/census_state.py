@@ -176,7 +176,7 @@ def corpus_digest(corpus_root: Path, scopes: tuple[str, ...] | None = None) -> s
     """
     digest = hashlib.sha256()
     root = corpus_root.resolve()
-    from scripts.utils.runtime_dir import store_dirname
+    from scripts.utils.runtime_dir import prune_store, store_dirname
     store = store_dirname(root)
     scopes = digest_scopes() if scopes is None else scopes
     # A scope that does not exist is hashed as absent rather than skipped: the
@@ -201,11 +201,10 @@ def corpus_digest(corpus_root: Path, scopes: tuple[str, ...] | None = None) -> s
             prune_excluded(dirnames, DIGEST_SKIP_DIRS)
             here = Path(dirpath)
             # The runtime store by the tree's registry name, at its own
-            # root-relative address (nested since HOS-241): a relocated store's
-            # name is no reason to skip a directory of that name elsewhere.
-            here_rel = here.relative_to(root).as_posix()
-            dirnames[:] = [d for d in dirnames
-                           if (d if here_rel == "." else f"{here_rel}/{d}") != store]
+            # root-relative address (nested since HOS-241), by
+            # `runtime_dir.prune_store`: a relocated store's name is no reason
+            # to skip a directory of that name elsewhere.
+            prune_store(dirnames, here, root, store)
             found.extend(here / name for name in filenames
                          if Path(name).suffix.lower() in CORPUS_SUFFIXES)
         for path in sorted(found):

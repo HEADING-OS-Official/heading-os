@@ -73,11 +73,13 @@ BASELINE = {
 #   - `output_config.effort` is the control for how much it thinks, and the
 #     default differs by model (`medium` on Opus 5.5, `high` elsewhere), so it
 #     is set explicitly rather than inherited.
-#   - `temperature`, `top_p` and `top_k` are rejected with a 400 on all of them.
-# Haiku 4.5 is the opposite on the second and third points: it runs without
-# thinking unless asked, rejects `effort`, and accepts `temperature`. Source:
-# the Anthropic API reference as bundled with the claude-api skill, read
-# 2026-09-27 (Thinking & Effort table; Opus 4.7 migration notes on sampling).
+#   - No model receives `temperature`, `top_p` or `top_k` from
+#     `request_params`: per the Claude API migration guide for API version
+#     2026-10-21, which anthropic 2.x sends, a Messages request carrying one
+#     returns 400 on every model, Haiku 4.5 included.
+# Haiku 4.5 is the opposite on the second point: it runs without thinking
+# unless asked, and rejects `effort`. Source: the Anthropic API reference as
+# bundled with the claude-api skill, read 2026-09-27 (Thinking & Effort table).
 THINKING_FAMILIES = ("opus", "sonnet", "fable")
 
 # Room for thinking plus the reply on a non-streaming call. 16000 is the
@@ -215,9 +217,9 @@ def request_params(
 
     `max_tokens` is what the caller needs for the VISIBLE reply. On a thinking
     model it is raised to `THINKING_MAX_TOKENS`, because thinking is billed
-    against the same cap. `effort` is sent only where the model accepts it, and
-    `temperature` only where it does not raise a 400, and then through
-    `extra_body`; on a thinking model it is dropped. `output_schema`, a JSON schema, becomes structured output
+    against the same cap. `effort` is sent only where the model accepts it.
+    `temperature` is accepted and ignored, never sent for any model, so existing
+    callers keep working. `output_schema`, a JSON schema, becomes structured output
     (`output_config.format`), which Haiku 4.5 and every thinking family support.
     """
     if effort not in EFFORT_LEVELS:
@@ -229,11 +231,10 @@ def request_params(
         output_config["effort"] = effort
     else:
         params["max_tokens"] = max_tokens
-        if temperature is not None:
-            # anthropic 1.x took `temperature` out of `messages.create` (a
-            # TypeError if passed). `extra_body` is merged into the request JSON
-            # as-is, so the wire body is the same as it was on 0.x.
-            params["extra_body"] = {"temperature": temperature}
+    # `temperature` is never put in the request, for any model, not even
+    # through `extra_body`: on API version 2026-10-21 (anthropic 2.x) a
+    # Messages request carrying it returns 400 on every model, per the Claude
+    # API migration guide. The keyword stays in the signature, ignored.
     if output_schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": output_schema}
     if output_config:

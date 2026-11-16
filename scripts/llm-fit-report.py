@@ -99,6 +99,11 @@ def fetch_traces(days: int, page_size: int = 100) -> tuple[list, str | None]:
     every per-skill count and percentile below was computed on the fragment.
     That is the shape `.claude/rules/scope-claims.md` names - the method
     enumerated some pages, the sentence asserted a window.
+
+    One trace is read as its ROOT observation: langfuse 5 removed
+    `api.trace.list`, and its replacement is the v2 observations endpoint,
+    paged by cursor. `trace_context` carries the trace's tags; `metadata` and
+    `basic` (the name) are what `_extract_signals` and `aggregate` read.
     """
     from langfuse import get_client
     client = get_client()
@@ -107,10 +112,13 @@ def fetch_traces(days: int, page_size: int = 100) -> tuple[list, str | None]:
 
     out: list = []
     page = 1
+    cursor: str | None = None
     truncated: str | None = None
     while True:
         try:
-            resp = api.trace.list(from_timestamp=cutoff, page=page, limit=page_size)
+            resp = api.observations.get_many(
+                from_start_time=cutoff, is_root_observation=True, limit=page_size,
+                cursor=cursor, fields="core,basic,metadata,trace_context")
         except Exception as e:
             truncated = (f"the Langfuse query failed at page {page} after "
                          f"{len(out)} trace(s): {e}")
@@ -120,7 +128,8 @@ def fetch_traces(days: int, page_size: int = 100) -> tuple[list, str | None]:
         if not batch:
             break
         out.extend(batch)
-        if len(batch) < page_size:
+        cursor = getattr(resp.meta, "cursor", None)
+        if not cursor:
             break
         page += 1
         # Safety cap so a runaway query doesn't burn API budget.

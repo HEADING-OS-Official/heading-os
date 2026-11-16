@@ -160,7 +160,7 @@ def machine_written(root: Path, p: str, prefix: str | None) -> bool:
             head = fh.read(DATE_HEAD_BYTES).decode("utf-8", "replace")
     except OSError:
         return False
-    fm, _ = parse_frontmatter(head)
+    fm, _ = parse_frontmatter(head, source=p)
     meta = fm.get("metadata") if isinstance(fm.get("metadata"), dict) else {}
     return bool({str(fm.get("written_by")), str(meta.get("written_by"))} & MACHINE_WRITERS)
 
@@ -399,7 +399,7 @@ def document_date(f: Path, path: str, today=None) -> tuple[datetime, str]:
         head = fh.read(DATE_HEAD_BYTES).decode("utf-8", "replace")
     body = head
     if path.endswith(".md"):
-        fm, body = parse_frontmatter(head)
+        fm, body = parse_frontmatter(head, source=path)
         meta = fm.get("metadata") if isinstance(fm.get("metadata"), dict) else {}
         for src, value in [(k, fm.get(k)) for k in UPDATE_KEYS] + [("metadata.modified", meta.get("modified"))] \
                 + [(k, fm.get(k)) for k in CREATE_KEYS]:

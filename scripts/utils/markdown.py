@@ -7,11 +7,12 @@ by any script that needs to parse YAML frontmatter or markdown tables.
 
 Public surface:
 
-- ``parse_frontmatter(text)`` -> ``(Dict, str)``
+- ``parse_frontmatter(text, *, source=None)`` -> ``(Dict, str)``
     Split ``---\\n{yaml}\\n---\\n{body}`` and return
     ``(parsed_yaml_dict, body_text)``. Uses ``yaml.safe_load`` (handles
     inline lists, block lists, quoted strings, booleans, numbers) and falls
-    back to a regex parser when the block is not valid YAML. Returns
+    back to a regex parser when the block is not valid YAML, logging a
+    warning that names ``source``. Returns
     ``({}, text)`` if no frontmatter is present.
 
 - ``parse_frontmatter_str(text)`` -> ``(Dict[str, str], str)``
@@ -44,6 +45,7 @@ wrappers over this module by 2026-08-28.
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import re
 import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -51,7 +53,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import yaml
 
 
+logger = logging.getLogger(__name__)
+
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
+
+# Errors ``yaml.safe_load`` raises that are NOT ``yaml.YAMLError``: the block
+# parsed, but a value could not be constructed (a bad date, ``!!bool maybe``,
+# 2000-deep nesting). The same three the docstring of ``parse_frontmatter`` in
+# ``scripts/odin_pagerank.py`` records. MEASURED 2026-11-16, HOS-362.
+_CONSTRUCT_ERRORS = (ValueError, KeyError, RecursionError)
 
 
 def _regex_parse_yaml(raw_yaml: str) -> Dict[str, Any]:
@@ -82,7 +92,7 @@ def _regex_parse_yaml(raw_yaml: str) -> Dict[str, Any]:
     return data
 
 
-def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
+def parse_frontmatter(text: str, *, source: Optional[str] = None) -> Tuple[Dict[str, Any], str]:
     """Parse YAML frontmatter from a markdown document.
 
     Returns ``(metadata_dict, body)``. Returns ``({}, text)`` if the
@@ -90,7 +100,13 @@ def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
 
     Uses ``yaml.safe_load`` (preserves native types: lists, ints, bools,
     nested mappings). Falls back to a regex parser when the block is not
-    valid YAML.
+    valid YAML. The fallback is kept by the 2026-10-15 engine-audit cleanup
+    map (row 5-P3-17), which ruled that removing it changes behaviour; it is
+    now reported: each use logs one warning naming ``source`` (a path or
+    label; "unnamed text" when the caller passes none). The return value is
+    unchanged. ``scripts/check-frontmatter.py`` lists every tracked file
+    whose header would take this branch. Construction errors (a bad date, an
+    unknown tag) take the same fallback since 2026-11-16 (HOS-362).
     """
     if not text:
         return {}, text
@@ -104,7 +120,13 @@ def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
 
     try:
         data = yaml.safe_load(raw_yaml)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, *_CONSTRUCT_ERRORS) as exc:
+        first_line = str(exc).split("\n", 1)[0]
+        if not isinstance(exc, yaml.YAMLError):
+            first_line = f"{type(exc).__name__}: {first_line}"
+        logger.warning(
+            "frontmatter of %s is not valid YAML (%s); using the partial regex reading",
+            source or "unnamed text", first_line)
         return _regex_parse_yaml(raw_yaml), body
     if isinstance(data, dict):
         return data, body
@@ -287,7 +309,9 @@ def parse_frontmatter_strict(text: str) -> Tuple[Optional[Dict[str, Any]], str, 
     EXEMPT, so the coverage gate stopped asking for a corpus it requires.
 
     ``data`` is None whenever ``kind`` is not ``FM_OK``. ``detail`` carries the
-    PyYAML message or the offending type name, and is empty otherwise.
+    PyYAML message, ``<ExceptionClass>: <message>`` for a value YAML parsed but
+    could not construct (a bad date, an unknown tag; MEASURED 2026-11-16,
+    HOS-362), or the offending type name, and is empty otherwise.
     """
     block, _body, kind = split_frontmatter(text)
     if block is None:
@@ -296,6 +320,9 @@ def parse_frontmatter_strict(text: str) -> Tuple[Optional[Dict[str, Any]], str, 
         data = yaml.safe_load(block)
     except yaml.YAMLError as exc:
         return None, FM_INVALID_YAML, str(exc)
+    except _CONSTRUCT_ERRORS as exc:
+        first_line = str(exc).split("\n", 1)[0]
+        return None, FM_INVALID_YAML, f"{type(exc).__name__}: {first_line}"
     if data is None:
         return None, FM_EMPTY, ""
     if not isinstance(data, dict):
@@ -303,14 +330,14 @@ def parse_frontmatter_strict(text: str) -> Tuple[Optional[Dict[str, Any]], str, 
     return data, FM_OK, ""
 
 
-def parse_frontmatter_str(text: str) -> Tuple[Dict[str, str], str]:
+def parse_frontmatter_str(text: str, *, source: Optional[str] = None) -> Tuple[Dict[str, str], str]:
     """String-coerced variant of :func:`parse_frontmatter`.
 
     All values become strings (``None`` becomes ``""``). Read by
     ``scripts/utils/crm.py``, whose callers string-coerce everything. New code
     should prefer :func:`parse_frontmatter`.
     """
-    data, body = parse_frontmatter(text)
+    data, body = parse_frontmatter(text, source=source)
     coerced: Dict[str, str] = {}
     for k, v in data.items():
         coerced[k] = "" if v is None else str(v)

@@ -205,7 +205,7 @@ def _build_email_index(ab_dir: Path) -> dict:
     for entity_file in ab_dir.glob("*.md"):
         try:
             text = entity_file.read_text(encoding="utf-8")
-            fm, _body = parse_frontmatter(text)
+            fm, _body = parse_frontmatter(text, source=str(entity_file))
         except (OSError, UnicodeDecodeError):
             # `UnicodeDecodeError` is a `ValueError`, NOT an `OSError`, so one
             # address-book entity that is not valid UTF-8 raised out of the

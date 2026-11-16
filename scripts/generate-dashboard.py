@@ -1061,7 +1061,7 @@ def collect_capture_payoff():
 
     def _recent(md_path):
         try:
-            fm, _ = _parse_fm(md_path.read_text(encoding="utf-8"))
+            fm, _ = _parse_fm(md_path.read_text(encoding="utf-8"), source=str(md_path))
         except (OSError, UnicodeError, ValueError) as exc:
             # Named, not swallowed: an unreadable note is not counted.
             print(f"[generate-dashboard] {md_path.name}: unreadable ({exc}); "

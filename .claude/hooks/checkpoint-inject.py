@@ -480,10 +480,11 @@ def _after_compact(payload: dict, project: Path, slug: str, state: dict, unatten
 
 # Carried across /clear in HELM and in a yard alike (operator decision
 # 2026-10-14, "carry it over in HELM and in a yard"): the unattended switch
-# and the session-wide record behind the `Unattended:` line. Read in `_after_clear`.
+# and the session-wide record behind the `Unattended:` line and the status
+# line's two counters (HOS-349). Read in `_after_clear`.
 CARRIED_KEYS = (
     "session_unattended", "unattended_total", "unattended_first_at", "unattended_last_at_total",
-    "unattended_last_stop", "second_wind_attempts",
+    "unattended_last_stop", "second_wind_attempts", "second_wind_total",
 )
 
 # The state key the clear case leaves its banner under, for `--rewake`.

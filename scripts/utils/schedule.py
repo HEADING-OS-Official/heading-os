@@ -605,16 +605,30 @@ def _adopted(paths: list[Path]) -> list[Path]:
     return found
 
 
-def _adopted_units(fam: ServiceFamily, dest: Path) -> list[Path]:
-    """The systemd units of `fam` in `dest` this layer did not write, printed; adopted, so left alone.
+def family_of_unit(unit_name: str) -> ServiceFamily | None:
+    """The first family in SERVICE_FAMILIES whose units include `unit_name`, or None."""
+    return next((fam for fam in SERVICE_FAMILIES if unit_name in fam.units), None)
 
-    A family with an installer script is not asked: that script writes its
+
+def is_adopted_unit(fam: ServiceFamily, path: Path) -> bool:
+    """True when the unit file `path` of `fam` is adopted: someone else's, left as it is.
+
+    A family with an installer script is never asked: that script writes its
     units, which have never carried the marker, so every one of them would
     read as foreign and install could no longer update it nor remove delete it.
+    Prints nothing; `_adopted_units` prints, and scripts/check-unit-drift.py asks too.
     """
     if not fam.adopts_foreign or fam.installer:
-        return []
-    return _adopted([dest / u for u in fam.units])
+        return False
+    return path.exists() and not written_by_service_layer(path)
+
+
+def _adopted_units(fam: ServiceFamily, dest: Path) -> list[Path]:
+    """The systemd units of `fam` in `dest` this layer did not write, printed; adopted, so left alone."""
+    found = [p for p in (dest / u for u in fam.units) if is_adopted_unit(fam, p)]
+    for path in found:
+        print(f"  adopted: {path} was not written by HEADING OS and is left as it is")
+    return found
 
 
 def select_families(names: list[str] | None = None, *, mandatory_only: bool = False) -> list[ServiceFamily]:
