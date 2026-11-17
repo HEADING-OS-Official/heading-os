@@ -26,6 +26,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from scripts.utils.venv_guard import child_python  # noqa: E402
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
@@ -127,7 +130,7 @@ def main(argv=None):
         else:
             payload = {"value": value}
         result = subprocess.run(
-            [sys.executable, str(apply_script),
+            [child_python(), str(apply_script),
              "--question", qid, "--value-from-stdin", "--force-ceo-master"],
             cwd=args.workspace, input=json.dumps(payload),
             capture_output=True, text=True,
@@ -139,7 +142,7 @@ def main(argv=None):
 
     for qid in skipped:
         result = subprocess.run(
-            [sys.executable, str(apply_script), "--skip", qid, "--force-ceo-master"],
+            [child_python(), str(apply_script), "--skip", qid, "--force-ceo-master"],
             cwd=args.workspace, capture_output=True, text=True,
         )
         if result.returncode != 0:
@@ -149,7 +152,7 @@ def main(argv=None):
 
     # Checked like every call above, so a failed `--status` cannot exit 0.
     status = subprocess.run(
-        [sys.executable, str(apply_script), "--status", "--force-ceo-master"],
+        [child_python(), str(apply_script), "--status", "--force-ceo-master"],
         cwd=args.workspace, capture_output=True, text=True,
     )
     if status.returncode != 0:

@@ -218,20 +218,23 @@ const lenOf = (runs: readonly Run[]): number => runs.reduce((n, r) => n + [...r.
 const clashes = (col: number, len: number, taken: readonly Placed[]): Placed | undefined =>
   taken.find(p => col < p.col + p.len + 1 && p.col < col + len + 1)
 
-// On its side's first row a label starts inside its own block, at its first
-// cell when nothing is in the way, else as far right as it must. When its start
-// would leave the block or its end would pass `right` (the last column the row
-// may use), it goes to the next row on that side, from its block's first cell
-// (moved left only as far as the row's end needs, never left of `left`), and to
-// a further row while that one is taken. Nothing is dropped (operator,
-// 2026-11-07: "nothing cut-off").
+// On its side's first row a label starts at its block's first cell when
+// nothing is in the way, else as far right as it must, but no more than
+// LABEL_REACH cells past its block's last cell: so far its hook still sits
+// within a short glance of the block it names. When its start would pass that,
+// or its end would pass `right` (the last column the row may use), it goes to
+// the next row on that side, from its block's first cell (moved left only as
+// far as the row's end needs, never left of `left`), and to a further row while
+// that one is taken. Nothing is dropped (operator, 2026-11-07: "nothing
+// cut-off").
+const LABEL_REACH = 8
 const placeLabel = (runs: Run[], start: number, end: number, left: number, right: number, rows: Placed[][]): void => {
   const len = lenOf(runs)
   let col = start
   for (let hit = clashes(col, len, rows[0]!); hit !== undefined; hit = clashes(col, len, rows[0]!)) {
     col = hit.col + hit.len + 1
   }
-  if (col <= end - 1 && col + len <= right) {
+  if (col <= end - 1 + LABEL_REACH && col + len <= right) {
     rows[0]!.push({ col, runs, len })
     return
   }
@@ -268,7 +271,21 @@ const lineOf = (placed: readonly Placed[], offset: number): Run[] => {
 
 // The band's rows, top to bottom, or undefined when there is nothing to draw
 // (no window, no used rows): the caller then shows the engine's own band.
+// At most MAX_ROWS rows when the short marker texts get there with fewer rows
+// than the full ones; an undefined build is worse than any defined one.
 export const bandOf = (input: BandInput): Run[][] | undefined => {
+  const full = buildBand(input, false)
+  if (full === undefined) return buildBand(input, true)
+  if (full.length <= MAX_ROWS) return full
+  const short = buildBand(input, true)
+  return short !== undefined && short.length < full.length ? short : full
+}
+
+const MAX_ROWS = 4
+
+// `short` drops the names from the marker texts (the limit, attention,
+// auto-compact); the colour still names each one.
+const buildBand = (input: BandInput, short: boolean): Run[][] | undefined => {
   const rows = orderOf(input.rows.filter(r => r.tokens > 0))
   if (!(input.window > 0) || rows.length === 0) return undefined
   const limit = limitOf(input.thresholds, input.autoCompact)
@@ -396,8 +413,9 @@ export const bandOf = (input: BandInput): Run[][] | undefined => {
   const lower: Placed[][] = [[]]
   // `▼ name value` from its cell when it fits, else `name value ▼` ending there.
   const fits = (text: string): boolean => pre + endCell + [...text].length <= columns
-  const ahead = `▼ ${limit.name} ${tokens(limit.value)}`
-  const endText = fits(ahead) ? ahead : `${limit.name} ${tokens(limit.value)} ▼`
+  const endName = short ? '' : `${limit.name} `
+  const ahead = `▼ ${endName}${tokens(limit.value)}`
+  const endText = fits(ahead) ? ahead : `${endName}${tokens(limit.value)} ▼`
   const endLen = [...endText].length
   const endCol = endText.startsWith('▼') ? endCell : Math.max(-pre, endCell - endLen + 1)
   upper[0]!.push({ col: endCol, runs: [{ text: endText, color: 'error' }], len: endLen })
@@ -414,14 +432,15 @@ export const bandOf = (input: BandInput): Run[][] | undefined => {
   // it fits, else ending there.
   if (hasAutoCompact) {
     const acValue = tokens(limit.autoCompact!)
-    const acAhead = `╰ auto-compact ${acValue}`
-    const acText = pre + acCell! + [...acAhead].length <= columns ? acAhead : `auto-compact ${acValue} ╯`
+    const acName = short ? '' : 'auto-compact '
+    const acAhead = `╰ ${acName}${acValue}`
+    const acText = pre + acCell! + [...acAhead].length <= columns ? acAhead : `${acName}${acValue} ╯`
     const acLen = [...acText].length
     const col = acText.startsWith('╰') ? acCell! : acCell! - acLen + 1
     lower[0]!.push({ col, runs: [{ text: acText, color: 'claude' }], len: acLen })
   }
   if (hasAttention) {
-    const attnRuns: Run[] = [{ text: `attention ${tokens(limit.attention)} ▼`, color: 'warning' }]
+    const attnRuns: Run[] = [{ text: `${short ? '' : 'attention '}${tokens(limit.attention)} ▼`, color: 'warning' }]
     const attnLen = lenOf(attnRuns)
     const col = attnCell - attnLen + 1
     if (pre + col >= 0 && clashes(col, attnLen, upper[0]!) === undefined) upper[0]!.push({ col, runs: attnRuns, len: attnLen })
@@ -448,7 +467,20 @@ export const bandOf = (input: BandInput): Run[][] | undefined => {
   // Labels go left to right, so each one only has to clear what is already placed.
   for (const [side, group, runs] of labels) {
     const e = extent.get(group)
-    if (e !== undefined) placeLabel(runs, e[0], e[1], -pre, columns - pre, side)
+    if (e === undefined) continue
+    // base and Skills end at their block, in the empty columns beside "context Nk", so Memory and Messages fit on the first row with every hook still on its block: 3 rows instead of 4 at the operator's width (operator, 2026-11-17, HOS-375).
+    if (group === 'base' || group === SKILLS) {
+      const lean: Run[] = [
+        { ...runs[0]!, text: `${runs[0]!.text.slice(2)}${group === 'base' ? ' ╮' : ' ╯'}` },
+      ]
+      const len = lenOf(lean)
+      const col = e[0] - len + 1
+      if (col >= -pre && clashes(col, len, side[0]!) === undefined) {
+        side[0]!.push({ col, runs: lean, len })
+        continue
+      }
+    }
+    placeLabel(runs, e[0], e[1], -pre, columns - pre, side)
   }
 
   return fitted(

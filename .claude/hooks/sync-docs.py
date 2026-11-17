@@ -284,37 +284,45 @@ def main():
         # note at the top of this file records happening once already.
         regen_script = ENGINE_ROOT / "scripts" / "regenerate-docs-html.py"
         if regen_script.exists():
-            try:
-                # The result used to be discarded, so a renderer exiting 1
-                # (a missing pygments, a template error) left stale HTML while
-                # this hook appended "+ regenerated HTML" — a success claim on a
-                # distribution pipeline that had not run. Found by the
-                # 2026-08-23 audit. Non-zero stays non-blocking, per the module
-                # docstring's promise of a warning, but it must now be SAID.
-                failures = []
-                for md_target in [file_path, *targets]:
-                    proc = subprocess.run(
-                        [sys.executable, str(regen_script), "--quiet", str(md_target)],
-                        cwd=ENGINE_ROOT,
-                        timeout=30,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    if proc.returncode != 0:
-                        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-                        failures.append(f"{md_target.name} (exit {proc.returncode}"
-                                        + (f": {detail[-1]}" if detail else "") + ")")
-                if failures:
-                    print(f"[sync-docs] HTML regen FAILED: {'; '.join(failures)}",
-                          file=sys.stderr)
-                    regen_msg = (f" (HTML regen FAILED for {len(failures)} target(s): "
-                                 f"{'; '.join(failures)}. The HTML is STALE.)")
-                else:
-                    regen_msg = f" + regenerated HTML for {file_path.name}"
-            except Exception as e:
-                print(f"[sync-docs] HTML regen warning for {file_path.name}: {e}", file=sys.stderr)
-                regen_msg = f" (HTML regen warning: {e})"
+            # The checkout's own pinned interpreter, never `sys.executable` (M046.2).
+            python = ENGINE_ROOT / ".venv" / "bin" / "python"
+            if not python.is_file():
+                print(f"[sync-docs] HTML NOT regenerated: no interpreter at {python}",
+                      file=sys.stderr)
+                regen_msg = (f" (HTML NOT regenerated: no interpreter at {python}. "
+                             "The HTML is STALE.)")
+            else:
+                try:
+                    # The result used to be discarded, so a renderer exiting 1
+                    # (a missing pygments, a template error) left stale HTML while
+                    # this hook appended "+ regenerated HTML" — a success claim on a
+                    # distribution pipeline that had not run. Found by the
+                    # 2026-08-23 audit. Non-zero stays non-blocking, per the module
+                    # docstring's promise of a warning, but it must now be SAID.
+                    failures = []
+                    for md_target in [file_path, *targets]:
+                        proc = subprocess.run(
+                            [str(python), str(regen_script), "--quiet", str(md_target)],
+                            cwd=ENGINE_ROOT,
+                            timeout=30,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        if proc.returncode != 0:
+                            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                            failures.append(f"{md_target.name} (exit {proc.returncode}"
+                                            + (f": {detail[-1]}" if detail else "") + ")")
+                    if failures:
+                        print(f"[sync-docs] HTML regen FAILED: {'; '.join(failures)}",
+                              file=sys.stderr)
+                        regen_msg = (f" (HTML regen FAILED for {len(failures)} target(s): "
+                                     f"{'; '.join(failures)}. The HTML is STALE.)")
+                    else:
+                        regen_msg = f" + regenerated HTML for {file_path.name}"
+                except Exception as e:
+                    print(f"[sync-docs] HTML regen warning for {file_path.name}: {e}", file=sys.stderr)
+                    regen_msg = f" (HTML regen warning: {e})"
         else:
             # The missing-script branch had no `else` at all: nothing on stderr,
             # nothing in the message, and a success line claiming a complete

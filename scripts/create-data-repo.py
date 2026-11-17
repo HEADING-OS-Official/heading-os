@@ -50,7 +50,7 @@ from scripts.utils.colors import BOLD, CYAN, GRAY, GREEN, RED, RESET, YELLOW
 from scripts.utils.data_homes import thread_homes
 from scripts.utils.git_push import supervised_push
 from scripts.utils.paths import DataRootError
-from scripts.utils.venv_guard import venv_python
+from scripts.utils.venv_guard import VenvMissing, child_python
 from scripts.utils.workspace import get_workspace_root, require_outside_engine_clone
 
 # Engine paths that must NEVER live in (or be pushed from) the data repo, plus
@@ -212,10 +212,11 @@ def scaffold(target: Path, dry_run: bool) -> int:
     if (target / ".schema-version").exists():
         print(f"{GRAY}data tree already scaffolded at {target}; resuming{RESET}")
         return 0
-    # The pinned interpreter; a clone with no .venv yet falls back to the one
-    # running this script, the only interpreter known to hold the dependencies.
-    pinned = venv_python()
-    python = str(pinned) if pinned.exists() else sys.executable
+    try:
+        python = child_python()
+    except VenvMissing as exc:
+        print(exc, file=sys.stderr)
+        return 2
     proc = run([python, str(init_data), "--path", str(target)],
                cwd=get_workspace_root(), check=False)
     sys.stdout.write(proc.stdout)

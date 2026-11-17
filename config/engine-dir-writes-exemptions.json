@@ -58,7 +58,7 @@
     },
     {
       "path": "scripts/prime-health-parallel.py",
-      "statement": "proc = subprocess.run(\n        [sys.executable, str(script), str(template),\n         str(workspace_root / \".claude\" / \"settings.local.json\"), \"--check\"],\n        cwd=str(workspace_root),\n        capture_output=True,\n        text=True,\n        timeout=CHECK_TIMEOUT,\n    )",
+      "statement": "proc = subprocess.run(\n        [child_python(), str(script), str(template),\n         str(workspace_root / \".claude\" / \"settings.local.json\"), \"--check\"],\n        cwd=str(workspace_root),\n        capture_output=True,\n        text=True,\n        timeout=CHECK_TIMEOUT,\n    )",
       "reason": "The Claude Code harness reads its per-checkout settings from this file inside the project directory, and scripts/setup-platform.sh writes the hook registrations there. Its place is fixed by the harness, not chosen by the engine."
     },
     {

@@ -465,21 +465,40 @@ def step_install_python_deps(state: dict) -> bool:
     warn("uv not found - install it (https://astral.sh/uv) for reproducible installs.")
     warn("Falling back to layered pip install.")
 
+    # M046.2 (HOS-372): pip installs into the checkout's venv, never into the
+    # interpreter running this wizard. With no venv yet, create one first; the
+    # running interpreter is used only to create it.
+    venv_dir = WORKSPACE_ROOT / ".venv"
+    if not ((venv_dir / "bin" / "python").exists() or (venv_dir / "Scripts" / "python.exe").exists()):
+        try:
+            run_cmd([sys.executable, "-m", "venv", str(venv_dir)])
+        except subprocess.CalledProcessError as e:
+            err = (str(e.stderr) if e.stderr else str(e)).strip()
+            fail(f"python -m venv failed (on Debian and Ubuntu: apt install python3-venv): {err[:300]}")
+            sys.exit(1)
+    _ensure_workspace_importable()
+    from scripts.utils.venv_guard import VenvMissing, child_python
+    try:
+        py = child_python()
+    except VenvMissing as exc:
+        fail(str(exc))
+        sys.exit(1)
+
     files_installed = []
 
     # The root requirements.txt.
     root_req = WORKSPACE_ROOT / "requirements.txt"
     if root_req.exists():
         print(f"  {root_req.relative_to(WORKSPACE_ROOT)}")
-        print(f"    Running: {sys.executable} -m pip install -r {root_req}")
+        print(f"    Running: {py} -m pip install -r {root_req}")
         try:
-            run_cmd([sys.executable, "-m", "pip", "install", "-r", str(root_req), "--quiet"])
+            run_cmd([py, "-m", "pip", "install", "-r", str(root_req), "--quiet"])
             ok(f"Installed dependencies from {root_req.relative_to(WORKSPACE_ROOT)}")
             files_installed.append(str(root_req.relative_to(WORKSPACE_ROOT)))
         except subprocess.CalledProcessError as e:
             err = (str(e.stderr) if e.stderr else str(e)).strip()
             fail(f"pip install of {root_req.relative_to(WORKSPACE_ROOT)} failed: {err[:300]}")
-            print(f"\n  {YELLOW}Try manually: python -m pip install -r {root_req.relative_to(WORKSPACE_ROOT)}{RESET}")
+            print(f"\n  {YELLOW}Try manually: python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt{RESET}")
             sys.exit(1)
     else:
         print(f"  {root_req.relative_to(WORKSPACE_ROOT)} not present (skipping)")

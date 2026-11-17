@@ -172,8 +172,11 @@ if [[ "${1:-}" == "--check" || "${1:-}" == "check" ]]; then
         # Not a silent skip. A checker that cannot run has not said the unit is
         # current, and reporting "ok" for want of an interpreter is this file's
         # own defect shape.
-        echo "  [FAIL] template drift: cannot run $drift_script" >&2
-        echo "         (interpreter: '${drift_python:-none}')." >&2
+        if [[ -z "$drift_python" ]]; then
+            echo "  [FAIL] template drift: no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE" >&2
+        else
+            echo "  [FAIL] template drift: cannot run $drift_script" >&2
+        fi
         failed=1
     elif "$drift_python" "$drift_script" --check \
             --templates-dir "$TEMPLATE_DIR" --units-dir "$DEST_DIR" \
@@ -199,7 +202,7 @@ if [[ "${1:-}" == "--check" || "${1:-}" == "check" ]]; then
 fi
 
 # Interpreter for the unit's ExecStart=, resolved by the one owner:
-# explicit PYTHON wins, else the pinned .venv, else PATH. MEASURED 2026-09-06:
+# explicit PYTHON wins, else the pinned .venv, else nothing. MEASURED 2026-09-06:
 # seven installed units ran on /usr/bin/python3, whose numpy and pyyaml are
 # luck rather than a contract, and everything they respawn through
 # sys.executable inherited it. Here it also saves a re-exec: the nightly runs
@@ -208,6 +211,10 @@ fi
 source "$(dirname "$0")/lib/resolve-python.sh"
 source "$(dirname "$0")/lib/render-units.sh"
 PYTHON="$(resolve_python "$WORKSPACE")"
+if [[ -z "$PYTHON" ]]; then
+    echo "no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE" >&2
+    exit 4
+fi
 
 # Unit timezone: HEADING_OS_TZ, else the workspace resolver, else UTC.
 TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
@@ -246,10 +253,6 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
     exit 0
 fi
 
-if [[ -z "$PYTHON" ]]; then
-    echo "No python3 (or python) on PATH" >&2
-    exit 4
-fi
 for unit in "$UNIT_NAME.service" "$UNIT_NAME.timer"; do
     if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
         echo "Template not found: $TEMPLATE_DIR/$unit" >&2

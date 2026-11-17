@@ -59,10 +59,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Re-exec under the project venv before anything else: the test gate spawns its
-# runner with sys.executable, so the whole chain must inherit the locked deps
-# (the system interpreter lacks pytest-cov). See scripts/utils/venv_guard.py.
-from scripts.utils.venv_guard import ensure_venv  # noqa: E402
+# Re-exec under the project venv before anything else, so this process itself
+# runs on the locked deps (the system interpreter lacks pytest-cov). Children
+# are started with `child_python()`, the venv interpreter, which refuses by
+# name when the venv is absent (M046.2). See scripts/utils/venv_guard.py.
+from scripts.utils.venv_guard import child_python, ensure_venv  # noqa: E402
 
 ensure_venv()
 
@@ -347,7 +348,7 @@ def _run_scanner(paths, cwd: Path, context: str, extra_env=None):
     payload = b"\0".join(p.encode("utf-8", "surrogateescape") for p in sorted(paths))
     try:
         proc = subprocess.run(
-            [sys.executable, str(SCANNER), "--stdin0"],
+            [child_python(), str(SCANNER), "--stdin0"],
             cwd=str(cwd), input=payload,
             capture_output=True, env=env, timeout=SCANNER_TIMEOUT_S,
         )
@@ -1370,7 +1371,7 @@ def engine_accepts_data(repo: Path, data_root: Path | None, data_ref: str) -> No
                    HEADING_OS_DATA=str(data_tree))
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", _ACCEPTANCE_PROBE, str(engine_tree),
+                [child_python(), "-c", _ACCEPTANCE_PROBE, str(engine_tree),
                  str(data_tree)],
                 cwd=str(engine_tree), env=env, capture_output=True, text=True,
                 timeout=_ACCEPTANCE_TIMEOUT_S, check=False)
@@ -1603,7 +1604,7 @@ def refresh_lific_archive(repo: Path) -> None:
     script = Path(__file__).resolve().parent / "lific-backup.py"
     if not script.is_file():  # a clone that predates it
         return
-    proc = subprocess.run([sys.executable, str(script), "--quiet"],
+    proc = subprocess.run([child_python(), str(script), "--quiet"],
                           cwd=str(repo), capture_output=True, text=True,
                           check=False)
     out = (proc.stdout or "").strip()

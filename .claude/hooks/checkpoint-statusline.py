@@ -16,6 +16,13 @@ operator and row 3 the push, each only while it has something to say. Herdr,
 lific and git are read by a detached refresher into `statusline_cache`
 (`scripts/utils/statusline_cache.py`); the render reads only that cache.
 
+Above those rows, the context bar (HOS-369): the context-bar mod writes the
+band's rows to `context-bar-<session id>.json` under the registry name
+`runtime:hook-state/cache`; this hook prints them, then a dotted separator,
+then its own rows. No bar when the file is missing, unreadable, another
+session's or empty. The mod starts no process, so this hook tells it where to
+write: `~/.claude/context-bar/<session id>.json` names that directory.
+
 Thresholds (env-vars, optional), the same for every session:
   CLAUDE_HANDOFF_SOFT_THRESHOLD   default 45  (% used -> the /second-wind menu)
   CLAUDE_HANDOFF_HARD_THRESHOLD   default 55  (% used -> the last call)
@@ -29,6 +36,7 @@ prints "Claude Code", and a field of the wrong shape is dropped at entry
 (`CP.read_payload`).
 """
 
+import json
 import os
 import re
 import subprocess
@@ -46,6 +54,7 @@ from scripts.utils import checkpoint_paths as CP  # noqa: E402
 from scripts.utils import checkpoint_autonomy as AU  # noqa: E402
 from scripts.utils.colors import supports_ansi  # noqa: E402
 from scripts.utils import statusline_cache as SC  # noqa: E402
+from scripts.utils.data_path import data_path  # noqa: E402
 
 CP.force_utf8()
 
@@ -141,9 +150,12 @@ def own_checkout_is_yard() -> bool:
 def git_branch(cwd: Path) -> str:
     if inside_data_repo(cwd):
         return ""
+    # HOS-370: no git in a folder outside this checkout and its worktrees.
+    if not SC.trusted_git_dir(cwd):
+        return ""
     try:
         result = subprocess.run(
-            ["git", "branch", "--show-current"],
+            ["git", "-c", "core.fsmonitor=false", "branch", "--show-current"],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -161,19 +173,28 @@ def is_linked_worktree(cwd: Path) -> bool:
     Inside the data repository no git runs: the hook's own checkout answers."""
     if inside_data_repo(cwd):
         return own_checkout_is_yard()
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=2,
-        )
-        lines = result.stdout.splitlines()
-        return result.returncode == 0 and len(lines) == 2 and lines[0] != lines[1]
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+    if not SC.trusted_git_dir(cwd):
         return False
+    # One flag per call: rev-parse has no `-z`, and a path holding a newline
+    # would split a two-path answer into more than two lines.
+    answers = []
+    for flag in ("--git-dir", "--git-common-dir"):
+        try:
+            result = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false", "rev-parse", "--path-format=absolute", flag],
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=2,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return False
+        answer = result.stdout.removesuffix("\n")
+        if result.returncode != 0 or not answer:
+            return False
+        answers.append(answer)
+    return answers[0] != answers[1]
 
 
 def is_main_clone(cwd: Path) -> bool:
@@ -521,6 +542,125 @@ def push_segment(now: float, state_path: Path | None = None) -> str:
     return f"{color}{text}{C_RESET}"
 
 
+# ============================================================
+# The context bar, from the rows the context-bar mod writes (HOS-369)
+# ============================================================
+
+# The id becomes part of a file name; the mod applies the same pattern.
+_BAR_SESSION = re.compile(r"^[A-Za-z0-9-]+$")
+_BAR_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+# Claude Code 2.1.326's dark theme, read from its binary (the theme object with
+# permission:"rgb(177,185,249)"): the mod has no API that turns a key into RGB.
+# Re-read these when the theme or the Claude Code version changes. A key not
+# listed here prints in the terminal's default colour.
+_BAR_THEME = {
+    "claude": "#d77757",
+    "permission": "#b1b9f9",
+    "promptBorder": "#888888",
+    "text": "#ffffff",
+    "inactive": "#999999",
+    "subtle": "#505050",
+    "suggestion": "#b1b9f9",
+    "success": "#4eba65",
+    "error": "#ff6b80",
+    "warning": "#ffc107",
+    "red_FOR_SUBAGENTS_ONLY": "#dc2626",
+    "blue_FOR_SUBAGENTS_ONLY": "#6a9bcc",
+    "green_FOR_SUBAGENTS_ONLY": "#16a34a",
+    "yellow_FOR_SUBAGENTS_ONLY": "#ca8a04",
+    "purple_FOR_SUBAGENTS_ONLY": "#827dbd",
+    "orange_FOR_SUBAGENTS_ONLY": "#d97757",
+    "pink_FOR_SUBAGENTS_ONLY": "#c46686",
+    "cyan_FOR_SUBAGENTS_ONLY": "#0891b2",
+}
+_BAR_SEPARATOR = "┈"
+
+
+def _bar_style(run: dict) -> str:
+    """The SGR codes of one run, '' when it has none or ANSI is off."""
+    if not _USE_ANSI:
+        return ""
+    codes = []
+    if run.get("bold"):
+        codes.append("1")
+    if run.get("dim"):
+        codes.append("2")
+    color = run.get("color")
+    hex_color = _BAR_THEME.get(color, color) if isinstance(color, str) else None
+    if isinstance(hex_color, str) and _BAR_HEX.match(hex_color):
+        r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+        codes.append(f"38;2;{r};{g};{b}")
+    return f"\033[{';'.join(codes)}m" if codes else ""
+
+
+def _cut_visible(text: str, width: int) -> str:
+    """`text` cut to `width` cells, never through an escape code."""
+    out, used, pos = [], 0, 0
+    for m in [*_ANSI.finditer(text), None]:
+        end = m.start() if m else len(text)
+        for ch in text[pos:end]:
+            if used + _cell(ch) > width:
+                return "".join(out) + (C_RESET if _USE_ANSI else "")
+            out.append(ch)
+            used += _cell(ch)
+        if m:
+            out.append(m.group())
+            pos = m.end()
+    return "".join(out)
+
+
+def write_bar_pointer(payload: dict) -> None:
+    """Tell the context-bar mod where to write this session's rows (HOS-369, F2).
+
+    The mod starts no process, so it cannot resolve a data address itself; this
+    hook runs from the engine checkout and writes the directory into Claude
+    Code's own config folder, `~/.claude/context-bar/<session id>.json`.
+    """
+    sid = CP.session_id(payload)
+    if not _BAR_SESSION.match(sid):
+        return
+    pointer = Path.home() / ".claude" / "context-bar" / f"{sid}.json"
+    body = json.dumps({"session": sid, "dir": str(data_path("runtime:hook-state/cache"))})
+    if pointer.is_file() and pointer.read_text(encoding="utf-8") == body:
+        return
+    CP.write_text_atomic(pointer, body)
+
+
+def context_bar_rows(payload: dict, width: int | None) -> list[str]:
+    """The bar's rows and the separator under them, or [] when there is no bar."""
+    sid = CP.session_id(payload)
+    if not _BAR_SESSION.match(sid):
+        return []
+    path = data_path("runtime:hook-state/cache") / f"context-bar-{sid}.json"
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("session") != sid:
+        return []
+    rows = data.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return []
+    lines = []
+    for row in rows:
+        if not isinstance(row, list):
+            raise ValueError("a bar row is not a list")
+        text = ""
+        for run in row:
+            if not isinstance(run, dict):
+                raise ValueError("a bar run is not an object")
+            style = _bar_style(run)
+            plain = _clean(str(run.get("text") or ""))
+            text += f"{style}{plain}{C_RESET}" if style else plain
+        line = text if width is None else _cut_visible(text, width)
+        # Claude Code trims the leading spaces of each status-line row, which
+        # put every label at its segment's column (HOS-373, measured
+        # 2026-11-17); a leading reset keeps them. With ANSI off there is no
+        # prefix and the padding may be lost.
+        lines.append(f"{C_RESET}{line}" if _USE_ANSI else line)
+    lines.append(f"{C_DIM}{_BAR_SEPARATOR * (80 if width is None else width)}{C_RESET}")
+    return lines
+
+
 def build_status_line(
     payload: dict,
     project: Path,
@@ -723,8 +863,23 @@ def main() -> int:
     elif render["refresh"]:
         workspace = payload.get("workspace") or {}
         cwd = Path(workspace.get("current_dir") or payload.get("cwd") or str(project))
-        SC.spawn_refresh(project, state_path, cwd)
+        # The refresher runs from this hook's own checkout, never the session's
+        # directory: the status line runs in every folder Claude Code opens, and
+        # a repository shipping its own `.venv/bin/python` would have it run
+        # (HOS-369, F1; measured 2026-11-17 with a planted interpreter).
+        SC.spawn_refresh(CP.engine_root(), state_path, cwd)
 
+    try:
+        write_bar_pointer(payload)
+    except Exception as exc:  # noqa: BLE001 - a missing pointer only keeps the band above the prompt
+        print(f"checkpoint-statusline: context bar pointer not written: {exc}", file=sys.stderr)
+    try:
+        bar = context_bar_rows(payload, row_width())
+    except Exception as exc:  # noqa: BLE001 - the bar's file is outside input; the line still prints
+        print(f"checkpoint-statusline: context bar skipped: {exc}", file=sys.stderr)
+        bar = []
+    if bar:
+        print("\n".join(bar))
     print(
         build_status_line(
             payload,

@@ -1,10 +1,18 @@
-// context-bar: a band above the prompt showing what fills the context window,
-// by category, measured against the whole 1M window with its attention,
-// /second-wind and auto-compact points marked, with last turn's growth
-// and a forecast of turns left; and a panel listing every item. Reads
-// `$.session.usage({ breakdown: 'summary' })`, which estimates locally and sends
-// no request, and the two handoff thresholds from the environment: no network,
-// no model calls, no files. The layout itself is in ./layout.
+// context-bar: the context bar, showing what fills the context window, by
+// category, measured against the whole 1M window with its attention,
+// /second-wind and auto-compact points marked, with last turn's growth and a
+// forecast of turns left; and a panel listing every item. The bar is drawn by
+// the status line, under the prompt (HOS-369): the mod writes the band's rows
+// to one file per session, `context-bar-<session id>.json` under the registry
+// name `runtime:hook-state/cache`, which `.claude/hooks/checkpoint-statusline.py`
+// prints above its own rows. The mod starts no process: the status line, which
+// runs from the engine checkout, tells it where to write through a pointer per
+// session, `<HOME>/.claude/context-bar/<session id>.json`, in Claude Code's own
+// config folder. With no valid pointer (a session whose status line is not the
+// engine's) or a failed write, the band is drawn above the prompt as before.
+// Reads `$.session.usage({ breakdown: 'summary' })`, which estimates locally
+// and sends no request, and the two handoff thresholds from the environment:
+// no network, no model calls. The layout itself is in ./layout.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextBreakdown } from 'claude-code'
 import { bandOf, limitOf, panelHeaderOf, pushTurn, sumOf, thresholdsOf, tokens, turnOf } from './layout'
@@ -19,6 +27,72 @@ const figures = atom({ plugin: 'context-bar', key: 'figures' } as const, null)
 const contextWindow = atom({ plugin: 'context-bar', key: 'window' } as const, null)
 const contextTokens = atom({ plugin: 'context-bar', key: 'tokens' } as const, null)
 const history = atom({ plugin: 'context-bar', key: 'history' } as const, [])
+
+// ============================================================
+// The status line's file
+// ============================================================
+
+// The directory the status line's pointer names for this session, or
+// undefined while there is no valid pointer: then the band is drawn above the
+// prompt. Never built here (no physical data path, M051).
+let barDir: string | undefined
+// The session id and rows last written, so an unchanged render writes nothing.
+let lastWritten: string | undefined
+
+// The id becomes part of a file name; the status line applies the same pattern.
+const SESSION_ID = /^[A-Za-z0-9-]+$/
+
+// The session the pointer was read for, and when, so a render reads the
+// pointer only when the id changes, or while there is none, at most every 5 s.
+let pointerFor: string | undefined
+let pointerReadAt = 0
+const POINTER_EVERY_MS = 5000
+
+// Reads `<HOME>/.claude/context-bar/<id>.json`, which the engine's status line
+// writes (HOS-369, F2): the only trusted source of the directory. Any folder a
+// session opens is untrusted, so nothing found through it is ever run.
+const refreshPointer = async ($: EngineInterface): Promise<void> => {
+  const id = await $.session.id()
+  const now = Date.now()
+  if (id === pointerFor && barDir !== undefined) return
+  if (id === pointerFor && now - pointerReadAt < POINTER_EVERY_MS) return
+  pointerFor = id
+  pointerReadAt = now
+  barDir = undefined
+  try {
+    const home = ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
+    if (!home.startsWith('/') || !SESSION_ID.test(id)) return
+    const p = JSON.parse(await $.fs.read(`${home}/.claude/context-bar/${id}.json`))
+    const dir = p?.dir
+    if (p?.session !== id || typeof dir !== 'string' || !dir.startsWith('/') || dir.split('/').includes('..')) {
+      $.ui.log('context-bar: pointer invalid, bar stays above the prompt', { to: 'debug' })
+      return
+    }
+    barDir = dir.replace(/\/+$/, '')
+  } catch (err) {
+    // No pointer: the engine's status line does not draw in this session.
+    $.ui.log(`context-bar: no pointer: ${String(err)}`, { to: 'debug' })
+  }
+}
+
+// Writes this session's rows for the status line; true when the file holds
+// them (written now or before), false when the write failed.
+const writeRows = async ($: EngineInterface, rows: Run[][], columns: number): Promise<boolean> => {
+  try {
+    const id = await $.session.id()
+    if (!SESSION_ID.test(id)) throw new Error(`session id not usable in a file name: ${JSON.stringify(id)}`)
+    const key = id + '\n' + JSON.stringify(rows)
+    if (key === lastWritten) return true
+    const body = { session: id, written_at: new Date().toISOString(), columns, rows }
+    await $.fs.write(`${barDir}/context-bar-${id}.json`, JSON.stringify(body))
+    lastWritten = key
+    return true
+  } catch (err) {
+    lastWritten = undefined
+    $.ui.log(`context-bar: write for the status line failed: ${String(err)}`, { to: 'debug' })
+    return false
+  }
+}
 
 // ============================================================
 // Figures
@@ -163,11 +237,17 @@ export const register: Register = on => {
 
   // The band yields to a survey and to any inner hook that draws (agent-watch's
   // batch row among them), and draws only over the engine's own empty band.
+  // While the status line's file is written, the status line draws the bar
+  // and nothing is drawn here; with nothing to draw, the file holds no rows.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    await refreshPointer($)
     const isOn = await read($, isBandOn)
     const f = await read($, figures)
-    if (!isOn || f === null) return next(e)
+    if (!isOn || f === null) {
+      if (barDir !== undefined) await writeRows($, [], e.props.bodyColumns)
+      return next(e)
+    }
     const inner = await next(e)
     if (inner.type !== 'engine') return inner
     const lines = bandOf({
@@ -179,7 +259,13 @@ export const register: Register = on => {
       history: await read($, history),
       columns: e.props.bodyColumns,
     })
-    if (lines === undefined) return inner
+    if (lines === undefined) {
+      if (barDir !== undefined) await writeRows($, [], e.props.bodyColumns)
+      return inner
+    }
+    // No theme API turns a key into RGB (2.1.312 types), so the colours stay
+    // theme keys and the status line maps them.
+    if (barDir !== undefined && (await writeRows($, lines, e.props.bodyColumns))) return inner
     const { Box, Text } = $.ui.resolve(e)
     const run = (r: Run, i: number) => (
       <Text key={`r${i}`} color={r.color} bold={r.bold} dimColor={r.dim}>

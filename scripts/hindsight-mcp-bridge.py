@@ -1626,6 +1626,8 @@ class _StBridge:
     def __init__(self, url: str, tmp: Path, *, headers: str | None = None, cache: Path | None = None,
                  args: tuple = (), headers_path: Path | None = None) -> None:
         import subprocess
+
+        from scripts.utils.venv_guard import child_python
         tmp.mkdir(parents=True, exist_ok=True)
         hf = headers_path or tmp / "headers.json"
         if headers_path is None:
@@ -1639,7 +1641,7 @@ class _StBridge:
                 extra += [k, v]
         env = dict(os.environ, HINDSIGHT_MCP_BRIDGE_DEBUG="1")
         self.proc = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--url", url, "--headers-file", str(hf),
+            [child_python(), str(Path(__file__).resolve()), "--url", url, "--headers-file", str(hf),
              "--cache-file", str(self.cache), *extra, "serve"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         self.lines: list = []

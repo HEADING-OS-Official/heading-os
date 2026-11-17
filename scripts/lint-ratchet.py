@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.atomic import atomic_write_text  # noqa: E402
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
+from scripts.utils.venv_guard import child_python  # noqa: E402
 
 BASELINE = get_workspace_root() / ".lint-baseline.json"
 
@@ -40,13 +41,12 @@ def _interpreter() -> str:
     On a machine where that PATH interpreter is not the venv, reading
     `sys.executable` alone put the whole gate under an interpreter that had
     never heard of ruff, and the answer came back "0 findings".
+
+    No fallback (M046.2): `child_python()` checks both venv layouts and, when
+    neither exists, raises VenvMissing, so the gate exits non-zero by name
+    rather than reporting under an interpreter that may lack ruff.
     """
-    root = get_workspace_root()
-    for candidate in (root / ".venv" / "bin" / "python",
-                      root / ".venv" / "Scripts" / "python.exe"):
-        if candidate.exists():
-            return str(candidate)
-    return sys.executable
+    return child_python()
 
 
 def _current() -> Counter:

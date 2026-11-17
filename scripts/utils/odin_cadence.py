@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
+
+from scripts.utils.venv_guard import VenvMissing, child_python
 
 DEFAULT_TIMEOUT = 60
 
@@ -48,7 +49,7 @@ def read_cadence_json(engine_root: Path, *, script: Path | None = None,
 
     try:
         proc = subprocess.run(
-            [sys.executable, str(target), "--json"],
+            [child_python(), str(target), "--json"],
             cwd=str(engine_root),
             capture_output=True,
             text=True,
@@ -67,7 +68,7 @@ def read_cadence_json(engine_root: Path, *, script: Path | None = None,
             errors="replace",
             timeout=timeout,
         )
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, subprocess.SubprocessError, VenvMissing) as e:
         return {}, f"{target.name} did not run ({type(e).__name__}: {e})"
 
     if proc.returncode != 0:

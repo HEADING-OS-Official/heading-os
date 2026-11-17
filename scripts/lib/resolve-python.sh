@@ -17,8 +17,11 @@
 #      Modern Linux (Ubuntu 24.04+, Fedora 38+) enforces PEP 668 against system
 #      Python, so the venv interpreter is preferred over a bare python3 even
 #      where the bare one would import.
-#   3. The first `python3`/`python` on PATH, when the venv is genuinely absent.
-#      May be empty; the caller decides what to do about that.
+#   3. Nothing: an empty line, when the venv is absent. There is no PATH
+#      fallback (M046.2, HOS-372): a unit never runs a bare python3, whose
+#      dependencies are luck rather than a contract. Every caller checks for the
+#      empty string directly after this call and refuses with
+#      "no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE".
 #
 # WHY THIS FILE EXISTS
 #
@@ -42,8 +45,7 @@ resolve_python() {
     return 0
   fi
 
-  # May print nothing. An installer that cannot proceed without an interpreter
-  # checks for the empty string itself and exits with its own message.
-  printf '%s\n' "$(command -v python3 || command -v python || true)"
+  # No venv: print an empty line. The caller refuses with its own message.
+  printf '\n'
   return 0
 }

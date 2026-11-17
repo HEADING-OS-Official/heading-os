@@ -34,6 +34,10 @@ WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 source "$(dirname "$0")/lib/resolve-python.sh"
 source "$(dirname "$0")/lib/render-units.sh"
 PYTHON="$(resolve_python "$WORKSPACE")"
+if [[ -z "$PYTHON" ]]; then
+    echo "no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE" >&2
+    exit 4
+fi
 TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
 
 TEMPLATE_DIR="$WORKSPACE/scripts/templates/systemd"
@@ -57,10 +61,6 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
     exit 0
 fi
 
-if [[ -z "$PYTHON" ]]; then
-    echo "No python3 (or python) on PATH" >&2
-    exit 4
-fi
 for unit in ${UNITS[@]+"${UNITS[@]}"}; do
     if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
         echo "Template not found: $TEMPLATE_DIR/$unit" >&2

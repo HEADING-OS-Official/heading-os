@@ -119,11 +119,54 @@ def _check(deadline: float) -> None:
     if time.monotonic() >= deadline:
         raise OutOfTime(f"refresh passed its {CHILD_BUDGET}s budget")
 
+# The worktree paths of this checkout, read once per process by trusted_git_dir.
+_TRUSTED_WORKTREES: list[Path] | None = None
+
+
+def trusted_git_dir(path: Path) -> bool:
+    """True when git may run in `path`: this checkout (`_ROOT`) or one of its
+    worktrees. Never runs git in `path` itself.
+
+    HOS-370: git reads the config of the repository it runs in, and config such
+    as `core.fsmonitor` names a program git starts, so a status line that runs
+    git in a folder someone else controls runs their program. A repository
+    nested inside this checkout counts as trusted on purpose: the engine tree is
+    the operator's own."""
+    global _TRUSTED_WORKTREES
+    try:
+        here = path.resolve()
+        root = _ROOT.resolve()
+    except OSError as exc:
+        _log(f"path not resolved, git not run there: {exc}")
+        return False
+    if here == root or root in here.parents:
+        return True
+    if _TRUSTED_WORKTREES is None:
+        _TRUSTED_WORKTREES = []
+        try:
+            proc = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false", "-C", str(_ROOT),
+                 "worktree", "list", "--porcelain", "-z"],
+                capture_output=True, text=True, errors="replace", timeout=GIT_TIMEOUT,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(f"exit {proc.returncode}: {proc.stderr.strip()}")
+            # `-z`: NUL-separated fields, so a path holding a newline stays whole.
+            listed = [Path(field[len("worktree "):]).resolve()
+                      for field in proc.stdout.split("\0") if field.startswith("worktree ")]
+            if not listed:
+                raise ValueError("no worktree line in the output")
+            _TRUSTED_WORKTREES = listed
+        except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as exc:
+            _log(f"worktree list not read, only this checkout is trusted: {exc}")
+    return any(here == tree or tree in here.parents for tree in _TRUSTED_WORKTREES)
+
+
 def _git(path: Path, *args: str) -> str | None:
     """One read-only git call; None when it fails. Never takes an optional lock."""
     try:
         proc = subprocess.run(
-            ["git", "--no-optional-locks", "-C", str(path), *args],
+            ["git", "-c", "core.fsmonitor=false", "--no-optional-locks", "-C", str(path), *args],
             capture_output=True, text=True, errors="replace", timeout=GIT_TIMEOUT,
         )
     except (subprocess.SubprocessError, OSError) as exc:
@@ -219,7 +262,10 @@ def yards(board, repo_root: Path, deadline: float) -> tuple[int, list[dict]]:
             continue
         total += 1
         _check(deadline)
-        branch = (_git(Path(str(tree.get("checkout_path"))), "branch", "--show-current") or "").strip()
+        checkout_path = Path(str(tree.get("checkout_path")))
+        branch = ""
+        if trusted_git_dir(checkout_path):
+            branch = (_git(checkout_path, "branch", "--show-current") or "").strip()
         ident = _first_task(branch)
         title, reason, since = "", None, None
         if "blocked" in status_by_ws[name]:
@@ -241,10 +287,16 @@ def yards(board, repo_root: Path, deadline: float) -> tuple[int, list[dict]]:
     return total, waiting
 
 
+def _git_path(path: Path, flag: str) -> str:
+    """One path from `git rev-parse <flag>`; "" when git fails. Only git's final
+    newline is removed: rev-parse has no `-z`, and a path may end in a space."""
+    return (_git(path, "rev-parse", "--path-format=absolute", flag) or "").removesuffix("\n")
+
+
 def _in_yard(cwd: Path) -> bool:
-    out = _git(cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
-    lines = (out or "").splitlines()
-    return len(lines) == 2 and lines[0] != lines[1]
+    # One flag per call: a path holding a newline would split a two-path answer.
+    git_dir, common = _git_path(cwd, "--git-dir"), _git_path(cwd, "--git-common-dir")
+    return bool(git_dir) and bool(common) and git_dir != common
 
 
 def _helm_for_data() -> bool:
@@ -286,7 +338,7 @@ def collect(state: dict, cwd: Path, previous: dict, deadline: float) -> dict:
     if _inside(_ROOT, data_root):
         _log("this checkout lies inside the data repository; no git call made")
         return cache
-    top = (_git(_ROOT, "rev-parse", "--show-toplevel") or "").strip()
+    top = (_git(_ROOT, "rev-parse", "--show-toplevel") or "").removesuffix("\n")
     checkout = Path(top).resolve() if top else _ROOT
     if _inside(checkout, data_root):
         _log("this checkout lies inside the data repository; no further git call made")
@@ -332,7 +384,7 @@ def collect(state: dict, cwd: Path, previous: dict, deadline: float) -> dict:
     if yard:
         cache["yards_total"], cache["yards_waiting"] = 0, []
     else:
-        common = (_git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").strip()
+        common = _git_path(checkout, "--git-common-dir")
         repo_root = Path(common).resolve().parent if common else checkout
         _check(deadline)
         try:

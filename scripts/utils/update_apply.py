@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from scripts.utils.update_registry import Component  # noqa: E402
 from scripts.utils.update_common import classify, resolve_current, versions_differ, write_state  # noqa: E402
+from scripts.utils.venv_guard import child_python  # noqa: E402
 
 
 class RollbackFailed(Exception):
@@ -91,7 +92,7 @@ def _default_applier(comp: Component) -> Callable[[], None]:
             root = Path(__file__).resolve().parent.parent.parent
             # A script may need longer than the default (the Hindsight server
             # build, backup and migration, HOS-359): the registry's `timeout_s`.
-            subprocess.run([sys.executable, str(root / comp.apply["script"])],
+            subprocess.run([child_python(), str(root / comp.apply["script"])],
                           check=True, timeout=int(comp.apply.get("timeout_s", 900)))
         else:
             raise ValueError(f"{comp.name}: apply block has neither cmd nor script")

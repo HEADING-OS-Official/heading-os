@@ -35,13 +35,17 @@ require_main_clone
 WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Interpreter for the unit's ExecStart=, resolved by the one owner:
-# explicit PYTHON wins, else the pinned .venv, else PATH. MEASURED 2026-09-06:
+# explicit PYTHON wins, else the pinned .venv, else nothing. MEASURED 2026-09-06:
 # seven installed units ran on /usr/bin/python3, whose numpy and pyyaml are
 # luck rather than a contract, and everything they respawn through
 # sys.executable inherited it.
 source "$(dirname "$0")/lib/resolve-python.sh"
 source "$(dirname "$0")/lib/render-units.sh"
 PYTHON="$(resolve_python "$WORKSPACE")"
+if [[ -z "$PYTHON" ]]; then
+    echo "no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE" >&2
+    exit 4
+fi
 
 # Unit timezone: HEADING_OS_TZ, else the workspace resolver, else UTC.
 TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
@@ -49,10 +53,6 @@ TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
 TEMPLATE_DIR="$WORKSPACE/scripts/templates/systemd"
 DEST_DIR="$HOME/.config/systemd/user"
 
-if [[ -z "$PYTHON" ]]; then
-    echo "No python interpreter found (set PYTHON=...)." >&2
-    exit 4
-fi
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "systemctl not found - systemd user units require systemd >= 226." >&2
     echo "On WSL2 enable systemd via /etc/wsl.conf:" >&2

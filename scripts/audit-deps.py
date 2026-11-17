@@ -182,7 +182,11 @@ def main() -> int:
         )
         return 0  # graceful skip; mirrors the pre-commit hook's degrade contract
 
-    cmd = [sys.executable, "-m", "pip_audit", "--strict"]
+    from scripts.utils.venv_guard import child_python
+
+    # The checkout's venv interpreter, never sys.executable (M046.2); with no
+    # venv, child_python() refuses with VenvMissing and the script exits non-zero.
+    cmd = [child_python(), "-m", "pip_audit", "--strict"]
     # Advisories the operator has accepted, with a reason, an owner and an expiry
     # date. Read through the shared reader so this gate and the pre-commit one
     # cannot disagree about what is suppressed, and ANNOUNCED on stderr before

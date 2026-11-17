@@ -77,6 +77,7 @@ from scripts.utils.workspace import get_default_tz, get_default_tz_name, get_wor
 from scripts.utils.data_path import (  # noqa: E402
     DataPathError, config_names, data_write_dir, deprecated_config_path)
 from scripts.utils.clone_guard import require_main_clone
+from scripts.utils.venv_guard import child_python
 
 
 def _configure_session_wal(client, busy_timeout_ms=30000):
@@ -4421,7 +4422,9 @@ def launch_daemon(config_path):
     foreground without --daemon and handles the backgrounding itself.
     """
     import subprocess
-    python = sys.executable
+    # The checkout's venv interpreter, never sys.executable (M046.2); with no
+    # venv this one-shot launcher refuses with VenvMissing before any spawn.
+    python = child_python()
     script = str(Path(__file__).resolve())
     cmd = [python, script, "--config", str(config_path)]
 

@@ -79,10 +79,25 @@ repeats once.
 `save` prints the absolute path of what it wrote, and that path is what goes
 into the handoff and into the sentence spoken before execution.
 
+THE SPEC BLOCK (HOS-366). An expansion carries one fenced `yaml` block in
+schema v1, owned by `scripts/utils/prompt_spec.py`. `save` checks its form and
+writes `Spec: valid`, `Spec: none` or `Spec: invalid (<reasons>)` directly
+under the `Task:` line, so `Task:` stays inside the first 12 lines that
+`dossier.header_tasks` reads. `save` NEVER refuses because of the spec: the
+archive exists so that no prompt is lost, so an invalid block is saved and the
+exit code 3 tells the caller. `check --original <file|-> --expanded <file|->`
+gives the same verdict and exit code and writes nothing. The spec module is
+imported inside `save` and `check` only, so `list` and `latest`, which the
+hooks run, do not depend on `yaml` or `jsonschema`. An acceptance `run` is
+checked for shape and never executed.
+
+  python scripts/prompt-archive.py check --original verbatim.txt --expanded expansion.md
+
 Exit codes:
-  0  done.
+  0  done (for `save` and `check`: the spec is valid, or there is none).
   1  a named refusal: an unreadable source, an empty prompt, no writable overlay.
   2  bad usage.
+  3  `save` or `check`: the spec block is invalid (`save` still wrote the file).
 """
 
 import argparse
@@ -191,8 +206,10 @@ def objective_line(expanded: str) -> str:
 
 
 def save(original: str, expanded: str, *, slug: str,
-         session_id: str | None = None, now: datetime | None = None) -> Path:
-    """Write one prompt file and return its absolute path."""
+         session_id: str | None = None,
+         now: datetime | None = None) -> tuple[Path, str, list[str]]:
+    """Write one prompt file; return its absolute path and the spec verdict."""
+    from scripts.utils import prompt_spec
     if not _SLUG_OK.match(slug):
         raise PromptArchiveError(
             f"slug {slug!r} must be lowercase letters, digits and hyphens, "
@@ -231,13 +248,19 @@ def save(original: str, expanded: str, *, slug: str,
     tasks = dossier.record_ids(original + "\n" + expanded)
     rel_path = dossier.rel(path)
     carried = "".join(f"\n{dossier.dropped_line(t, rel_path)}" for t in dropped)
+    try:
+        status, reasons = prompt_spec.verdict(expanded, original)
+    except Exception as exc:  # noqa: BLE001 - a spec never stops a prompt being archived
+        status, reasons = "invalid", [_internal_reason(exc)]
+    spec_line = _spec_header(status, reasons)
 
     body = f"""# Prompt: {slug}
 
 Saved: {stamp_at.isoformat()}
 Session: {session}
 Sequence: {sequence} in this session
-{dossier.task_header(tasks)}{carried}
+{dossier.task_header(tasks)}
+{spec_line}{carried}
 
 ## The operator's words, verbatim
 
@@ -262,20 +285,65 @@ disagreement is a finding to raise, not a gap to fill by choosing one.
         print(f"dossier: {dossier.dropped_line(ident, rel_path)}", file=sys.stderr)
     dossier.post(tasks, "prompt", f"#{sequence}", session, [objective_line(expanded)],
                  rel_path)
-    return path
+    return path, status, reasons
+
+
+def _internal_reason(exc: Exception) -> str:
+    """The reason recorded when the spec check itself raised."""
+    first = (str(exc).splitlines() or [""])[0]
+    return f"internal: {type(exc).__name__}: {first}"
+
+
+def _spec_header(status: str, reasons: list[str]) -> str:
+    """The `Spec:` header line; each reason cut to 120 characters."""
+    if status != "invalid":
+        return f"Spec: {status}"
+    return f"Spec: invalid ({'; '.join(r[:120] for r in reasons)})"
+
+
+def _report_spec(status: str) -> int:
+    """Print the verdict's plain lines and the stderr warning; return the exit code."""
+    if status == "none":
+        print("prompt-archive: no spec block in the expansion", file=sys.stderr)
+    return 3 if status == "invalid" else 0
+
+
+def _print_spec_lines(status: str, reasons: list[str]) -> None:
+    print(f"Spec: {status}")
+    for reason in reasons:
+        print(reason)
 
 
 def _cmd_save(args) -> int:
-    path = save(_read_source(args.original), _read_source(args.expanded),
-                slug=args.slug, session_id=args.session)
+    path, status, reasons = save(_read_source(args.original), _read_source(args.expanded),
+                                 slug=args.slug, session_id=args.session)
     if args.json:
-        print(json.dumps({"path": str(path)}))
+        print(json.dumps({"path": str(path), "spec": status, "reasons": reasons}))
     else:
         print(f"{BOLD}{GREEN}prompt archived{RESET}")
         print(f"  {path}")
         print(f"{GRAY}  Read this file before executing. It is the master "
               f"instruction, and its path belongs in the handoff.{RESET}")
-    return 0
+        _print_spec_lines(status, reasons)
+    return _report_spec(status)
+
+
+def _cmd_check(args) -> int:
+    from scripts.utils import prompt_spec
+    if args.original == "-" and args.expanded == "-":
+        print("only one of --original and --expanded may be -", file=sys.stderr)
+        return 2
+    original = _read_source(args.original)
+    expanded = _read_source(args.expanded)
+    try:
+        status, reasons = prompt_spec.verdict(expanded, original)
+    except Exception as exc:  # noqa: BLE001 - check reports what save would write
+        status, reasons = "invalid", [_internal_reason(exc)]
+    if args.json:
+        print(json.dumps({"spec": status, "reasons": reasons}))
+    else:
+        _print_spec_lines(status, reasons)
+    return _report_spec(status)
 
 
 def _cmd_list(args) -> int:
@@ -319,6 +387,13 @@ def main() -> int:
                        help="file holding the expansion, or -")
     saver.add_argument("--session", default=None, help="override the session id")
     saver.set_defaults(func=_cmd_save)
+
+    checker = sub.add_parser("check", help="check an expansion's spec block; write nothing")
+    checker.add_argument("--original", required=True,
+                         help="file holding the operator's words verbatim, or -")
+    checker.add_argument("--expanded", required=True,
+                         help="file holding the expansion, or -")
+    checker.set_defaults(func=_cmd_check)
 
     lister = sub.add_parser("list", help="this session's prompts, in order")
     lister.add_argument("--session", default=None,

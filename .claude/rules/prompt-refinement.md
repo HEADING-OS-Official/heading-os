@@ -1,7 +1,7 @@
-<!-- version: 1.1.0 | last-updated: 2026-10-29 -->
+<!-- version: 1.2.0 | last-updated: 2026-11-17 -->
 # Prompt Refinement Protocol
 
-Last Updated: 2026-10-29
+Last Updated: 2026-11-17
 Last Verified: 2026-05-13
 
 Always-active rule: when Claude expands and confirms a request before acting, and when it acts at once.
@@ -25,6 +25,7 @@ Restate the request as a fully expanded, execution-ready prompt, opening with:
 - Deliverables and file outputs
 - Constraints, tone, and quality bar
 - Assumptions, flagged explicitly
+- The spec block: one fenced `yaml` block in schema v1 (`scripts/utils/prompt_spec.py`), tier `minimal` for every task and `full` for a task that goes to a yard or changes code; every one of the operator's asks is an `asks` entry quoting his words; a routine task uses a preset instead. Open questions go in `open_questions`, and the flow stops while it is not empty.
 - Open questions: what is still undecided and would change the result, each answerable at the approval stop; only when there are some. An assumption is a gap you chose to fill; an open question is a gap you hand back.
 - Affected systems and people: only when the task touches something live, another repository, or another person
 - The measurable-execution block last, per `measurable-execution.md` (metric always; `/loop` and `/goal` proposals only on signal)
@@ -34,6 +35,8 @@ Restate the request as a fully expanded, execution-ready prompt, opening with:
 If ambiguity blocks a confident expansion, ask focused questions BEFORE presenting it, only what is necessary. Do not invent detail; flag gaps.
 
 ### Phase 3 - Save The Prompt, Then Execute
+
+Before showing the expansion, run `.venv/bin/python scripts/prompt-archive.py check --original <file> --expanded <file>`. At the approval stop, show the operator both the plain text and the YAML block. Execution starts only after a save printed `Spec: valid`. Two stop conditions always apply without being written: work outside `scope.in`, and a failed gate.
 
 Where the flow reached an approval stop, STOP. Do not execute. Wait for explicit approval: "approved", "proceed", "go", "execute", or "yes".
 

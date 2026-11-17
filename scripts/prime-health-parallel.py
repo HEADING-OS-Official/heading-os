@@ -33,7 +33,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.checkpoint_paths import transcript_dir  # noqa: E402
-from scripts.utils.venv_guard import venv_python  # noqa: E402
+from scripts.utils.venv_guard import child_python, venv_python  # noqa: E402
 from scripts.utils.dossier import LIFIC_TIMEOUT  # noqa: E402
 from scripts.utils.dossier import relink_command as dossier_relink  # noqa: E402
 from scripts.utils.workspace import (  # noqa: E402
@@ -149,7 +149,7 @@ def run_hooks_armed(workspace_root: Path) -> dict[str, Any]:
                           f"{missing} is absent",
                 "omit_if_empty": False}
     proc = subprocess.run(
-        [sys.executable, str(script), str(template),
+        [child_python(), str(script), str(template),
          str(workspace_root / ".claude" / "settings.local.json"), "--check"],
         cwd=str(workspace_root),
         capture_output=True,

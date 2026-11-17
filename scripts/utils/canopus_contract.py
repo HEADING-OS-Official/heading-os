@@ -52,12 +52,12 @@ from scripts.utils.canopus_nullstub import (
 # or renamed, and what it would survive INTO is a probe that replaces its own
 # plugin's module and cannot say why it died. Measured; see that function.
 from scripts.utils import canopus_nullstub as _nullstub
-# `venv_python` ONLY, never `ensure_venv`. The first is a pure path computation;
+# `child_python` ONLY, never `ensure_venv`. The first is a pure path lookup;
 # the second re-execs the running process, and this module is imported by the
 # CLI, by the gate's callers and by the suite. An import that could re-exec is a
 # module that cannot be imported from a test.
 from scripts.utils.data_path import data_write_dir
-from scripts.utils.venv_guard import interpreter_identity, venv_python
+from scripts.utils.venv_guard import child_python, interpreter_identity
 
 DEFAULT_PATTERNS = ("test_*.py",)
 RED_OUTCOMES = ("failure", "error")
@@ -91,14 +91,14 @@ def pytest_child_env(**overrides: str) -> dict:
 def contract_interpreter() -> Path:
     """The interpreter every Canopus child is launched with.
 
-    The project venv's interpreter when it exists on disk, and the invoking
-    `sys.executable` otherwise. Never `ensure_venv`, which re-execs: this module is
-    imported by the CLI and by the suite.
+    The project venv's interpreter, from `venv_guard.child_python`. No fallback
+    to the invoking `sys.executable` (M046.2): with no venv this raises
+    `VenvMissing`, a named refusal. Never `ensure_venv`, which re-execs: this
+    module is imported by the CLI and by the suite.
 
     See design#contract_interpreter
     """
-    target = venv_python()
-    return target if target.exists() else Path(sys.executable)
+    return Path(child_python())
 
 
 def interpreter_notice(chosen: Path, invoking: Path) -> str:

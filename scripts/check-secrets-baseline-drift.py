@@ -52,12 +52,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / ".secrets.baseline"
 
+sys.path.insert(0, str(ROOT))
+from scripts.utils.venv_guard import VenvMissing, child_python  # noqa: E402
+
 
 def work_dir() -> Path:
     runner_temp = os.environ.get("RUNNER_TEMP")
     if runner_temp:
         return Path(runner_temp)
-    proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "data-path.py"), "scratch"],
+    proc = subprocess.run([child_python(), str(ROOT / "scripts" / "data-path.py"), "scratch"],
                           capture_output=True, text=True, check=False)
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RuntimeError(f"no scratch directory: {proc.stderr.strip()}")
@@ -71,13 +74,13 @@ def main() -> int:
         work.mkdir(parents=True, exist_ok=True)
         copy = work / "baseline.new"
         shutil.copyfile(BASELINE, copy)
-        proc = subprocess.run([sys.executable, "-m", "detect_secrets", "scan", "--baseline", str(copy)],
+        proc = subprocess.run([child_python(), "-m", "detect_secrets", "scan", "--baseline", str(copy)],
                               cwd=str(ROOT), capture_output=True, text=True, check=False)
         if proc.returncode != 0:
             raise RuntimeError(f"detect-secrets scan exited {proc.returncode}: {proc.stderr.strip()[-400:]}")
         old = json.loads(BASELINE.read_text(encoding="utf-8"))["results"]
         new = json.loads(copy.read_text(encoding="utf-8"))["results"]
-    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+    except (OSError, RuntimeError, VenvMissing, ValueError, KeyError) as exc:
         print(f"check-secrets-baseline-drift: cannot run: {exc}", file=sys.stderr)
         return 2
     if old == new:

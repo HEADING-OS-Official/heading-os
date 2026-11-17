@@ -34,8 +34,8 @@
 #   "opus"   -> opus
 #   "fable"  -> fable
 #
-# The fable tier (2026-09-27) copies the opus chain: both are heavy-reasoning
-# families (`claude_models.THINKING_FAMILIES`). A proposal, not a measurement.
+# The fable tier (2026-09-27) copies the opus chain because both are
+# heavy-reasoning tiers. A proposal, not a measurement.
 #
 # Vendor strings are case-sensitive identifiers expected by llm_fallback:
 #   kimi-for-coding -> consult_kimi()

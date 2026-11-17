@@ -1,7 +1,7 @@
 {
   "name": "context-bar",
-  "version": "0.3.2",
-  "description": "A band above the prompt (/context-bar) showing what fills the context window by category, against the whole 1M window with attention, /second-wind and auto-compact marked, with a turns-left forecast; /context-bar panel lists every item.",
+  "version": "0.4.2",
+  "description": "The context bar (/context-bar), drawn by the status line under the prompt, above its own rows, from one file the mod writes per session (above the prompt when that file cannot be written): what fills the context window by category, against the whole 1M window with attention, /second-wind and auto-compact marked, with a turns-left forecast; /context-bar panel lists every item.",
   "author": {
     "name": "Misha Hanin"
   },

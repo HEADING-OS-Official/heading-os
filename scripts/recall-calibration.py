@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.colors import BOLD, CYAN, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.data_path import DataPathError, data_read_required  # noqa: E402
+from scripts.utils.venv_guard import child_python  # noqa: E402
 from scripts.utils.workspace import (  # noqa: E402
     get_data_root,
     get_workspace_root,
@@ -121,7 +122,7 @@ def run_query(root: Path, text: str, threshold: float, top_k: int,
     measurement would change the thing it measures.
     """
     proc = subprocess.run(
-        [sys.executable, str(root / "scripts" / "memory-index.py"), "query", text,
+        [child_python(), str(root / "scripts" / "memory-index.py"), "query", text,
          "--json", "--threshold", str(threshold), "--top-k", str(top_k),
          "--collection", collection],
         capture_output=True, text=True, cwd=str(root), timeout=QUERY_TIMEOUT,

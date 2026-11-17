@@ -64,14 +64,15 @@ def _rev_parse(flag: str, path: Path) -> Path:
     """
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", flag],
+            ["git", "-c", "core.fsmonitor=false", "rev-parse", flag],
             cwd=str(path), capture_output=True, text=True, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, OSError,
             NotADirectoryError) as exc:
         raise CloneGuardError(
             f"git rev-parse {flag} failed in {path}: {exc}") from exc
-    answer = completed.stdout.strip()
+    # Only git's final newline: a path may end in a space.
+    answer = completed.stdout.removesuffix("\n")
     if not answer:
         raise CloneGuardError(f"git rev-parse {flag} returned nothing in {path}")
     candidate = Path(answer)

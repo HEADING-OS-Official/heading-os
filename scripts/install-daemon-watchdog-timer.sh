@@ -29,6 +29,10 @@ WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 source "$(dirname "$0")/lib/resolve-python.sh"
 source "$(dirname "$0")/lib/render-units.sh"
 PYTHON="$(resolve_python "$WORKSPACE")"
+if [[ -z "$PYTHON" ]]; then
+    echo "no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE" >&2
+    exit 4
+fi
 # This timer has no calendar expression, so the zone changes nothing about WHEN
 # it fires; it keeps the journal lines in the operator's local time.
 TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
@@ -37,10 +41,6 @@ TEMPLATE_DIR="$WORKSPACE/scripts/templates/systemd"
 DEST_DIR="$HOME/.config/systemd/user"
 UNITS=(daemon-watchdog.service daemon-watchdog.timer)
 
-if [[ -z "$PYTHON" ]]; then
-    echo "No python interpreter found (set PYTHON=...)." >&2
-    exit 4
-fi
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "systemctl not found - systemd user units require systemd >= 226." >&2
     echo "On WSL2 enable systemd via /etc/wsl.conf:" >&2

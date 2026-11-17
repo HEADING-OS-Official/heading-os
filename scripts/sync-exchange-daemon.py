@@ -44,6 +44,7 @@ from scripts.utils.pid_liveness import pid_runs_program  # noqa: E402
 from scripts.utils.sync_exchange_paths import daemon_files  # noqa: E402
 from scripts.utils.scheduler_defaults import JOB_DEFAULTS  # noqa: E402
 from scripts.utils.trace_filter import install_log_factory  # noqa: E402
+from scripts.utils.venv_guard import child_python  # noqa: E402
 from scripts.utils.workspace import get_default_tz, load_env  # noqa: E402
 from scripts.utils.clone_guard import require_main_clone
 
@@ -81,8 +82,10 @@ JOB_SPECS: dict[str, dict] = {
     "sync-exchange": {
         "interval_hours": 2,
         "fire_at_start": True,
+        # The argv after the interpreter. The interpreter itself is the
+        # checkout's venv, resolved by `child_python()` at each dispatch, never
+        # at import (M046.2).
         "subprocess": [
-            sys.executable,
             str(WORKSPACE / "scripts" / "sync-exchange.py"),
             "--calendar",
             "--emails",
@@ -146,10 +149,12 @@ class JobDispatcher:
         if spec is None:
             self.logger.error("dispatch: unknown job %s", job_name)
             return
-        cmd = spec["subprocess"]
         timeout = spec.get("timeout_s", 600)
         self.logger.info("job-start %s", job_name)
         try:
+            # Inside the try: a VenvMissing from child_python() is logged as
+            # this job's failure below and the scheduler keeps running.
+            cmd = [child_python(), *spec["subprocess"]]
             result = subprocess.run(
                 cmd,
                 capture_output=True,

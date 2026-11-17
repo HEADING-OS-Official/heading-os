@@ -119,7 +119,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.utils.venv_guard import ensure_venv  # noqa: E402
+from scripts.utils.venv_guard import child_python, ensure_venv  # noqa: E402
 
 # Called here, at the top, for the same reason `scripts/run-tests.py` calls it:
 # pytest lives only in `.venv`. It is called BEFORE the suite rather than after,
@@ -519,10 +519,14 @@ def run(root: Path, *, dry_run: bool = False) -> int:
               " nothing was recorded.")
         return 1
 
-    gate = [sys.executable, str(root / "scripts" / "run-tests.py")]
-    day_mode = [sys.executable, str(root / "scripts" / "day-mode.py"),
+    # The checkout's venv interpreter, never sys.executable (M046.2). With no
+    # venv, child_python() raises VenvMissing and this one-shot pass exits
+    # non-zero by name before any child starts.
+    python = child_python()
+    gate = [python, str(root / "scripts" / "run-tests.py")]
+    day_mode = [python, str(root / "scripts" / "day-mode.py"),
                 "mark-green", revision]
-    verdicts = [sys.executable, str(root / "scripts" / "test-cache.py"),
+    verdicts = [python, str(root / "scripts" / "test-cache.py"),
                 "record", "--base", revision, "--from", "-"]
 
     ceiling = read_skip_ceiling(root)

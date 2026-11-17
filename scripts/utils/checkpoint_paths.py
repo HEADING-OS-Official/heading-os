@@ -945,8 +945,13 @@ def archived_prompts(session: str, cwd: Path, tool: Path) -> tuple[list[str], st
     try:
         if not tool.is_file():
             return [], f"{tool.name} is not in this checkout"
+        # The checkout's own pinned interpreter, never `sys.executable` (M046.2).
+        checkout = tool.resolve().parents[1]
+        python = checkout / ".venv" / "bin" / "python"
+        if not python.is_file():
+            return [], f"no {python} in {checkout}"
         proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-            [sys.executable, str(tool), "--json", "list", "--session", session],
+            [str(python), str(tool), "--json", "list", "--session", session],
             capture_output=True, text=True, cwd=str(cwd), timeout=15,
         )
     except Exception as exc:  # noqa: BLE001 - a hook must not raise over this
@@ -1057,10 +1062,17 @@ def task_prompts(tasks: list[str], cwd: Path, tool: Path) -> list[str]:
     (task dossier, HOS-256): a task outlives the session that started it.
     """
     found: set[str] = set()
+    # The checkout's own pinned interpreter, never `sys.executable` (M046.2).
+    checkout = tool.resolve().parents[1]
+    python = checkout / ".venv" / "bin" / "python"
+    if not python.is_file():
+        print(f"checkpoint: no {python}; prompts of {', '.join(tasks)} not listed",
+              file=sys.stderr)
+        return []
     for task in tasks:
         try:
             proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-                [sys.executable, str(tool), "--json", "list", "--task", task],
+                [str(python), str(tool), "--json", "list", "--task", task],
                 capture_output=True, text=True, cwd=str(cwd), timeout=15,
             )
             answer = json.loads(proc.stdout) if proc.returncode == 0 else []

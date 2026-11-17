@@ -32,13 +32,17 @@ require_main_clone
 WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Interpreter for the unit's ExecStart=, resolved by the one owner:
-# explicit PYTHON wins, else the pinned .venv, else PATH. MEASURED 2026-09-06:
+# explicit PYTHON wins, else the pinned .venv, else nothing. MEASURED 2026-09-06:
 # seven installed units ran on /usr/bin/python3, whose numpy and pyyaml are
 # luck rather than a contract, and everything they respawn through
 # sys.executable inherited it.
 source "$(dirname "$0")/lib/resolve-python.sh"
 source "$(dirname "$0")/lib/render-units.sh"
 PYTHON="$(resolve_python "$WORKSPACE")"
+if [[ -z "$PYTHON" ]]; then
+    echo "no $WORKSPACE/.venv/bin/python: run uv sync in $WORKSPACE" >&2
+    exit 4
+fi
 
 # Unit timezone: HEADING_OS_TZ, else the workspace resolver, else UTC.
 TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
@@ -63,10 +67,6 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
     exit 0
 fi
 
-if [[ -z "$PYTHON" ]]; then
-    echo "No python3 (or python) on PATH" >&2
-    exit 4
-fi
 for unit in llm-fit-report.service llm-fit-report.timer; do
     if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
         echo "Template not found: $TEMPLATE_DIR/$unit" >&2

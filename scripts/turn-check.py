@@ -81,16 +81,17 @@ from scripts.utils.checkpoint_paths import state_root  # noqa: E402
 from scripts.utils.colors import GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.session_scope import (current_transcript,  # noqa: E402
                                          narrow_with_scope)
-from scripts.utils.venv_guard import venv_python  # noqa: E402
+from scripts.utils.venv_guard import VenvMissing, child_python  # noqa: E402
 from scripts.utils.workspace import get_workspace_root  # noqa: E402
 
-# The interpreter every child lane runs under. Falls back to `sys.executable`
-# only when the venv is genuinely absent (a fresh clone before `uv sync`), which
-# is the one case where refusing would be worse than reporting under whatever is
-# available. `.claude/hooks/turn-check.py` already resolves the same path for the
-# automatic run; this makes the by-hand invocation behave identically.
-_VENV = venv_python()
-PYTHON = str(_VENV) if _VENV.exists() else sys.executable
+# The interpreter every child lane runs under: the checkout's venv, from
+# `venv_guard.child_python`, resolved by `main()` and never at import. No
+# fallback to `sys.executable` (operator decision 2026-11-17, HOS-368): with no
+# venv, `main()` prints the VenvMissing message and returns 2, as
+# `.claude/hooks/turn-check.py` refuses for the automatic run. A direct caller
+# that skipped `main()` reads `PYTHON or child_python()` and gets the same
+# refusal, never a `None` argv.
+PYTHON = None
 
 ROOT = get_workspace_root()
 STATE_PATH = state_root(ROOT) / "turn-check.json"
@@ -447,7 +448,7 @@ def lane_import(paths: list[Path]) -> list[str]:
                 f"run budget was already spent"]
     try:
         out = subprocess.run(
-            [PYTHON, "-c", probe],
+            [PYTHON or child_python(), "-c", probe],
             cwd=str(ROOT), capture_output=True, text=True,
             errors="replace", timeout=cap,
         )
@@ -561,7 +562,7 @@ def lane_tests(paths: list[Path],
         return [], 0, skipped, 0, 0
     parallel = len(targets) >= PARALLEL_FILE_THRESHOLD
     args = [
-        PYTHON, "-m", "pytest", "-q", "-p", "no:randomly",
+        PYTHON or child_python(), "-m", "pytest", "-q", "-p", "no:randomly",
         "--no-header", "-x",
         # PARALLEL above PARALLEL_FILE_THRESHOLD only. Serial did not fit the
         # hook budget at campaign size (2026-08-31: 40 files serial 25.95s,
@@ -805,6 +806,12 @@ def render(result: dict) -> str:
 
 
 def main(argv=None) -> int:
+    global PYTHON
+    try:
+        PYTHON = child_python()
+    except VenvMissing as exc:
+        print(exc, file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(
         description="Fast check over uncommitted Python edits."
     )

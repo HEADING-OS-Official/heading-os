@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.utils.venv_guard import ensure_venv  # noqa: E402
+from scripts.utils.venv_guard import child_python, ensure_venv  # noqa: E402
 
 ensure_venv()  # pytest/pytest-cov live only in .venv; re-exec if launched elsewhere
 
@@ -59,7 +59,7 @@ def build_command(tests: list[str] | None = None) -> list[str]:
     the worker count by selection size.
     """
     # -n auto: distribute the suite across all CPU cores (pytest-xdist).
-    base = [sys.executable, "-m", "pytest", "-q"]
+    base = [child_python(), "-m", "pytest", "-q"]
     return base + ["-n", "auto", "-m", "not acceptance"] + list(tests or [])
 
 

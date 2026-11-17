@@ -39,7 +39,7 @@ Usage:
 Output: one line per combination, `agreement <mail>/<github>/<proxy>: ok` or
 `...: N finding(s)` with each finding indented beneath; last line
 `install-agreement: CLEAN, 0 findings` or `install-agreement: N findings`.
-Exit 0 clean, 1 findings, 2 refused (the scratch cannot be used).
+Exit 0 clean, 1 findings, 2 refused (the scratch cannot be used, or the checkout has no venv).
 """
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ENGINE))
 
 from scripts.utils import install_answers  # noqa: E402
+from scripts.utils.venv_guard import VenvMissing, child_python  # noqa: E402
 
 #: The answer variables removed from this process at start, so every reader sees only the scratch .env.
 ANSWER_ENV = (install_answers.MAIL_ENV, install_answers.GITHUB_BACKUP_ENV, install_answers.TZ_ENV,
@@ -118,7 +119,7 @@ def check_b(engine: Path, fams) -> list[str]:
     return findings
 
 
-def check_c(fams, dest: Path, platform: str, data: Path, home: Path) -> tuple[list[str], str | None]:
+def check_c(fams, dest: Path, platform: str, data: Path, home: Path, *, python: str) -> tuple[list[str], str | None]:
     """(findings, a note when skipped).
 
     The render runs with HEADING_OS_DATA at an empty scratch data root and HOME
@@ -127,7 +128,7 @@ def check_c(fams, dest: Path, platform: str, data: Path, home: Path) -> tuple[li
     """
     if platform != "linux":
         return [], f"agreement C: skipped on {platform} (no ExecStart lines)"
-    proc = subprocess.run([sys.executable, str(ENGINE / "scripts" / "heading-services.py"), "render",
+    proc = subprocess.run([python, str(ENGINE / "scripts" / "heading-services.py"), "render",
                            *[f.name for f in fams], "--to", str(dest)],
                           cwd=str(ENGINE), capture_output=True, text=True, errors="replace",
                           env=dict(os.environ, HEADING_OS_DATA=str(data), HOME=str(home)))
@@ -177,7 +178,8 @@ def check_d(home: Path) -> list[str]:
     return findings
 
 
-def check_combination(scratch: Path, mail: str, github: str, proxy: str, platform: str) -> tuple[list[str], list[str]]:
+def check_combination(scratch: Path, mail: str, github: str, proxy: str, platform: str, *,
+                      python: str) -> tuple[list[str], list[str]]:
     """(findings, notes) for one combination, under its own scratch folder."""
     root = scratch / f"{mail}-{github}-{proxy}"
     engine, home, render, data = root / "engine", root / "home", root / "render", root / "data"
@@ -189,7 +191,7 @@ def check_combination(scratch: Path, mail: str, github: str, proxy: str, platfor
     os.chmod(env_file, 0o600)
     fams = families_for(mail, platform)
     findings = check_a(fams, platform) + check_b(engine, fams)
-    c_findings, note = check_c(fams, render, platform, data, home)
+    c_findings, note = check_c(fams, render, platform, data, home, python=python)
     findings += c_findings + check_d(home)
     return findings, [note] if note else []
 
@@ -205,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scratch", type=Path, default=None, metavar="DIR",
                     help="where the scratch engines and renders go (default: this checkout's scratch)")
     args = ap.parse_args(argv)
+    try:
+        py = child_python()
+    except VenvMissing as exc:
+        print(exc, file=sys.stderr)
+        return 2
     for name in ANSWER_ENV:
         os.environ.pop(name, None)
     scratch = (args.scratch or default_scratch()).expanduser().absolute()
@@ -218,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     total = 0
     try:
         for mail, github, proxy in COMBINATIONS:
-            findings, notes = check_combination(run, mail, github, proxy, platform)
+            findings, notes = check_combination(run, mail, github, proxy, platform, python=py)
             total += len(findings)
             label = f"agreement {mail}/{github}/{proxy}"
             print(f"{label}: ok" if not findings else f"{label}: {len(findings)} finding(s)")

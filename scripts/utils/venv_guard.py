@@ -58,6 +58,30 @@ def venv_python() -> Path:
     return Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
 
 
+class VenvMissing(RuntimeError):
+    """The checkout has no venv interpreter to start a child process with."""
+
+
+def child_python() -> str:
+    """The interpreter a child process is started with: the checkout's venv.
+
+    M046.2: a child is spawned with the checkout's own venv interpreter, never a
+    bare `python` or `sys.executable`. Two layouts are accepted, both derived
+    from `venv_python()`: `.venv/bin/python`, then the Windows
+    `.venv/Scripts/python.exe` (as `scripts/utils/dossier.py` `_venv_python`
+    checks it). When neither exists this REFUSES with `VenvMissing` rather than
+    falling back to the running interpreter, which may carry drifted
+    dependencies. Callers resolve it at spawn time, never at import, so a
+    missing venv never stops a module from importing.
+    """
+    posix = venv_python()
+    windows = posix.parents[1] / "Scripts" / "python.exe"
+    for candidate in (posix, windows):
+        if candidate.is_file():
+            return str(candidate)
+    raise VenvMissing(f"no {posix}: run uv sync in {posix.parents[2]}")
+
+
 def interpreter_identity(path: Path) -> tuple:
     """What makes two interpreter paths the SAME environment, as a comparable.
 

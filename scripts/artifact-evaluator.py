@@ -26,10 +26,11 @@ from scripts.utils.workspace import get_default_tz, get_workspace_root
 from scripts.utils.colors import GREEN, YELLOW, RED, CYAN, GRAY, BOLD, RESET
 from scripts.utils import markdown as md
 from scripts.utils.markdown import split_frontmatter
-from scripts.utils.venv_guard import venv_python
+from scripts.utils.venv_guard import VenvMissing, child_python
 
-# Children run under the pinned interpreter, never sys.executable (M046.2).
-_PY = str(venv_python()) if venv_python().exists() else sys.executable
+# Children run under the checkout's venv interpreter, never sys.executable
+# (M046.2): `child_python()` at each spawn, which refuses with VenvMissing when
+# the venv is absent.
 
 ROOT = get_workspace_root()
 
@@ -162,7 +163,7 @@ def run_hidden_char_scan(file_path):
     sanitizer = ROOT / "scripts" / "sanitize-text.py"
     try:
         result = subprocess.run(
-            [_PY, str(sanitizer), "--scan", str(file_path)],
+            [child_python(), str(sanitizer), "--scan", str(file_path)],
             capture_output=True, text=True, timeout=15
         )
         clean = result.returncode == 0
@@ -173,7 +174,7 @@ def run_hidden_char_scan(file_path):
         detail = "Clean" if clean else (
             result.stdout.strip() or result.stderr.strip())[:200]
         return check("hidden_chars", clean, detail)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+    except (subprocess.TimeoutExpired, FileNotFoundError, VenvMissing) as exc:
         return check("hidden_chars", False, f"Scanner error: {exc}")
 
 
@@ -181,13 +182,13 @@ def run_py_compile(file_path):
     """Check Python syntax via py_compile."""
     try:
         result = subprocess.run(
-            [_PY, "-m", "py_compile", str(file_path)],
+            [child_python(), "-m", "py_compile", str(file_path)],
             capture_output=True, text=True, timeout=15
         )
         ok = result.returncode == 0
         detail = "Compiles OK" if ok else result.stderr.strip()[:200]
         return check("py_compile", ok, detail)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+    except (subprocess.TimeoutExpired, FileNotFoundError, VenvMissing) as exc:
         return check("py_compile", False, f"Compile error: {exc}")
 
 
@@ -869,11 +870,11 @@ def run_trigger_test(artifact_path, threshold=0.9):
     runner = ROOT / "scripts" / "skill-trigger-test.py"
     try:
         proc = subprocess.run(
-            [_PY, str(runner), "--skill", skill_name, "--json",
+            [child_python(), str(runner), "--skill", skill_name, "--json",
              "--threshold", str(threshold)],
             capture_output=True, text=True, timeout=300,
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError, VenvMissing) as e:
         # passed=False, because `warn=True` is inert on a pass: a harness that
         # could not run must not read as a check that passed.
         return check("trigger_test", False, f"trigger-test could not run: {e}", warn=True)

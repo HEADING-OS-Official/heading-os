@@ -51,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.colors import GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
+from scripts.utils.venv_guard import VenvMissing, child_python  # noqa: E402
 from scripts.utils.memory_health import (  # noqa: E402
     MEMORY_BUDGET_LINES,
     MEMORY_INDEX_REMEDY,
@@ -83,13 +84,13 @@ def collect_brain_compile() -> dict:
         return {"ok": False, "data": None, "note": f"brain-health script not found at {BRAIN_HEALTH}"}
     try:
         proc = subprocess.run(
-            [sys.executable, str(BRAIN_HEALTH), "--compile"],
+            [child_python(), str(BRAIN_HEALTH), "--compile"],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
             timeout=COMPILE_TIMEOUT,
         )
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except (subprocess.TimeoutExpired, OSError, VenvMissing) as exc:
         return {"ok": False, "data": None, "note": f"compile call failed: {exc}"}
     try:
         data = json.loads(proc.stdout)

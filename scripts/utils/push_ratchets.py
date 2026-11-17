@@ -29,9 +29,10 @@ so. Nothing here writes: no argv carries a `--write-*` flag.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 from typing import NamedTuple
+
+from scripts.utils.venv_guard import child_python
 
 
 class Ratchet(NamedTuple):
@@ -170,6 +171,6 @@ def run_ratchet(repo: Path, ratchet: Ratchet) -> subprocess.CompletedProcess | N
     if not scanner.is_file():
         return None
     return subprocess.run(  # nosec B603 - fixed argv, no shell
-        [sys.executable, str(scanner), *ratchet.args],
+        [child_python(), str(scanner), *ratchet.args],
         cwd=str(repo), capture_output=True, text=True, check=False,
     )

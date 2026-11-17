@@ -198,6 +198,9 @@ def _interpreter(ctx) -> str:
     build the `.venv` is made from.
     """
     venv = getattr(ctx, "python", None)
+    # Kept by design under M046.2 (HOS-372): the progress window opens before the
+    # python-env step, when no venv exists yet, so the running interpreter is the
+    # only one there is. Once the venv exists it is preferred.
     return str(venv) if venv and os.access(venv, os.X_OK) else sys.executable
 
 

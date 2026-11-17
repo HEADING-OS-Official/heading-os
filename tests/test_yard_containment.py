@@ -2073,3 +2073,79 @@ def test_a_rules_ab_session_cannot_write_outside_its_copy(tmp_path):
     assert calls, f"the session made no Write call to the target, so nothing was tested: {row['reply']!r}"
     assert not target.exists()
     assert all(w["refused"] for w in calls), calls
+
+
+# ---------------------------------------------------------------------------
+# The twelfth: a session on a scratch data root never syncs memory with it.
+# ---------------------------------------------------------------------------
+
+_RECONCILE = ROOT / ".claude" / "hooks" / "memory-reconcile.py"
+
+
+def _reconcile_world(tmp_path, *, auto_memory=False, git=False):
+    """An invented native store outside an invented data root, and the root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    if git:
+        (root / ".git").mkdir()
+    if auto_memory:
+        (root / "auto-memory").mkdir()
+    memory = tmp_path / "project" / "memory"
+    memory.mkdir(parents=True)
+    native = memory / "note.md"
+    native.write_text("# Invented note\nNative side.\n", encoding="utf-8")
+    return root, memory, native
+
+
+def _run_reconcile(tmp_path, root):
+    env = dict(os.environ)
+    env["HEADING_OS_DATA"] = str(root)
+    env.pop("HEADING_OS_RUNTIME_REDIRECT", None)
+    payload = {"hook_event_name": "SessionStart", "source": "startup",
+               "transcript_path": str(tmp_path / "project" / "s.jsonl"), "cwd": str(tmp_path)}
+    return subprocess.run(
+        [str(ROOT / ".venv" / "bin" / "python"), str(_RECONCILE)],
+        input=json.dumps(payload), capture_output=True, text=True, env=env,
+        cwd=str(tmp_path), timeout=60, check=False)
+
+
+def test_memory_reconcile_never_seeds_a_data_root_without_auto_memory(tmp_path):
+    """A SessionStart on a data root that has no `auto-memory/` and no `.git`
+    creates no memory store there, copies no memory into it, and takes no lock
+    under it. MEASURED 2026-11-17 before the fix: FAILED, the hook created
+    the root's auto-memory store, copied the native note.md into it, and took
+    its lock under the root."""
+    root, _memory, _native = _reconcile_world(tmp_path)
+    proc = _run_reconcile(tmp_path, root)
+    assert proc.returncode == 0, proc.stderr
+    assert not (root / "auto-memory").exists(), proc.stderr
+    assert not list(root.rglob("memory-reconcile-*.lock")), proc.stderr
+
+
+def test_memory_reconcile_never_syncs_with_a_data_root_that_is_not_a_git_root(tmp_path):
+    """A data root holding `auto-memory/` with a NEWER memory, but no `.git`,
+    is not synced in either direction: the native store is byte-for-byte
+    unchanged, so nothing can travel on from it into the live store at the next
+    ordinary SessionStart. MEASURED 2026-11-17 before the fix: FAILED, the
+    root's newer note.md overwrote the native one (mtime 1e9 became 2e9)."""
+    root, memory, native = _reconcile_world(tmp_path, auto_memory=True)
+    canonical = root / "auto-memory" / "note.md"
+    canonical.write_text("# Invented note\nScratch root side, newer.\n", encoding="utf-8")
+    os.utime(canonical, (2_000_000_000, 2_000_000_000))
+    os.utime(native, (1_000_000_000, 1_000_000_000))
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime) for p in memory.iterdir()}
+    proc = _run_reconcile(tmp_path, root)
+    assert proc.returncode == 0, proc.stderr
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime) for p in memory.iterdir()} == before
+    assert sorted(p.name for p in (root / "auto-memory").iterdir()) == ["note.md"]
+    assert not list(root.rglob("memory-reconcile-*.lock")), proc.stderr
+
+
+def test_memory_reconcile_syncs_with_a_git_data_root_holding_auto_memory(tmp_path):
+    """The honest half: a data root that is a git root and holds `auto-memory/`
+    is still synced, so the gate does not just switch the hook off. MEASURED
+    2026-11-17 before the fix: PASSED, the native note.md was copied in."""
+    root, _memory, native = _reconcile_world(tmp_path, auto_memory=True, git=True)
+    proc = _run_reconcile(tmp_path, root)
+    assert proc.returncode == 0, proc.stderr
+    assert (root / "auto-memory" / "note.md").read_bytes() == native.read_bytes()

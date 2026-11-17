@@ -54,19 +54,25 @@ from scripts.utils.user_agent import user_agent  # noqa: E402
 FAMILIES = ("opus", "sonnet", "haiku", "fable")
 
 # Floor, not a pin. Used only when the override, the cache, and the API have all
-# failed to answer. Correct on 2026-09-27; going stale here degrades a caller to
+# failed to answer. Correct on 2026-11-17; going stale here degrades a caller to
 # an older model, it never breaks one. Refresh when a family's newest release
 # changes AND the machine is expected to run offline.
 BASELINE = {
     "opus": "claude-opus-5-5",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5-20251001",
-    "fable": "claude-fable-5-1",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
+    "fable": "claude-fable-5-2",
 }
 
-# Families whose current releases think whether or not the request asks them
-# to: Opus 5 and 5.5, Sonnet 5 and Fable 5 and 5.1 run adaptive thinking when
-# `thinking` is omitted. Three things follow for every direct SDK call, and
+# The fallback rule for which models think whether or not the request asks
+# them to: every Fable, and Opus, Sonnet and Haiku from generation 5 on. It
+# answers only when the cached Models API capabilities (`_cached_capabilities`)
+# do not name the model; where they do, `capabilities.thinking.types.adaptive`
+# and `capabilities.effort` decide. MEASURED 2026-11-17 in the list response:
+# claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-2
+# report adaptive thinking and effort supported; claude-haiku-4-5-20251001
+# reports neither. A thinking model runs adaptive thinking when `thinking` is
+# omitted. Three things follow for every direct SDK call, and
 # `request_params` below is where they are decided once instead of per caller.
 #   - Thinking tokens count toward `max_tokens` even when no thinking text comes
 #     back, so a cap sized for a thinking-off model cuts the reply to nothing.
@@ -78,9 +84,11 @@ BASELINE = {
 #     2026-10-21, which anthropic 2.x sends, a Messages request carrying one
 #     returns 400 on every model, Haiku 4.5 included.
 # Haiku 4.5 is the opposite on the second point: it runs without thinking
-# unless asked, and rejects `effort`. Source: the Anthropic API reference as
-# bundled with the claude-api skill, read 2026-09-27 (Thinking & Effort table).
-THINKING_FAMILIES = ("opus", "sonnet", "fable")
+# unless asked, and rejects `effort` (Models API capabilities, MEASURED
+# 2026-11-17). Haiku 5.5 thinks by default: sent the thinking-off shape with
+# `max_tokens` 250 it returned stop_reason `max_tokens` with a thinking block
+# only (MEASURED 2026-11-17), which is why haiku is in this tuple.
+THINKING_FAMILIES = ("opus", "sonnet", "haiku", "fable")
 
 # Room for thinking plus the reply on a non-streaming call. 16000 is the
 # reference's default for non-streaming requests: above it the SDK starts to
@@ -176,13 +184,20 @@ def _major_version(model_id: str) -> int | None:
     return int(head) if head.isdigit() else None
 
 
-def thinks(model_id: str) -> bool:
-    """True where `model_id` runs adaptive thinking without being asked to.
+def _capabilities(model_id: str) -> dict | None:
+    """The cached Models API capabilities of `model_id`, or None if unlisted.
 
-    Every Fable, and Opus or Sonnet from generation 5 on. An older literal id
-    handed to a CLI flag for a reproduction (`claude-sonnet-4-5`) is False, so
-    it keeps the thinking-off request shape it was written for.
+    Never fetches: the cache file is read at most once per process into
+    `_CAPABILITIES_MEMO`, which `_write_cache` and a refresh reset.
     """
+    global _CAPABILITIES_MEMO
+    if _CAPABILITIES_MEMO is None:
+        _CAPABILITIES_MEMO = _cached_capabilities()
+    return _CAPABILITIES_MEMO.get(model_id)
+
+
+def _thinks_by_rule(model_id: str) -> bool:
+    """The fallback rule: every Fable; Opus, Sonnet, Haiku from generation 5."""
     family = _family_of(model_id)
     if family == "fable":
         return True
@@ -192,6 +207,37 @@ def thinks(model_id: str) -> bool:
     return False
 
 
+def thinks(model_id: str) -> bool:
+    """True where `model_id` runs adaptive thinking without being asked to.
+
+    Answered from the cached Models API field
+    `capabilities.thinking.types.adaptive.supported` where the model is listed
+    there; otherwise by the rule: every Fable, and Opus, Sonnet or Haiku from
+    generation 5 on (Haiku 5.5 thinks by default, MEASURED 2026-11-17). An
+    older literal id handed to a CLI flag for a reproduction
+    (`claude-sonnet-4-5`, `claude-haiku-4-5-20251001`) is False, so it keeps
+    the thinking-off request shape it was written for.
+    """
+    caps = _capabilities(model_id)
+    if caps is not None:
+        return caps["adaptive"]
+    return _thinks_by_rule(model_id)
+
+
+def takes_effort(model_id: str) -> bool:
+    """True where `model_id` accepts `output_config.effort`.
+
+    Answered from the cached Models API field `capabilities.effort.supported`
+    where the model is listed there; otherwise by the same rule as `thinks`.
+    MEASURED 2026-11-17: Haiku 4.5 reports effort unsupported, Haiku 5.5 and
+    the current Opus, Sonnet and Fable report it supported.
+    """
+    caps = _capabilities(model_id)
+    if caps is not None:
+        return caps["effort"]
+    return _thinks_by_rule(model_id)
+
+
 def forced_tool_choice_ok(model_id: str) -> bool:
     """Whether a `tool_choice` of `{"type": "tool"}` or `"any"` is safe to send.
 
@@ -199,7 +245,9 @@ def forced_tool_choice_ok(model_id: str) -> bool:
     Fable 5 accept it; the reference read 2026-09-27 does not say for Sonnet 5.
     `latest()` moves a family to its next release with no code edit, so the
     answer is decided by whether the model thinks, not by today's release:
-    only a thinking-off model is forced. A thinking model gets `auto` plus a
+    only a thinking-off model is forced. Haiku 5.5 thinks (Models API
+    capabilities, MEASURED 2026-11-17), so it gets `auto` like the others;
+    Haiku 4.5 does not, and is still forced. A thinking model gets `auto` plus a
     prompt that names the tool, and the caller must check a call was made.
     """
     return not thinks(model_id)
@@ -217,7 +265,8 @@ def request_params(
 
     `max_tokens` is what the caller needs for the VISIBLE reply. On a thinking
     model it is raised to `THINKING_MAX_TOKENS`, because thinking is billed
-    against the same cap. `effort` is sent only where the model accepts it.
+    against the same cap. `effort` is sent only where the model accepts it,
+    which `takes_effort` decides.
     `temperature` is accepted and ignored, never sent for any model, so existing
     callers keep working. `output_schema`, a JSON schema, becomes structured output
     (`output_config.format`), which Haiku 4.5 and every thinking family support.
@@ -228,9 +277,10 @@ def request_params(
     output_config: dict = {}
     if thinks(model_id):
         params["max_tokens"] = max(max_tokens, THINKING_MAX_TOKENS)
-        output_config["effort"] = effort
     else:
         params["max_tokens"] = max_tokens
+    if takes_effort(model_id):
+        output_config["effort"] = effort
     # `temperature` is never put in the request, for any model, not even
     # through `extra_body`: on API version 2026-10-21 (anthropic 2.x) a
     # Messages request carrying it returns 400 on every model, per the Claude
@@ -249,7 +299,14 @@ def fetch_from_api() -> dict:
     member of a family is a max over that field rather than a naming heuristic.
     Sorting explicitly instead of trusting list order keeps the answer right if
     the ordering contract ever changes.
+
+    As a side effect it sets `_FETCHED_CAPABILITIES` to
+    `{model_id: {"adaptive": bool, "effort": bool}}` for every listed model of
+    a family, from `capabilities.thinking.types.adaptive.supported` and
+    `capabilities.effort.supported`; a model missing either bool is skipped.
+    The return value stays the family map alone.
     """
+    global _FETCHED_CAPABILITIES
     key = _api_key()
     if not key:
         return {}
@@ -269,6 +326,7 @@ def fetch_from_api() -> dict:
         return {}
 
     newest: dict[str, tuple[str, str]] = {}
+    capabilities: dict[str, dict] = {}
     for entry in payload.get("data") or []:
         if not isinstance(entry, dict):
             continue
@@ -279,10 +337,38 @@ def fetch_from_api() -> dict:
         family = _family_of(model_id)
         if family is None:
             continue
+        caps = _capability_pair(entry.get("capabilities"))
+        if caps is not None:
+            capabilities[model_id] = caps
         if family not in newest or created > newest[family][1]:
             newest[family] = (model_id, created)
+    _FETCHED_CAPABILITIES = capabilities
     return {family: model_id for family, (model_id, _) in newest.items()}
 
+
+def _capability_pair(raw: object) -> dict | None:
+    """`{"adaptive": bool, "effort": bool}` from a Models API `capabilities`
+    object, or None unless both fields are present and both are bool."""
+    if not isinstance(raw, dict):
+        return None
+    thinking = raw.get("thinking")
+    types = thinking.get("types") if isinstance(thinking, dict) else None
+    adaptive = types.get("adaptive") if isinstance(types, dict) else None
+    adaptive_ok = adaptive.get("supported") if isinstance(adaptive, dict) else None
+    effort = raw.get("effort")
+    effort_ok = effort.get("supported") if isinstance(effort, dict) else None
+    if not isinstance(adaptive_ok, bool) or not isinstance(effort_ok, bool):
+        return None
+    return {"adaptive": adaptive_ok, "effort": effort_ok}
+
+
+# Capabilities seen by the last `fetch_from_api` in this process, which
+# `_write_cache` persists beside the family map.
+_FETCHED_CAPABILITIES: dict[str, dict] = {}
+
+# Per-process memo of the cached capabilities, read by `thinks` and
+# `takes_effort`. None means not read yet; a cache write or a refresh resets it.
+_CAPABILITIES_MEMO: dict[str, dict] | None = None
 
 # Per-process memo. A resolution costs a file read at best and an 8-second API
 # timeout at worst, and callers ask repeatedly inside loops (email-intelligence
@@ -313,19 +399,27 @@ def _announce_moves(previous: dict, current: dict) -> None:
 
 
 def _write_cache(models: dict) -> None:
-    """Persist the resolved map with a timestamp. A failed write is not fatal."""
+    """Persist the resolved map with a timestamp. A failed write is not fatal.
+
+    The `capabilities` key carries the fetched capabilities over the cached
+    ones: a fetched model replaces its old entry, an unlisted old one stays.
+    """
+    global _CAPABILITIES_MEMO
     _announce_moves(_cached(allow_stale=True), models)
     if cache_path() is None:
         return
+    capabilities = {**_cached_capabilities(), **_FETCHED_CAPABILITIES}
     try:
         path = data_write_dir("runtime:claude-models/cache") / CACHE_NAME
         tmp = path.with_suffix(path.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"fetched_at": time.time(), "models": models}, f, indent=2)
+            json.dump({"fetched_at": time.time(), "models": models,
+                       "capabilities": capabilities}, f, indent=2)
             f.write("\n")
         os.replace(tmp, path)
     except (OSError, DataPathError) as e:
         print(f"Warning: could not cache model list ({e}).", file=sys.stderr)
+    _CAPABILITIES_MEMO = None
 
 
 def _cached(allow_stale: bool) -> dict:
@@ -344,13 +438,33 @@ def _cached(allow_stale: bool) -> dict:
     return {k: v for k, v in models.items() if isinstance(v, str) and v.strip()}
 
 
+def _cached_capabilities() -> dict[str, dict]:
+    """The cached `{model_id: {"adaptive", "effort"}}` map, stale allowed.
+
+    {} on any problem: no cache, an unreadable file, a missing or malformed
+    key. An entry without both bools is dropped.
+    """
+    path = cache_path()
+    data = _read_json(path) if path is not None else {}
+    raw = data.get("capabilities")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for model_id, caps in raw.items():
+        if (isinstance(model_id, str) and isinstance(caps, dict)
+                and isinstance(caps.get("adaptive"), bool)
+                and isinstance(caps.get("effort"), bool)):
+            out[model_id] = {"adaptive": caps["adaptive"], "effort": caps["effort"]}
+    return out
+
+
 def latest(family: str, *, refresh: bool = False) -> str:
     """The newest model id in `family`. Raises ValueError on an unknown family.
 
     `refresh=True` skips the TTL and forces one API call, for a caller that
     wants today's answer rather than yesterday's cached one.
     """
-    global _FETCH_FAILED
+    global _FETCH_FAILED, _CAPABILITIES_MEMO
 
     if family not in BASELINE:
         raise ValueError(
@@ -363,6 +477,7 @@ def latest(family: str, *, refresh: bool = False) -> str:
 
     if refresh:
         _RESOLVED.clear()
+        _CAPABILITIES_MEMO = None
         _FETCH_FAILED = False
     else:
         memo = _RESOLVED.get(family)
@@ -405,10 +520,11 @@ def load_all(*, refresh: bool = False) -> dict:
     on entry, raised when the direct fetch yields nothing - because two refresh
     entry points managing one shared flag differently is what let them disagree.
     """
-    global _FETCH_FAILED
+    global _FETCH_FAILED, _CAPABILITIES_MEMO
 
     if refresh:
         _RESOLVED.clear()
+        _CAPABILITIES_MEMO = None
         _FETCH_FAILED = False
         fetched = fetch_from_api()
         if fetched:

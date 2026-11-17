@@ -86,10 +86,13 @@ Re-run with a longer cap, or run the files yourself:
 Full suite when you want the whole picture: `python scripts/run-tests.py`."""
 
 
-def interpreter() -> str:
-    """Prefer the project venv; the checker imports workspace modules."""
+def interpreter() -> str | None:
+    """The checkout's own venv interpreter, or None when it is missing.
+
+    Never `sys.executable` (M046.2): the checker imports workspace modules.
+    """
     venv = WORKSPACE / ".venv" / "bin" / "python"
-    return str(venv) if venv.exists() else sys.executable
+    return str(venv) if venv.is_file() else None
 
 
 def stderr_tail(text: str, keep: int = 3) -> str:
@@ -126,6 +129,11 @@ def main() -> int:
         # whose absence looks exactly like its success is the shape SEC-007
         # refuses. Renaming or moving the script is how this arrives.
         print(f"turn-check: checker not found at {CHECKER}", file=sys.stderr)
+        return 0
+
+    if interpreter() is None:
+        print(f"turn-check: no interpreter at {WORKSPACE / '.venv' / 'bin' / 'python'}",
+              file=sys.stderr)
         return 0
 
     command = [interpreter(), str(CHECKER), "--json",

@@ -79,41 +79,32 @@ def _run(cmd, check: bool = False) -> subprocess.CompletedProcess:
             stderr=f"{cmd[0] if cmd else '(empty command)'}: {exc}")
 
 
-def _resolve_python() -> str | None:
-    """Return absolute path to a working Python 3.11+ interpreter.
+def _resolve_python(workspace_dir: Path) -> str | None:
+    """The interpreter a systemd unit for `workspace_dir` runs: that checkout's venv.
 
-    Prefers sys.executable (the interpreter running us) since that is already
-    verified. Falls back to shutil.which on candidate names, rejecting the
-    Microsoft Store stub on Windows.
+    M046.2 (HOS-372): a unit runs `<workspace_dir>/.venv/bin/python`, never
+    `sys.executable` or a bare `python3` from PATH, which may carry drifted
+    dependencies. Returns None when that file is missing or not executable; the
+    caller refuses the install with a named message.
     """
-    if sys.executable and Path(sys.executable).exists():
-        return sys.executable
-    for candidate in ("python3", "python", "py"):
-        path = shutil.which(candidate)
-        if not path:
-            continue
-        if "WindowsApps" in path:
-            continue
-        return path
+    candidate = workspace_dir / ".venv" / "bin" / "python"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
     return None
 
 
-def _resolve_python3_mac() -> str:
-    """Resolve an absolute path to python3 for a macOS launchd plist.
+def _resolve_python3_mac(workspace_dir: Path) -> str | None:
+    """The interpreter a macOS launchd plist for `workspace_dir` runs: that checkout's venv.
 
-    launchd agents do NOT inherit the user's shell PATH. Homebrew on Apple
-    Silicon installs to /opt/homebrew/bin/python3; Intel Macs use
-    /usr/local/bin/python3; system Python 3 lives at /usr/bin/python3 only
-    when Xcode Command Line Tools are installed.
+    launchd agents do NOT inherit the user's shell PATH, so the plist names an
+    absolute interpreter. M046.2 (HOS-372): it is `<workspace_dir>/.venv/bin/python`,
+    never a python3 found on PATH or in a Homebrew or system location. Returns
+    None when that file is missing or not executable; the caller refuses.
     """
-    path = shutil.which("python3")
-    if path and Path(path).exists():
-        return path
-    for fallback in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"):
-        if Path(fallback).exists():
-            return fallback
-    # Last-resort: return the bare name and let launchd fail with a useful error.
-    return "/usr/local/bin/python3"
+    candidate = workspace_dir / ".venv" / "bin" / "python"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
 
 
 def _ensure_logs_dir(workspace_dir: Path) -> Path:
@@ -148,50 +139,32 @@ def _install_launchd_agent(
     """Install a macOS launchd user agent with verification."""
     logs_dir = _ensure_logs_dir(workspace_dir)
 
-    python3_path = _resolve_python3_mac()
+    python3_path = _resolve_python3_mac(workspace_dir)
+    if not python3_path:
+        _fail(f"Cannot install agent {label}: no {workspace_dir}/.venv/bin/python: "
+              f"run uv sync in {workspace_dir}")
+        return False
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
     script_abs = workspace_dir / script_rel_path
     log_stem = label.replace(".", "-")
 
-    args_xml = ""
-    if script_args:
-        args_xml = "\n        " + "\n        ".join(
-            f"<string>{a}</string>" for a in script_args
-        )
-
-    plist_content = textwrap.dedent(f"""\
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>Label</key>
-            <string>{label}</string>
-            <key>ProgramArguments</key>
-            <array>
-                <string>{python3_path}</string>
-                <string>{script_abs}</string>{args_xml}
-            </array>
-            <key>WorkingDirectory</key>
-            <string>{workspace_dir}</string>
-            <key>StartInterval</key>
-            <integer>{start_interval}</integer>
-            <key>StandardOutPath</key>
-            <string>{logs_dir}/{log_stem}-stdout.log</string>
-            <key>StandardErrorPath</key>
-            <string>{logs_dir}/{log_stem}-stderr.log</string>
-            <key>ProcessType</key>
-            <string>Background</string>
-            <key>LowPriorityIO</key>
-            <true/>
-            <key>Nice</key>
-            <integer>5</integer>
-        </dict>
-        </plist>
-    """)
-
-    plist_path.write_text(plist_content, encoding="utf-8")
+    # Serialised by plistlib, never an f-string, so a value carrying & or < is
+    # escaped instead of producing XML launchd refuses. No service-layer marker:
+    # this agent is Sentinel's, and written_by_service_layer must say False for it.
+    job = {
+        "Label": label,
+        "ProgramArguments": [python3_path, str(script_abs), *map(str, script_args or [])],
+        "WorkingDirectory": str(workspace_dir),
+        "StartInterval": int(start_interval),
+        "StandardOutPath": f"{logs_dir}/{log_stem}-stdout.log",
+        "StandardErrorPath": f"{logs_dir}/{log_stem}-stderr.log",
+        "ProcessType": "Background",
+        "LowPriorityIO": True,
+        "Nice": 5,
+    }
+    _write_atomic(plist_path, plistlib.dumps(job))
 
     if _load_launchd_plist(label, plist_path):
         _ok(f"macOS launchd: {label} (every {start_interval}s) - loaded and verified")
@@ -243,9 +216,10 @@ def _install_systemd_user_timer(
     Idempotent: re-enables existing unit. Returns True on verified success.
     Writes logs to `_ensure_logs_dir(workspace_dir)/<unit_name>.log`.
     """
-    py = _resolve_python()
+    py = _resolve_python(workspace_dir)
     if not py:
-        _fail(f"Cannot install timer {unit_name}: no Python 3 interpreter found.")
+        _fail(f"Cannot install timer {unit_name}: no {workspace_dir}/.venv/bin/python: "
+              f"run uv sync in {workspace_dir}")
         return False
 
     if not shutil.which("systemctl"):
@@ -724,7 +698,7 @@ def _unit_identity(workspace_dir: Path) -> tuple[str, str]:
     script = ('set -euo pipefail; ws="$1"; '
               'source "$ws/scripts/lib/resolve-python.sh"; source "$ws/scripts/lib/render-units.sh"; '
               'py="$(resolve_python "$ws")"; '
-              '[ -n "$py" ] || { echo "no python3 interpreter found for the units" >&2; exit 4; }; '
+              '[ -n "$py" ] || { echo "no $ws/.venv/bin/python: run uv sync in $ws" >&2; exit 4; }; '
               'printf "%s\\n" "$py"; resolve_unit_tz "$ws" "$py"')
     result = _run(["bash", "-c", script, "identity", str(workspace_dir)])
     if result.returncode != 0:

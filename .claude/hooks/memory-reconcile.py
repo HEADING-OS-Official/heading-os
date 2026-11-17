@@ -24,6 +24,14 @@ filesystem link. Deletions are NOT propagated (a file present on only one side i
 copied to the other, never deleted) -- this fails safe against accidental mass-loss;
 prune a retired memory on both sides by hand.
 
+Hook mode syncs only with a data root that is a git repository root (`.git`
+exists) and already holds `auto-memory/`; otherwise it prints one line and
+creates nothing (HOS-371: a session on an empty scratch data root was seeded with
+every native memory, and a newer file there could travel back into the live store).
+NOT covered: a scratch data root that is itself a git clone or linked worktree of
+a data repository and holds `auto-memory/` passes both checks and still syncs; the
+gate cannot tell such a clone from the live data repository.
+
 Two sessions launched from different directories both fire this hook, and BY DESIGN
 each syncs a DIFFERENT native store against the SAME canonical one, so the canonical
 side has two concurrent writers. Serialisation and per-file atomicity are therefore
@@ -333,6 +341,21 @@ def main() -> int:
             print(f"[memory-reconcile] store resolve failed: {e}", file=sys.stderr)
             return 0
         if native is None:
+            return 0
+        # HOS-371: sync only with a data repository that already holds its
+        # store. A scratch root (HEADING_OS_DATA pointed at an empty directory)
+        # used to be seeded with every native memory, and a newer file in it
+        # travelled back into the native store and from there into the live
+        # one. Returns before the lock, so a refusal creates nothing.
+        root = canonical.parent
+        try:
+            is_store = (root / ".git").exists() and canonical.is_dir()
+        except OSError as e:
+            print(f"[memory-reconcile] data-root check failed: {e}", file=sys.stderr)
+            return 0
+        if not is_store:
+            print(f"[memory-reconcile] {root} is not a data repository with an "
+                  f"auto-memory store; not syncing", file=sys.stderr)
             return 0
 
     try:
