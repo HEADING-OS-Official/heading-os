@@ -4,6 +4,30 @@ All notable changes to HEADING OS Official are recorded in this file, newest fir
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From 3.1.0 on, releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and the tag, the version in `pyproject.toml` and the one the README shows under "Status" are the same number. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`, and those tags stay as they are. The same history, written for users with what to do about each change, is [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
 
+## [3.3.0] - 2026-11-17
+
+A daily morning dashboard on Telegram, the context bar moved under the prompt, a checked spec block in every saved prompt, and one rule for which Python every child process and service runs. The full explanation, with what to do about each change, is in [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
+
+### Added
+
+- `scripts/dashboard-telegram-notify.py` and the opt-in `dashboard-telegram` timer (`scripts/install-dashboard-telegram-timer.sh`): every day at 08:00 in `HEADING_OS_TZ` it builds the morning dashboard and sends the HTML as a document to your own Telegram sink, captioned with contacts that need attention, deals and today's meetings. A failure sends one text line and the unit reads failed. `--dry-run` builds into the checkout scratch and sends nothing.
+- `scripts/utils/prompt_spec.py`: schema v1 for the fenced `yaml` spec block of a prompt expansion (tiers `minimal` and `full`, presets `backup-push` and `merge-delete-yard`). `scripts/prompt-archive.py save` writes `Spec: valid`, `Spec: none` or `Spec: invalid (<reasons>)` under the `Task:` line and exits 3 on an invalid block; it never refuses to save. `check` runs the same form check before anything is saved. YAML is read with `safe_load` only, and a `run` value is never executed.
+- `scripts/utils/venv_guard.child_python()`: the one way a script finds the interpreter for a child process.
+
+### Changed
+
+- The context bar is drawn under the prompt, directly above the status line, with a dotted separator (context-bar mod 0.4.2). Where the status line has not yet written its pointer for the session, the band stays above the prompt as before. At about 118 columns it takes 3 rows, at 100 columns 4; no label or marker is dropped. Label rows keep their columns and print in the dark theme's own colours.
+- Every child process, systemd unit and launchd agent the engine starts runs the checkout's `.venv/bin/python`. `sys.executable`, a bare `python3` on `PATH` and the Homebrew and system fallbacks are gone; with no venv the timer and service installers refuse with "no <path>: run uv sync in <checkout>".
+- Thinking and `effort` follow the capabilities the Anthropic Models API reports for each model, cached beside the model list, so a model that thinks by default (Haiku 5.5) gets room to answer.
+
+### Fixed
+
+- Security: the status line no longer runs git in a folder outside the engine checkout and its worktrees. git reads the config of the repository it runs in, and a setting such as `core.fsmonitor` names a program git starts, so a session opened inside someone else's repository could have the status line run their program. Worktree paths are read NUL-separated, so a path with an unusual character is judged correctly.
+- Sentinel's launchd agent plist is written by `plistlib` and atomically; an argument holding `&` or `<` produced a plist launchd refused, and an interrupted write could leave a truncated file.
+- The SessionStart memory reconcile syncs only with a data root that is a git repository root and already holds `auto-memory/`; a session pointed at an empty scratch folder no longer copies memory files into it or back from it.
+- `scripts/prompt-archive.py` reports a malformed spec block, such as an impossible date, as invalid instead of stopping with a traceback before the prompt is saved.
+- The turn check's tests lane no longer passes the removed `slow` marker to pytest, which made every run of the lane refuse to start.
+
 ## [3.2.0] - 2026-11-16
 
 New tools for design files and for watching a push, a new status line and context bar, Hindsight parts that update themselves, and every dependency brought up to date, majors included. Python 3.11.5 is now the minimum. The full explanation, with what to do about each change, is in [docs/WHATS-NEW.md](docs/WHATS-NEW.md).

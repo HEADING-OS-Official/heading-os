@@ -2,9 +2,46 @@
 
 This page lists what the Official distribution gained since its first release, newest first. Each entry says what changed for you and, where it matters, what you do about it.
 
-The current version is HEADING OS 3.2. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.2.0`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
+The current version is HEADING OS 3.3. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.3.0`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
 
 To move an existing installation to a newer release, follow "Update" in `INSTALL.md`.
+
+## 3.3.0 (2026-11-17)
+
+Tagged `v3.3.0`; `install.sh` installs it. Your morning dashboard can now arrive on Telegram by itself, the context bar sits under the prompt, every saved prompt carries a checked spec block, and every background job runs on the engine's own Python. Every command from 3.2.0 still works.
+
+What you do:
+
+- Run `uv sync --all-extras` in the engine folder before you install or reinstall any timer or service. The installers now refuse when `.venv/bin/python` is missing, instead of falling back to whatever Python is on the machine.
+- If you want the daily dashboard on Telegram, run `bash scripts/install-dashboard-telegram-timer.sh` once. It is off until you do.
+
+### New: the morning dashboard on Telegram
+
+Every day at 08:00 in your configured time zone (`HEADING_OS_TZ`), a timer builds the morning dashboard and sends it as an HTML file to your own Telegram notification chat. The caption names the contacts that need attention, the deals and today's meetings, so you can read the essentials without opening the file. It sends only to your own chat, the same one the other notifiers use. If a build fails, you get one short text line instead, and the timer reads failed. `.venv/bin/python scripts/dashboard-telegram-notify.py --dry-run` builds the file into the checkout scratch and sends nothing.
+
+### New: a checked spec block in every saved prompt
+
+When Claude expands a request before acting, the expansion now ends with one fenced `yaml` block: the objective, what is in and out of scope, the deliverables, each of your asks quoting your own words, and any open questions. `scripts/prompt-archive.py save` checks the block's form and writes `Spec: valid`, `Spec: none` or `Spec: invalid` with the reasons directly under the `Task:` line of the saved prompt; `check` runs the same test before anything is saved. Two presets cover the routine cases (a backup push, and merging and deleting a yard). An invalid block is reported, never a reason to lose the prompt: it is saved anyway, and the command exits 3 so you notice. The block is read as data only; nothing in it is ever executed.
+
+### Changed: the context bar sits under the prompt
+
+The bar showing what fills Claude's working memory now sits directly under the prompt, above the status line, separated from it by a faint dotted line. It is more compact: about 118 columns wide it takes 3 rows, at 100 columns 4, and no label or marker is ever dropped to save space. Labels stay in their columns and use your theme's colours. In the first moments of a session, before the status line has run, the bar is drawn above the prompt as before.
+
+### Changed: one Python for everything the engine starts
+
+Background services, timers, hooks and every helper process now run the engine's own `.venv/bin/python`. Before, some of them used whichever Python started them, or the first `python3` on the machine, which could lack the pinned libraries and fail in ways that were hard to trace. Now a missing venv is named in one line: "no <path>: run uv sync in <engine folder>".
+
+### Changed: models that think get room to answer
+
+The engine now reads from the Anthropic Models API which models think by default and which accept an effort setting, and caches it beside the model list. A model such as Haiku 5.5, which thinks by default, now gets enough output room to finish its answer after thinking.
+
+### Fixed
+
+- Security: the status line ran git in whatever folder the session was opened in. git reads that repository's own settings, and some settings name a program git starts, so opening a session inside a repository someone else controls could make the status line run their program. It now runs git only in the engine folder and its own worktrees, and reads worktree paths in a form an unusual character cannot break.
+- On macOS, Sentinel's background agent file could be refused by launchd when an argument held a character such as `&` or `<`, and an interrupted write could leave it half-written. It is now written safely and in one step.
+- A session started with its data folder pointed at an empty scratch directory could copy your memory files into it, and later copy a stray file from it back into your real memory. Memory now syncs only with a real data repository.
+- A spec block with an impossible value, such as a month 99, stopped the prompt archive with an error before the prompt was saved. It is now reported as invalid and the prompt is saved.
+- The turn check's tests step refused to start on every run because it filtered on a test marker that no longer exists. It runs again.
 
 ## 3.2.0 (2026-11-16)
 
