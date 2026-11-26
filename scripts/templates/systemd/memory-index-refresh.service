@@ -1,6 +1,7 @@
 [Unit]
 Description=Associative-memory index refresh (incremental re-embed of changed notes)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

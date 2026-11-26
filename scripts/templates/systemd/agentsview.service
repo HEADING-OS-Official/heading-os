@@ -3,6 +3,7 @@
 [Unit]
 Description=AgentsView (archive of past agent sessions and their cost, 127.0.0.1:8080)
 After=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=simple

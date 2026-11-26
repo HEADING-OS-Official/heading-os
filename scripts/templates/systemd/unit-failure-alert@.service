@@ -1,0 +1,19 @@
+[Unit]
+Description=HEADING OS failure alert for %i
+After=network-online.target
+# Started by `OnFailure=unit-failure-alert@%n.service` in every other service
+# template but hindsight-pulse (another host's unit), never enabled (HOS-396).
+# This unit deliberately carries no OnFailure= of its own: a failing alert run
+# must not start another alert run. It shows in
+# `systemctl --user --failed` instead, which ops-radar's failed_units signal reads.
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKSPACE}}
+# Quoted, as in update-manager.service: an unquoted path containing a space is
+# split into two arguments.
+ExecStart="{{PYTHON}}" "{{WORKSPACE}}/scripts/unit-failure-alert.py" %i
+Environment=TZ={{TZ}}
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal

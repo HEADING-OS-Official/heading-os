@@ -1,6 +1,7 @@
 [Unit]
 Description=HEADING OS update manager (check then apply auto-tier)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

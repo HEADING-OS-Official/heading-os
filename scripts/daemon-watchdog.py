@@ -17,9 +17,12 @@ Usage:
   python scripts/daemon-watchdog.py --once --stale-default 90
 
 Exit codes:
-  0 - all configured daemons ok, or starting (started, first beat not yet
-      written, within its threshold)
-  1 - one or more daemons silent or missing
+  0 - every configured daemon ok or starting (started, first beat not yet
+      written, within its threshold), and every enabled user service and
+      timer ok, in grace (after boot or resume) or not-checked (no recurring
+      trigger to measure)
+  1 - a daemon silent or missing, a service down, a timer stale, or systemd
+      unreadable (rows marked unknown)
 
 CEO-only: alerts route to the CEO's Telegram via scripts/utils/alert.py.
 """
@@ -39,7 +42,9 @@ from scripts.utils.trace_filter import attach
 from scripts.utils.workspace import get_workspace_root
 from scripts.utils.clone_guard import require_main_clone
 
-_STATUS_COLOR = {"ok": GREEN, "starting": YELLOW, "silent": YELLOW, "missing": RED}
+_STATUS_COLOR = {"ok": GREEN, "starting": YELLOW, "silent": YELLOW, "missing": RED,
+                 "down": RED, "stale": RED, "unknown": RED, "grace": YELLOW,
+                 "not-checked": GRAY}
 
 
 def _print_grid(report: dict) -> None:
@@ -64,6 +69,25 @@ def _print_grid(report: dict) -> None:
         age = watchdog_core.format_age(d["age_s"]) if isinstance(d.get("age_s"), int) else "-"
         thr = f"{d.get('threshold_s', '-')}s"
         print(f"  {d['daemon']:<16} {col}{d['status']:<10}{RESET} {age:<8} {thr:<10}")
+    if report.get("systemd_note"):
+        print()
+        print(f"  {report['systemd_note']}")
+        return
+    print()
+    print(f"  {'UNIT':<34} {'STATUS':<12} {'RESTARTS':<8} DETAIL")
+    print(f"  {'-' * 34} {'-' * 12} {'-' * 8} {'-' * 6}")
+    for s in report.get("services", []):
+        col = _STATUS_COLOR.get(s["status"], RESET)
+        restarts = "-" if s.get("restarts") is None else str(s["restarts"])
+        print(f"  {s['unit']:<34} {col}{s['status']:<12}{RESET} {restarts:<8} {s.get('detail', '')}")
+    print()
+    print(f"  {'UNIT':<34} {'STATUS':<12} {'LAST':<8} {'THRESHOLD':<10} DETAIL")
+    print(f"  {'-' * 34} {'-' * 12} {'-' * 8} {'-' * 10} {'-' * 6}")
+    for t in report.get("timers", []):
+        col = _STATUS_COLOR.get(t["status"], RESET)
+        last = watchdog_core.format_age(t["age_s"]) if isinstance(t.get("age_s"), int) else "-"
+        thr = f"{t['threshold_s']}s" if isinstance(t.get("threshold_s"), int) else "-"
+        print(f"  {t['unit']:<34} {col}{t['status']:<12}{RESET} {last:<8} {thr:<10} {t.get('detail', '')}")
 
 
 def main(argv: list[str] | None = None) -> int:

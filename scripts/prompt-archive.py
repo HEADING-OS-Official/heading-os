@@ -314,8 +314,20 @@ def _print_spec_lines(status: str, reasons: list[str]) -> None:
         print(reason)
 
 
+def _is_backup_push(expanded: str) -> bool:
+    """Is the expansion's spec the `backup-push` preset? False on any doubt (HOS-389)."""
+    try:
+        from scripts.utils.checkpoint_autonomy import spec_is_backup_push
+        return spec_is_backup_push(expanded)
+    except Exception as exc:  # noqa: BLE001 - the reminder line is optional
+        print(f"prompt-archive: backup-push check: {exc}", file=sys.stderr)
+        return False
+
+
 def _cmd_save(args) -> int:
-    path, status, reasons = save(_read_source(args.original), _read_source(args.expanded),
+    original = _read_source(args.original)
+    expanded = _read_source(args.expanded)
+    path, status, reasons = save(original, expanded,
                                  slug=args.slug, session_id=args.session)
     if args.json:
         print(json.dumps({"path": str(path), "spec": status, "reasons": reasons}))
@@ -324,6 +336,10 @@ def _cmd_save(args) -> int:
         print(f"  {path}")
         print(f"{GRAY}  Read this file before executing. It is the master "
               f"instruction, and its path belongs in the handoff.{RESET}")
+        if _is_backup_push(expanded):
+            print(f"{GRAY}  When this work finishes inside the same turn, run "
+                  f"scripts/checkpoint-paths.py --done \"<one line>\" before the "
+                  f"final answer.{RESET}")
         _print_spec_lines(status, reasons)
     return _report_spec(status)
 

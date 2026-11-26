@@ -293,7 +293,7 @@ jobs:
         run: |
           uv run --no-sync --python ${{ matrix.python }} pre-commit install --install-hooks
           bash scripts/setup-platform.sh
-      - name: gate tests (integration/acceptance markers excluded)
+      - name: gate tests (integration/acceptance/requires_node markers excluded)
         # Coverage is REPORTED here and no floor is enforced; the paragraph under
         # this step says why. A floor set again belongs on this step, against a
         # fresh measurement.
@@ -307,7 +307,7 @@ jobs:
         run: >
           uv run --no-sync --python ${{ matrix.python }}
           pytest tests/ -q -p no:cacheprovider -n auto
-          -m "not integration and not acceptance"
+          -m "not integration and not acceptance and not requires_node"
           --cov=scripts --cov-report=term
         # THE FLOOR IS REMOVED, NOT LOWERED, AND THAT IS THE HONEST OPTION.
         # `--cov-fail-under=35` was set against a measured 43% produced by a

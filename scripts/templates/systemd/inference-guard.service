@@ -1,6 +1,7 @@
 [Unit]
 Description=Inference guard (probe the pinned server; tell the operator when it stays down)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

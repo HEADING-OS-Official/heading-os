@@ -343,6 +343,15 @@ config/skill-custom/*.user.toml
 .claude/.yard-bootstrap-tree-clean.log
 .claude/.yard-bootstrap-canary.log
 
+# operational data, rebuildable: HELM's relay journal (scripts/herdr-relay.py,
+# HOS-380). Read by the release gate in every checkout; written in HELM only.
+.claude/.relay-journal.jsonl
+
+# operational data, rebuildable: HELM's Telegram bridge journal
+# (scripts/telegram-bridge.py, HOS-408), text digests only. Read by the release
+# gate in every checkout; written in HELM only.
+.claude/.bridge-journal.jsonl
+
 # OPERATIONAL DATA: scratch slash-commands minted by the skill-creator plugin's
 # eval harness inside the tracked `.claude/commands/`. Its run_eval.py unlinks
 # and sweeps them; this is the belt for a SIGKILL.

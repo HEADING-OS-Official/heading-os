@@ -2,6 +2,8 @@
 Description=Hindsight server pulse to Healthchecks.io (dead-man signal)
 After=network-online.target
 Wants=network-online.target
+# No OnFailure= (HOS-396): this unit runs on the Hindsight server, where no
+# unit-failure-alert@ exists, and its Healthchecks dead-man signal already reports a failure.
 
 [Service]
 # No installer in this repository: this unit and its .timer are copied by hand to

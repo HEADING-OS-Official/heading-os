@@ -52,6 +52,15 @@ HELM: a last line `branch <name> ready for merge`, an ESCALATE line, or the done
 marker. `wait` blocks until that is true for one of the issues named, and
 answers at once when it already is.
 
+THE ANSWER STATE (HOS-401, 2026-11-20). A yard that posts a design or a
+question waits for HELM's answer and carries none of those three lines; HOS-397
+waited 40 minutes so. `answer_state` reads such an issue as `answer` when its
+newest non-[dossier] comment is newer than its newest `brief` record AND the
+yard that brief names is idle; a yard whose pane cannot be found reads `answer`
+too, noted `yard pane unknown`, because a loud reading beats a silent one. The
+idle half keeps a yard's "taken" comment, posted while it works, off the list.
+`wait` reports EVERY issue that waits, never only the first.
+
 Exit codes: 0 read cleanly, or `lific` is not installed (nothing to report).
 2 when `lific` is present and a command failed -- never a silent "all clear".
 """
@@ -134,6 +143,183 @@ def waiting_on_helm(content: str) -> str | None:
     return None
 
 
+#: Pane states that count as a yard waiting rather than working: the same set
+#: as `PANE_PASSES` in `scripts/herdr-relay.py`.
+YARD_IDLE = ("idle", "done")
+
+
+def dossier_record(content: str) -> dict | None:
+    """The header of a `[dossier]` journal record: its time, head and event; None otherwise."""
+    first = next((ln.strip() for ln in (content or "").splitlines() if ln.strip()), "")
+    m = _RECORD_HEAD.match(first)
+    if not m:
+        return None
+    return {"when": m.group("when"), "head": m.group("rest"),
+            "event": m.group("rest").split(" · ")[0]}
+
+
+def answer_state(comments: list, yard_idle) -> dict | None:
+    """`answer` when the newest non-[dossier] comment follows the newest brief and its yard is idle.
+
+    `yard_idle(name)` answers True, False or None (unknown) for the yard the
+    newest brief record names (name None when there is no brief or no `Yard:`
+    line). A working yard (False) is not waiting; unknown is, with a note.
+    Consulted only where `waiting_on_helm()` returned None for the newest comment.
+    """
+    newest = newest_comment(comments)
+    if newest is None:
+        return None
+    briefs = [c for c in comments if isinstance(c, dict)
+              and (dossier_record(str(c.get("content", ""))) or {}).get("event") == "brief"]
+    brief = max(briefs, key=lambda c: c.get("seq") or 0, default=None)
+    if brief is not None and (newest.get("seq") or 0) <= (brief.get("seq") or 0):
+        return None
+    yard = None
+    for line in str((brief or {}).get("content", "")).splitlines():
+        if line.strip().startswith("Yard:"):
+            yard = line.strip()[len("Yard:"):].strip() or None
+            break
+    idle = yard_idle(yard)
+    if idle is False:
+        return None
+    return {"state": "answer", "note": None if idle else "yard pane unknown", "comment": newest}
+
+
+def _core_terminals() -> list | None:
+    """The raw herdr-core terminal records, read only under herdr-core; None otherwise or on failure.
+
+    Asked only with `HC_TERMINAL_ID` set and `hc` on PATH, the condition under
+    which `herdr_agent.agents()` itself already asks herdr-core: this process
+    runs in an hc terminal, so a server is up. They span every repository;
+    callers take `core_yard_records()`, never these.
+    """
+    from scripts.utils import herdr_agent as HA
+    if not (os.environ.get("HC_TERMINAL_ID", "").strip() and shutil.which(HA.HC_BIN)):
+        return None
+    try:
+        return HA._core_agents()
+    except (HA.HerdrUnavailable, HA.PaneGone) as exc:
+        print(f"lific-board: herdr-core terminals not listed: {exc}", file=sys.stderr)
+        return None
+
+
+def repo_yard_records(records: list, repo_root: Path | None = None) -> dict:
+    """herdr-core records of THIS repository's yards, grouped by yard checkout.
+
+    herdr-core lists the terminals of every repository, so a checkout of
+    another repository with the same folder name would otherwise lend its
+    status to a yard here (HOS-401 review round 2). A record's cwd counts only
+    when it passes `trusted_git_dir` (no git runs in it before that), is a
+    linked worktree, is its own toplevel, and its git common dir's parent is
+    `repo_root` (default: this checkout's repository root).
+    """
+    if not records:
+        return {}
+    from scripts.utils import statusline_cache as SC
+    if repo_root is None:
+        common = SC._git_path(SC._ROOT, "--git-common-dir")
+        if not common:
+            return {}
+        repo_root = Path(common).resolve().parent
+    by_checkout: dict = {}
+    for record in records or []:
+        if not isinstance(record, dict) or not record.get("cwd"):
+            continue
+        try:
+            checkout = Path(str(record["cwd"])).resolve()
+        except OSError as exc:
+            print(f"lific-board: terminal {record.get('pane_id')}: cwd unreadable: {exc}",
+                  file=sys.stderr)
+            continue
+        by_checkout.setdefault(checkout, []).append(record)
+    mine: dict = {}
+    for checkout, rows in by_checkout.items():
+        if not SC.trusted_git_dir(checkout) or not SC._in_yard(checkout):
+            continue
+        top = SC._git_path(checkout, "--show-toplevel")
+        common = SC._git_path(checkout, "--git-common-dir")
+        if not top or not common or Path(top).resolve() != checkout:
+            continue
+        if Path(common).resolve().parent != repo_root:
+            continue
+        mine[checkout] = rows
+    return mine
+
+
+def core_yard_records(repo_root: Path | None = None) -> dict | None:
+    """`repo_yard_records` of the herdr-core terminals; None when they cannot be read.
+
+    The one shared lookup of herdr-core yard records, used by
+    `herdr_yard_idle()` and the status line's `yards()` when the TUI listing fails.
+    """
+    records = _core_terminals()
+    return None if records is None else repo_yard_records(records, repo_root)
+
+
+def herdr_yard_idle():
+    """A `yard_idle` for `answer_state` over the live Herdr agents, listed once per checker.
+
+    A yard's records are those whose cwd's directory name, or workspace id, is
+    the yard's name; idle when every one is in YARD_IDLE. No name, no matching
+    record or Herdr unavailable is unknown (None).
+
+    `agents()` raises when `herdr` is on PATH with no TUI server, before it asks
+    herdr-core, and it promises never to hide that TUI error, so it stays as it
+    is. Under herdr-core (`HC_TERMINAL_ID` set, `hc` on PATH) this falls back to
+    `core_yard_records()`, this repository's yard terminals, whose `cwd` is the
+    yard checkout. Without
+    the fallback every issue read `answer (yard pane unknown)` on a herdr-core
+    machine, a working yard's "taken" comment included (HOS-401, MEASURED
+    2026-11-20: `herdr agent list` answered server_not_running).
+    """
+    from scripts.utils import herdr_agent as HA
+    cache: dict = {}
+
+    def listed() -> list | None:
+        try:
+            found = HA.agents()
+        except HA.HerdrUnavailable as exc:
+            print(f"lific-board: herdr agents not listed: {exc}", file=sys.stderr)
+            core = core_yard_records()
+            return None if core is None else [r for rows in core.values() for r in rows]
+        # agents() may append herdr-core records of every repository: keep the
+        # TUI ones as they are and only this repository's yard records of the rest.
+        tui = [r for r in found if isinstance(r, dict)
+               and HA.backend_for(str(r.get("pane_id") or "")) == "tui"]
+        core = [r for r in found if isinstance(r, dict) and r not in tui]
+        return tui + [r for rows in repo_yard_records(core).values() for r in rows]
+
+    def idle(name: str | None) -> bool | None:
+        if not name:
+            return None
+        if "records" not in cache:
+            cache["records"] = listed()
+        records = cache["records"]
+        if records is None:
+            return None
+        mine = [r for r in records if isinstance(r, dict)
+                and (Path(str(r.get("cwd") or "")).name == name or r.get("workspace_id") == name)]
+        if not mine:
+            return None
+        return all(r.get("agent_status") in YARD_IDLE for r in mine)
+
+    return idle
+
+
+def wait_label(comments: list, yard_idle) -> str | None:
+    """What an issue's newest comment asks of HELM, as `wait` prints it; None when nothing."""
+    newest = newest_comment(comments)
+    if newest is None:
+        return None
+    state = waiting_on_helm(newest.get("content", ""))
+    if state is not None:
+        return state
+    found = answer_state(comments, yard_idle)
+    if found is None:
+        return None
+    return f"answer ({found['note']})" if found["note"] else "answer"
+
+
 def _run_lific(args: list[str]) -> object:
     """Run one `lific` subcommand with `--json` and parse its stdout.
 
@@ -177,6 +363,7 @@ def collect(project: str | None = None) -> dict:
     board: list[dict] = []
     close_requests: list[dict] = []
     waiting: list[dict] = []
+    yard_idle = herdr_yard_idle()
 
     for proj in projects:
         ident = proj.get("identifier")
@@ -193,12 +380,18 @@ def collect(project: str | None = None) -> dict:
             comments = _all_comments(issue["identifier"])
             newest = newest_comment(comments)
             state = waiting_on_helm(newest.get("content", "")) if newest else None
-            if state in ("ready", "escalate"):
+            note = None
+            if state is None:
+                found = answer_state(comments, yard_idle)
+                if found is not None:
+                    state, note = "answer", found["note"]
+            if state in ("ready", "escalate", "answer"):
                 waiting.append({
                     "project": ident,
                     "identifier": issue["identifier"],
                     "title": issue.get("title", ""),
                     "state": state,
+                    "note": note,
                     "seq": newest.get("seq"),
                     "at": newest.get("created_at", ""),
                 })
@@ -256,8 +449,12 @@ def render_text(data: dict) -> str:
         lines.append("")
         lines.append("Waiting on HELM (the newest comment of an active issue):")
         for row in waiting:
-            what = "ready for merge" if row["state"] == "ready" else "ESCALATE"
-            lines.append(f"  {row['identifier']}  {what}  (comment seq {row['seq']}, {row['at']})")
+            what = {"ready": "ready for merge", "escalate": "ESCALATE",
+                    "answer": "ANSWER waits for HELM's answer"}.get(row["state"], str(row["state"]))
+            line = f"  {row['identifier']}  {what}  (comment seq {row['seq']}, {row['at']})"
+            if row.get("note"):
+                line += f" ({row['note']})"
+            lines.append(line)
 
     return "\n".join(lines)
 
@@ -379,14 +576,14 @@ def collect_dossier(ident: str) -> dict:
         issue = _run_lific(["issue", "get", ident])
         for comment in _all_comments(ident):
             content = comment.get("content", "") or ""
-            first = next((ln.strip() for ln in content.splitlines() if ln.strip()), "")
-            m = _RECORD_HEAD.match(first)
-            if not m:
+            head = dossier_record(content)
+            if not head:
                 comments += 1
                 continue
             lines = content.strip().splitlines()
             path = lines[-1][2:].strip() if lines[-1].startswith("→ ") else ""
-            records.append({"at": _parse_time(m.group("when")), "head": m.group("rest"),
+            records.append({"at": _parse_time(head["when"]), "head": head["head"],
+                            "event": head["event"],
                             "summary": [ln for ln in lines[1:] if not ln.startswith("→ ")],
                             "path": path})
     except (LificError, subprocess.TimeoutExpired, OSError) as exc:
@@ -398,7 +595,7 @@ def collect_dossier(ident: str) -> dict:
     by_key: dict[tuple[str, str], list[dict]] = {}
     for rec in sorted(records, key=lambda r: r["at"] or datetime.min.replace(tzinfo=timezone.utc)):
         if rec["path"]:
-            by_key.setdefault((rec["head"].split(" · ")[0], rec["path"]), []).append(rec)
+            by_key.setdefault((rec["event"], rec["path"]), []).append(rec)
     matched: set[int] = set()
     events = []
     for f in tasked:
@@ -411,7 +608,7 @@ def collect_dossier(ident: str) -> dict:
                        "summary": rec["summary"] if rec else [], "text": f["text"]})
     for rec in records:
         if id(rec) not in matched:
-            events.append({"at": rec["at"], "event": rec["head"].split(" · ")[0],
+            events.append({"at": rec["at"], "event": rec["event"],
                            "path": rec["path"], "head": rec["head"], "journal": True,
                            "summary": rec["summary"], "text": ""})
     events.sort(key=lambda e: e["at"] or datetime.min.replace(tzinfo=timezone.utc))
@@ -497,15 +694,17 @@ def _print_hit(ident: str, comment: dict, what: str) -> None:
 
 
 def main_wait(argv: list[str]) -> int:
-    """Block until one of the issues needs HELM, then print it and exit 0.
+    """Block until the issues need HELM, then print EVERY one that does and exit 0.
 
     It answers AT ONCE when an issue's newest comment already asks for HELM
-    (ready for merge, ESCALATE, the done marker), so a closing comment posted
-    before the wait began is never missed; that was the defect of the scratch
-    watcher this replaces (HOS-311, 2026-11-01). Otherwise it polls and exits
-    on the first newer non-[dossier] comment of any kind. `--seen HOS-N=SEQ`
-    marks a comment HELM has already acted on (a closing comment it answered
-    with a review round): that issue then waits for a comment newer than SEQ.
+    (ready for merge, ESCALATE, the done marker, or `answer_state`), so a
+    closing comment posted before the wait began is never missed; that was the
+    defect of the scratch watcher this replaces (HOS-311, 2026-11-01). Otherwise
+    it polls, and at the end of the first round that finds any newer
+    non-[dossier] comment it prints every such issue, not only the first: a
+    second issue's comment in the same window used to become the next baseline
+    unseen (HOS-401, 2026-11-20). `--seen HOS-N=SEQ` marks a comment HELM has
+    already acted on: that issue then waits for a comment newer than SEQ.
     """
     parser = argparse.ArgumentParser(prog="lific-board.py wait",
                                      description="Wait until a yard's issue needs HELM.")
@@ -526,29 +725,38 @@ def main_wait(argv: list[str]) -> int:
         print(f"lific-board: not an issue id or HOS-N=SEQ: {', '.join(bad)}", file=sys.stderr)
         return 2
     base: dict[str, int] = {}
+    hits = 0
     try:
+        yard_idle = herdr_yard_idle()
         for ident in args.identifiers:
-            newest = newest_comment(_all_comments(ident))
+            comments = _all_comments(ident)
+            newest = newest_comment(comments)
             seq = (newest or {}).get("seq") or 0
-            state = waiting_on_helm(newest.get("content", "")) if newest else None
-            if state and seq > seen.get(ident, -1):
-                _print_hit(ident, newest, f"already waiting on HELM ({state})")
-                return 0
+            label = wait_label(comments, yard_idle)
+            if label and seq > seen.get(ident, -1):
+                _print_hit(ident, newest, f"already waiting on HELM ({label})")
+                hits += 1
             base[ident] = max(seq, seen.get(ident, 0))
     except (LificError, subprocess.TimeoutExpired) as exc:
         print(f"lific-board: {exc}", file=sys.stderr)
         return 2
+    if hits:
+        return 0
     while True:
         time.sleep(args.interval)
+        yard_idle = herdr_yard_idle()
         for ident in args.identifiers:
             try:
-                newest = newest_comment(_all_comments(ident))
+                comments = _all_comments(ident)
             except (LificError, subprocess.TimeoutExpired) as exc:
                 print(f"lific-board: {ident} not read this round: {exc}", file=sys.stderr)
                 continue
+            newest = newest_comment(comments)
             if newest and (newest.get("seq") or 0) > base[ident]:
-                _print_hit(ident, newest, waiting_on_helm(newest.get("content", "")) or "new comment")
-                return 0
+                _print_hit(ident, newest, wait_label(comments, yard_idle) or "new comment")
+                hits += 1
+        if hits:
+            return 0
 
 
 def main(argv: list[str] | None = None) -> int:

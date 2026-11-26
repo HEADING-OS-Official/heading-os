@@ -123,6 +123,7 @@ rules:
   "config/schemas/crm-contact.schema.json": engine
   "config/schemas/crm-relationship.schema.json": engine
   "config/test-budget.json": engine
+  "config/test-exceptions.yaml": engine
   "config/test-vacuity-baseline.json": engine
   "config/tmp-leak-baseline.json": engine
   "config/tool-risk.json": engine

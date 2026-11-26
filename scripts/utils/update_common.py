@@ -69,6 +69,43 @@ def resolve_current(comp: Component) -> str:
     return ""
 
 
+TELEMETRY_VERDICTS = ("off", "on", "unverified")
+
+
+def telemetry_verdict(comp: Component) -> tuple[str, str]:
+    """`(verdict, reason)` for the component's `telemetry:` entry (HOS-412, rule M056).
+
+    `none` is off and `unknown` is unverified, each by what the registry
+    records. A `switch` runs its read-only `probe`, which must read the
+    EFFECTIVE value (parsed as the tool parses it, last assignment and every
+    override included), never a line that merely spells the key: off when the output matches
+    the `off` regex; unverified when the probe could not run, exited non-zero
+    or printed nothing, because a switch nobody could read is not a switch
+    known to be off; on otherwise, quoting at most 80 characters of the output.
+    """
+    tel = comp.telemetry
+    kind = tel.get("kind")
+    if kind == "none":
+        return "off", "the registry records no telemetry"
+    if kind != "switch":
+        return "unverified", "the registry records telemetry as not established"
+    try:
+        # From the engine root, so a probe can read this checkout's own
+        # `.claude/` project settings, which override the user's.
+        res = subprocess.run(["bash", "-c", tel["probe"]], capture_output=True, text=True,
+                             errors="replace", timeout=30, check=False, cwd=str(ENGINE_ROOT))
+    except (subprocess.SubprocessError, OSError) as exc:
+        return "unverified", f"probe did not run ({type(exc).__name__}: {exc})"
+    out = res.stdout.strip()
+    if res.returncode != 0:
+        return "unverified", f"probe exited {res.returncode}"
+    if not out:
+        return "unverified", "probe printed nothing"
+    if re.search(tel["off"], out, re.MULTILINE):
+        return "off", "probe reads the switch off"
+    return "on", f"probe output does not read off: {out[:80]!r}"
+
+
 def _script_probe(script: str, args: list) -> str:
     """The first output line of an engine script run with the venv Python, or ""."""
     if not isinstance(script, str) or not script or not isinstance(args, list) \

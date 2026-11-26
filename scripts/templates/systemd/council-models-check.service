@@ -1,6 +1,7 @@
 [Unit]
 Description=HEADING OS council model freshness check (broken/newer pins -> Telegram)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

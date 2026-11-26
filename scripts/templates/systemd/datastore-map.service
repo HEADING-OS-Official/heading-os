@@ -1,6 +1,7 @@
 [Unit]
 Description=HEADING OS datastore map refresh (regenerates the private inventory)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

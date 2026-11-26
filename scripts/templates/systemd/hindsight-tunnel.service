@@ -1,6 +1,7 @@
 [Unit]
 Description=Persistent SSH tunnel (ssh alias {{ALIAS}}; forwards come from ~/.ssh/config)
 StartLimitIntervalSec=0
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 # The alias carries BatchMode, StrictHostKeyChecking, ExitOnForwardFailure and the

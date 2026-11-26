@@ -45,3 +45,21 @@ render_unit() {
       -e "s|{{TZ}}|${tz}|g" \
       "$@" "$src" > "$dest"
 }
+
+# Sets TOOL_PATH to the installing shell's PATH unless the caller already set
+# it, then refuses a value the unit cannot carry. TOOL_PATH lands inside
+# `Environment="PATH=..."` (HOS-283), where a double quote or a backslash is a
+# systemd escape and `%` is a specifier; before that, `|`, `&` and `\` break the
+# sed substitution itself, and a newline or carriage return breaks both. None
+# occurs in a real PATH, so refuse rather than escape. Exits 7 on refusal.
+tool_path_or_refuse() {
+  TOOL_PATH="${TOOL_PATH:-$PATH}"
+  case "$TOOL_PATH" in
+    *[\"\\%\|\&]* | *$'\n'* | *$'\r'*)
+      echo "TOOL_PATH contains a character the unit cannot carry (\" \\ % | & or a line break):" >&2
+      echo "  $TOOL_PATH" >&2
+      echo "Set TOOL_PATH=... to a value without them and re-run." >&2
+      exit 7
+      ;;
+  esac
+}

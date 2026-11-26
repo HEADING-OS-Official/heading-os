@@ -1,6 +1,7 @@
 [Unit]
 Description=Daemon liveness watchdog (classify every expected heartbeat, alert on a missed beat)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

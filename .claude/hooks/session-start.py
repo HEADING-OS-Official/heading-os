@@ -534,7 +534,10 @@ def check_yard_marker(workspace_root):
     marker matters would prove itself and fire never.
 
     An alert, not a block. SessionStart cannot refuse a session, and the repair
-    is one command the operator runs.
+    is one command the operator runs. The block is the PreToolUse wall
+    `.claude/hooks/yard-marker-wall.py` (2026-11-19), which refuses every tool
+    in the same case; the condition here is the wall's own, the marker being
+    exactly `1`, so the alert and the refusal agree.
     """
     try:
         if not (workspace_root / ".git").is_file():
@@ -542,14 +545,15 @@ def check_yard_marker(workspace_root):
     except OSError:
         return None
 
-    if os.environ.get("HEADING_OS_YARD"):
+    if os.environ.get("HEADING_OS_YARD", "") == "1":
         return None
 
-    return ("YARD MARKER MISSING: this is a worktree and `HEADING_OS_YARD` is "
-            "absent from this session's environment, so every guard that reads "
-            "it is inert here. It is exported into the agent PROCESS, so it "
-            "cannot be repaired from inside this session and no file carries "
-            "it. Close this session and start it as: cd here, then "
+    return ("YARD MARKER MISSING: this is a worktree and `HEADING_OS_YARD=1` is "
+            "absent from this session's environment, so this session is refused "
+            "every tool (`.claude/hooks/yard-marker-wall.py`). It is exported "
+            "into the agent PROCESS, so it cannot be repaired from inside this "
+            "session and no file carries it. Close this session and start it "
+            "as: cd here, then "
             "`HEADING_OS_YARD=1 claude --dangerously-skip-permissions`.")
 
 

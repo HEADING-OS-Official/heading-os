@@ -1,6 +1,7 @@
 [Unit]
 Description=Daily morning-dashboard HTML to the operator's own Telegram sink
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

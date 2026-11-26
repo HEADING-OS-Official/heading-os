@@ -34,6 +34,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess  # nosec B404 - fixed argv, never shell=True
 import sys
 import tempfile
@@ -1030,6 +1031,18 @@ def master_block(current: str, handoff: str | None) -> str:
 
 PROMPTS_HEADING = "## Prompts archived in this session"
 
+# The assembled handoff (HOS-387): the records a program reads, written by
+# `scripts/utils/handoff_facts.py` as the first script-owned section.
+RECORDS_HEADING = "## Session records (assembled by the script)"
+GENERATED_PREFIX = "Generated:"
+SESSION_PREFIX = "Session:"
+TRIGGER_PREFIX = "Trigger:"
+
+
+def handoff_mode() -> str:
+    """"assembled" when `CLAUDE_HANDOFF_ASSEMBLED` is on, else "full" (the default)."""
+    return "assembled" if env_bool("CLAUDE_HANDOFF_ASSEMBLED") else "full"
+
 
 def prompts_section(paths: list[str], refusal: str | None) -> str:
     """The handoff's prompt-archive section. Three outcomes, three different claims.
@@ -1308,6 +1321,9 @@ def sections(text: str, names: tuple[str, ...]) -> str:
 # resumes, in the handoff's own words (`resume_lines`). /clear-handover writes
 # the `## Resume` block, in the operator's language, while the model still runs.
 RESUME_HEADING = "## Resume"
+# The file the operator acts on next (drafts, a deliverable, a report): one line,
+# its full Linux path. resume_lines shows it and its Windows path after /clear (HOS-407).
+WORKING_FILE_HEADING = "## Working file"
 
 # The block the Stop hook requires before /clear or /compact (2026-10-14): what
 # the next session does first, what waits for the operator, what must not repeat.
@@ -1355,6 +1371,49 @@ def _content_lines(body: list[str]) -> list[str]:
     return out
 
 
+def working_file(text: str) -> str | None:
+    """The `## Working file` section's first content line, backticks and spaces
+    stripped, when it starts with `/`; else None. Anything after the path stays
+    as written, so a wrong line shows up as "no such file" in the --write report.
+    """
+    body = sections(text, (WORKING_FILE_HEADING[3:],)).splitlines()[1:]
+    lines = _content_lines(body)
+    if not lines:
+        return None
+    path = lines[0].strip("` ")
+    return path if path.startswith("/") else None
+
+
+def windows_path(path: str) -> str | None:
+    """`wslpath -w path`, or None when wslpath is absent or gives nothing."""
+    if shutil.which("wslpath") is None:
+        return None
+    try:
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+            ["wslpath", "-w", path], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"checkpoint_paths: wslpath failed for {path}: {exc}", file=sys.stderr)
+        return None
+    win = proc.stdout.strip()
+    if proc.returncode == 0 and win:
+        return win
+    why = proc.stderr.strip() or f"exit {proc.returncode}"
+    print(f"checkpoint_paths: wslpath gave no Windows path for {path}: {why}", file=sys.stderr)
+    return None
+
+
+def working_file_lines(text: str) -> list[str]:
+    """The working file's Linux path and, where wslpath gives one, its Windows path, backticked."""
+    linux = working_file(text)
+    if linux is None:
+        return []
+    out = [f"`{linux}`"]
+    win = windows_path(linux)
+    if win is not None:
+        out.append(f"`{win}`")
+    return out
+
+
 def resume_block(text: str) -> str | None:
     """The `## Resume` section's first three content lines, or None when absent or empty."""
     body = sections(text, (RESUME_HEADING[3:],)).splitlines()[1:]
@@ -1367,16 +1426,22 @@ def resume_lines(text: str) -> str:
 
     The `## Resume` block when there is one; else the first content line of
     Objective, Current state, Next steps and Open issues, labelled, in the
-    handoff's own words. No path and nothing `clear_passport` shows.
+    handoff's own words. No path but the working file's (Linux, then Windows,
+    after the second line; HOS-407), and nothing `clear_passport` shows.
     """
     block = resume_block(text)
     if block:
-        return block
-    lines = []
-    for section, label in _RESUME_FALLBACK:
-        first = next(iter(_content_lines(sections(text, (section,)).splitlines()[1:])), "")
-        if first:
-            lines.append(f"{label}: {cut_line(first, RESUME_LINE_CHARS - len(label) - 2)}")
+        lines = block.splitlines()
+    else:
+        lines = []
+        for section, label in _RESUME_FALLBACK:
+            first = next(iter(_content_lines(sections(text, (section,)).splitlines()[1:])), "")
+            if first:
+                lines.append(f"{label}: {cut_line(first, RESUME_LINE_CHARS - len(label) - 2)}")
+    extra = working_file_lines(text)
+    if extra:
+        at = min(2, len(lines))
+        lines[at:at] = extra
     return "\n".join(lines)
 
 

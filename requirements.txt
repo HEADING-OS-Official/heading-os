@@ -6,11 +6,11 @@ aiohttp==3.14.5
     # via firecrawl-py
 aiosignal==1.4.0
     # via aiohttp
-annotated-doc==0.0.6
+annotated-doc==0.0.7
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anthropic==2.8.0
+anthropic==2.12.0
     # via heading-os-engine
 anyio==4.16.0
     # via
@@ -28,7 +28,7 @@ attrs==26.1.0
     #   aiohttp
     #   jsonschema
     #   referencing
-av==18.1.0
+av==18.1.1
     # via
     #   faster-whisper
     #   heading-os-engine
@@ -40,7 +40,7 @@ beautifulsoup4==4.15.0
     #   markitdown
 cached-property==2.0.1
     # via exchangelib
-certifi==2026.10.23
+certifi==2026.11.20
     # via
     #   firecrawl-py
     #   httpcore
@@ -49,7 +49,7 @@ certifi==2026.10.23
     #   requests
 cffi==2.1.1 ; platform_python_implementation != 'PyPy'
     # via cryptography
-charset-normalizer==3.5.2
+charset-normalizer==3.5.3
     # via
     #   markitdown
     #   pdfminer-six
@@ -70,7 +70,7 @@ cryptography==50.0.2
     #   pdfminer-six
     #   pyspnego
     #   requests-ntlm
-ctranslate2==4.9.0
+ctranslate2==4.9.1
     # via faster-whisper
 defusedxml==0.7.1
     # via
@@ -85,13 +85,13 @@ et-xmlfile==2.0.0
     # via openpyxl
 exchangelib==5.6.0
     # via heading-os-engine
-fastapi==0.162.5
+fastapi==0.165.0
     # via heading-os-engine
 faster-whisper==1.2.1
     # via heading-os-engine
-filelock==4.2.10
+filelock==4.3.0
     # via huggingface-hub
-firecrawl-py==4.55.0
+firecrawl-py==4.57.0
     # via heading-os-engine
 flatbuffers==25.12.19
     # via onnxruntime
@@ -105,7 +105,7 @@ google-api-core==2.44.0
     # via google-api-python-client
 google-api-python-client==2.202.0
     # via heading-os-engine
-google-auth==2.62.2
+google-auth==2.63.1
     # via
     #   google-api-core
     #   google-api-python-client
@@ -135,7 +135,7 @@ hf-xet==1.8.0 ; platform_machine == 'AMD64' or platform_machine == 'ARM64' or pl
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
-httpcore2==2.16.0 ; sys_platform != 'emscripten'
+httpcore2==2.16.2 ; sys_platform != 'emscripten'
     # via httpx2
 httplib2==0.32.1
     # via
@@ -148,7 +148,7 @@ httpx==0.28.1
     # via
     #   firecrawl-py
     #   langfuse
-httpx2==2.16.0
+httpx2==2.16.2
     # via
     #   anthropic
     #   huggingface-hub
@@ -178,7 +178,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 langfuse==5.2.0
     # via heading-os-engine
-liteparse==2.18.0
+liteparse==2.21.0
     # via heading-os-engine
 lxml==6.1.3
     # via
@@ -195,7 +195,7 @@ markdown==3.11.3
     # via
     #   heading-os-engine
     #   pymdown-extensions
-markdownify==1.2.3
+markdownify==1.2.4
     # via markitdown
 markitdown==0.1.9
     # via heading-os-engine
@@ -217,11 +217,11 @@ oauthlib==4.0.1
     #   requests-oauthlib
 olefile==0.47
     # via markitdown
-onnxruntime==1.31.1
+onnxruntime==1.32.0
     # via
     #   faster-whisper
     #   magika
-openai==3.49.0
+openai==3.57.0
     # via heading-os-engine
 openpyxl==3.1.5
     # via
@@ -269,14 +269,14 @@ pdfminer-six==20260107
     #   heading-os-engine
     #   markitdown
     #   pdfplumber
-pdfplumber==0.11.10
+pdfplumber==0.11.11
     # via markitdown
 pillow==13.0.0
     # via
     #   heading-os-engine
     #   pdfplumber
     #   python-pptx
-playwright==1.65.1
+playwright==1.65.2
     # via heading-os-engine
 propcache==0.5.4
     # via
@@ -301,18 +301,18 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.12 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.3
+pydantic==2.14.4
     # via
     #   anthropic
     #   fastapi
     #   firecrawl-py
     #   langfuse
     #   openai
-pydantic-core==2.50.4
+pydantic-core==2.50.5
     # via pydantic
 pygments==2.21.0
     # via exchangelib
-pymdown-extensions==13.1
+pymdown-extensions==13.1.2
     # via heading-os-engine
 pyparsing==3.3.3
     # via httplib2
@@ -334,7 +334,7 @@ python-pptx==1.0.2
     # via
     #   heading-os-engine
     #   markitdown
-pyyaml==6.0.3
+pyyaml==6.0.4
     # via
     #   ctranslate2
     #   heading-os-engine
@@ -369,19 +369,17 @@ rpds-py==2026.9.1
     #   referencing
 rsa==4.9.1
     # via telethon
-six==1.17.0
-    # via markdownify
 sniffio==1.3.1
     # via
     #   anthropic
     #   openai
-soupsieve==4.1
+soupsieve==4.1.3
     # via beautifulsoup4
 sspilib==0.6.0 ; sys_platform == 'win32'
     # via pyspnego
 starlette==1.10.0
     # via fastapi
-telethon==1.45.0
+telethon==1.46.0
     # via heading-os-engine
 tokenizers==0.23.3
     # via faster-whisper
@@ -448,7 +446,7 @@ websockets==17.4
     #   uvicorn
 wrapt==2.5.2
     # via langfuse
-xlsxwriter==3.3.1
+xlsxwriter==3.3.4
     # via python-pptx
 yarl==1.25.1
     # via aiohttp

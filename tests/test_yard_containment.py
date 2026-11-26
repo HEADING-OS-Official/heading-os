@@ -116,7 +116,7 @@ CHILD_REFUSED_EXIT = 3    # the overlay child's own code for OverlayWriteRefused
 
 # Floors, asserted OUTSIDE every loop. A loop over a case table that came back
 # short passes while checking less than it claims.
-BLOCKED_CASE_FLOOR = 61   # MEASURED 2026-11-02: 61 payloads the write guard blocks
+BLOCKED_CASE_FLOOR = 68   # MEASURED 2026-11-22: 68 payloads the write guard blocks
 ALLOWED_CASE_FLOOR = 39   # MEASURED 2026-11-02: and 39 it must let through
 GITDIR_REFUSED_FLOOR = 77   # MEASURED 2026-11-02 (HOS-319 review round 3): 77 payloads refused (into a yard's git directory, or spelled through a substitution)
 GITDIR_ALLOWED_FLOOR = 17   # MEASURED 2026-11-02 (HOS-319 review round 3): and 17 a yard must still run
@@ -308,6 +308,15 @@ def _cases(helm: Path, overlay: Path, tmp: Path):
             # read-only verbs in their writing forms, into HELM
             f"sed -i s/a/b/ {helm}/zzqx.txt", f"find {helm}/zzqx -delete",
             f"sort -o {helm}/zzqx.txt zzqx")],
+        # HOS-408: the two journals the release gate trusts under herdr-core, and
+        # their parent directory, in HELM's checkout: a yard that wrote a `sent`
+        # entry there would mint the operator's word for its own commit.
+        *[(t, {"file_path": f"{helm}/.claude/.{j}-journal.jsonl", "content": "x", "old_string": "a",
+               "new_string": "b"}) for t, j in (("Write", "bridge"), ("Edit", "relay"))],
+        *[("Bash", {"command": c.format(h=helm)}) for c in (
+            "echo x >> {h}/.claude/.bridge-journal.jsonl", "tee -a {h}/.claude/.relay-journal.jsonl",
+            "cp zzqx {h}/.claude/.bridge-journal.jsonl", "mv zzqx {h}/.claude",
+            "cd {h}/.claude && echo x >> .bridge-journal.jsonl")],
         # HOS-324: Claude's own Gmail and Google Calendar connectors reach the
         # executive's live mailbox and calendar; a yard may only read them.
         *[(f"mcp__claude_ai_Gmail__{t}", {}) for t in (
@@ -1901,6 +1910,259 @@ def test_a_reopened_yard_gets_its_label_and_no_agent(tmp_path):
 
 
 # ============================================================
+# The ninth, under herdr-core (`hc`), added 2026-11-18
+# ============================================================
+#
+# Under herdr-core a yard is made and removed by `scripts/yard.py`, its agent
+# runs in an `hc` terminal named after the branch, and that process carries
+# `HC_TERMINAL_ID` and no `HERDR_*` (MEASURED in HELM 2026-11-18). So the walls
+# above get three more spellings: `scripts/yard.py remove`, `hc kill`/`hc rm`
+# of a yard's terminal, and `hc run` of an agent into a yard. hc is reached
+# ONLY through `_yard_hc_terminal`, replaced here by a lookup over invented
+# records, and through a stub `hc` on PATH for the bootstrap; never the real
+# hc, herdr or herdr-app. The yards are real worktrees of a throwaway
+# repository under `tmp_path`, so the tree and branch conditions are git's own
+# answers. `raising=False` lets the same cases run against a guard that has no
+# such helper yet, which is how the red half was shown.
+
+HC_DELETION_REFUSED_FLOOR = 10  # MEASURED 2026-11-18: the ten refusals below
+HC_DELETION_ALLOWED_FLOOR = 7   # and the seven that must pass
+HC_START_REFUSED_FLOOR = 34     # MEASURED 2026-11-19
+HC_START_ALLOWED_FLOOR = 6
+
+
+def _hc_yards(tmp_path: Path) -> tuple[Path, Path]:
+    """Two real worktrees: `yard-clean` (merged, clean) and `yard-ahead` (one
+    commit `main` cannot reach)."""
+    main = tmp_path / "zzqx-engine"
+    main.mkdir()
+    for args in (("init", "-q", "-b", "main"),
+                 ("config", "user.email", "probe@example.invalid"),
+                 ("config", "user.name", "ZZQX probe"),
+                 ("commit", "-q", "--allow-empty", "-m", "base")):
+        _git(main, *args)
+    yards = tmp_path / ".yard" / "zzqx-engine"
+    clean, ahead = yards / "yard-clean", yards / "yard-ahead"
+    # HOS-379: coded yards for `yard.py remove <code>`. w100-a holds
+    # uncommitted work, w101-a is clean and merged, w102 matches two
+    # worktrees, w103 matches none, and w104-a (uncommitted work) stands
+    # outside the yard directory, as after `git worktree move`.
+    for yard in (clean, ahead, *(yards / n for n in ("w100-a", "w101-a", "w102-a", "w102-b")), tmp_path / "zzqx-moved" / "w104-a"):
+        assert (added := _git(main, "worktree", "add", "-q", "-b", yard.name, str(yard), "main")).returncode == 0, added.stderr
+    _git(ahead, "commit", "-q", "--allow-empty", "-m", "unmerged")
+    for dirty in (yards / "w100-a", tmp_path / "zzqx-moved" / "w104-a"): (dirty / "zzqx-uncommitted.txt").write_text("work\n", encoding="utf-8")
+    return clean.resolve(), ahead.resolve()
+
+
+def _hc_guard(module, monkeypatch, tmp_path: Path):
+    """The guard pointed at the two yards, with an invented hc."""
+    clean, ahead = _hc_yards(tmp_path)
+    elsewhere = tmp_path / "not-a-yard"
+    elsewhere.mkdir()
+    records = {}
+    for address, name, cwd, state in (("tZ7", "yard-clean", clean, "live"),
+                                      ("tZ8", "yard-ahead", ahead, "finished"),
+                                      ("tZ9", "plain", elsewhere, "live")):
+        record = {"address": address, "name": name, "cwd": str(cwd), "state": state}
+        records[address] = records[name] = record
+    monkeypatch.setattr(module, "_yard_hc_terminal", records.get, raising=False)
+    monkeypatch.setattr(module, "_yard_guarded_checkouts", lambda: [clean, ahead, *sorted(clean.parent.glob("w1*")), (clean.parents[2] / "zzqx-moved" / "w104-a").resolve()])
+    monkeypatch.setattr(module, "_yard_main_clone", lambda: None)
+    monkeypatch.setattr(module, "_yard_herdr_session_files", list)
+    # The throwaway engine, so the real `_yard_branch_dir` and `yard_for_code`
+    # answer for it (both read the engine through this one helper).
+    monkeypatch.setattr(module, "_yard_engine_clone", lambda: clean.parents[2] / "zzqx-engine", raising=False)
+    for name in ("HERDR_PANE_ID", "HC_TERMINAL_ID", "HERDR_WORKSPACE_ID"):
+        monkeypatch.delenv(name, raising=False)
+    return clean, ahead
+
+
+def _squatter(where: Path, terminal: str | None) -> subprocess.Popen:
+    """A process standing in `where`, in terminal `terminal` or in none."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("HC_TERMINAL_ID", "HERDR_WORKSPACE_ID")}
+    if terminal:
+        env["HC_TERMINAL_ID"] = terminal
+    return subprocess.Popen(["bash", "-c", "read -t 30 _"], cwd=str(where), env=env,
+                            stdin=subprocess.PIPE)
+
+
+def test_yard_py_remove_and_hc_kill_or_rm_of_an_unfinished_yard_are_refused(
+        dispatch, monkeypatch, tmp_path):
+    """`scripts/yard.py remove` and `hc kill`/`hc rm` of a yard's terminal follow
+    the rules of `herdr worktree remove`; a terminal hc cannot resolve, or none
+    named, is refused; a terminal in no yard, a dry run, and a terminal whose
+    only processes are its own pass."""
+    module, _helm, _overlay, neutral = dispatch
+    clean, ahead = _hc_guard(module, monkeypatch, tmp_path)
+
+    def decide(command):
+        return module.check_yard_deletion_guard(
+            {"tool_name": "Bash", "cwd": str(neutral), "tool_input": {"command": command}})
+
+    refused = [
+        ".venv/bin/python scripts/yard.py remove yard-ahead",
+        # Bare codes, HOS-379. MEASURED 2026-11-19: w100, w102 and w103 PASSED
+        # against the guard before it, which read `w100` as a folder that does
+        # not exist; w104 (moved) passed against round 0 of HOS-379, which
+        # checked the rebuilt yard directory instead of the registered one.
+        "scripts/yard.py remove yard-ahead", "scripts/yard.py remove w100", "scripts/yard.py remove w102", "scripts/yard.py remove w103", "scripts/yard.py remove w104",
+        "hc kill tZ8",
+        "hc kill yard-ahead",
+        "hc rm tZ8",
+        "hc rm yard-ahead",
+        "hc kill t404",
+        "hc kill",
+        "hc rm",
+        "hc --on zzqx kill tZ8",
+    ]
+    allowed = [
+        ".venv/bin/python scripts/yard.py remove yard-ahead --dry-run",
+        "scripts/yard.py remove yard-clean", "scripts/yard.py remove w101",
+        "hc kill tZ7",
+        "hc rm yard-clean",
+        "hc kill tZ9",
+        "hc kill --help",
+        "hc send tZ8 'hc kill tZ8'",
+    ]
+    assert len(refused) >= HC_DELETION_REFUSED_FLOOR
+    assert len(allowed) >= HC_DELETION_ALLOWED_FLOOR
+    passed = [c for c in refused if decide(c) is None]
+    assert not passed, f"the deletion wall let these through: {passed}"
+    blocked = [c for c in allowed if decide(c) is not None]
+    assert not blocked, f"the deletion wall refused honest commands: {blocked}"
+    assert "could not be resolved" in decide("hc kill t404")["reason"]
+    assert "Name the terminal" in decide("hc kill")["reason"]
+
+    # Another process standing in the yard refuses; the terminal's own pass.
+    for terminal, verdict in ((None, "refused"), ("tZ7", "passes")):
+        squatter = _squatter(clean, terminal)
+        try:
+            time.sleep(0.2)
+            decision = decide("hc kill tZ7")
+        finally:
+            squatter.kill()
+            squatter.wait()
+        if verdict == "refused":
+            assert decision is not None and "live process" in decision["reason"], (
+                "`hc kill` of a yard terminal passed with another process in the yard")
+        else:
+            assert decision is None, (
+                f"`hc kill tZ7` was refused over tZ7's own process: {decision}")
+
+
+def test_hc_run_of_an_agent_into_a_yard_needs_the_marker_and_hc_send_passes(
+        dispatch, monkeypatch, tmp_path):
+    """`hc run` of `claude` into a yard without HEADING_OS_YARD is refused,
+    by `--cwd` or by the payload cwd; with the marker exported it passes. An
+    assignment beside it may not choose another claude: the ten PATH and
+    LD_PRELOAD cases all passed the previous guard (MEASURED 2026-11-19)."""
+    module, _helm, _overlay, neutral = dispatch
+    clean, _ahead = _hc_guard(module, monkeypatch, tmp_path)
+    agent_bin = tmp_path / "zzqx-agent-bin"   # the only claude on the guard's PATH
+    agent_bin.mkdir()
+    (agent_bin / "claude").touch(mode=0o755)
+    monkeypatch.setenv("PATH", f"{agent_bin}:/usr/bin:/bin")
+
+    def decide(command, cwd=neutral):
+        return module.check_yard_agent_start_guard(
+            {"tool_name": "Bash", "cwd": str(cwd), "tool_input": {"command": command}})
+
+    refused = [
+        (f"hc run --bg --keep --name yard-clean --cwd {clean} -- claude 'go'", neutral),
+        (f"hc run --bg --cwd={clean} -- bash -c 'claude --x hi; exec bash -i'", neutral),
+        ("hc run --bg --name yard-clean -- claude 'go'", clean),
+        (f"hc run --bg --timeout 5 --cwd {clean} -- claude 'go'", neutral),
+        (f"hc run --bg 'cd {clean} && claude go'", neutral),
+        (f"hc --json run --bg --cwd {clean} -- claude go", neutral),
+        ("hc run --bg --cwd '$ZZQX_YARD' -- claude go", neutral),
+        (f"hc run --bg --cwd {clean} -- claude 'export HEADING_OS_YARD=1'", neutral),
+        (f"hc run --bg --cwd {clean} -- bash -c 'claude go; export HEADING_OS_YARD=1'", neutral),
+        (f"hc run --bg --cwd {clean} -- claude env HEADING_OS_YARD=1", neutral),
+        (f"hc run --bg --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1 & claude'", neutral),
+        (f"hc run --bg --cwd {clean} -- bash -c 'false && export HEADING_OS_YARD=1; claude'", neutral),
+        (f"hc run --bg --cwd {clean} -- bash -c 'export FOO=a\\ HEADING_OS_YARD=1; claude'", neutral),
+        (f"hc run --cwd {clean} -- env HEADING_OS_YARD=1 HEADING_OS_YARD=0 claude go", neutral),
+        (f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1; unset HEADING_OS_YARD; claude go'", neutral),
+        (f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1; env -i claude go'", neutral),
+        (f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1; echo claude; unset HEADING_OS_YARD; claude go'", neutral),
+        (f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1; echo claude; exec -c claude go'", neutral),
+        (f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1; setpriv --reset-env claude go'", neutral),
+        (f"hc run --cwd {clean} -- bash -c 'set -k; export HEADING_OS_YARD=1; claude go HEADING_OS_YARD='", neutral),
+        (f"hc run --cwd {clean} -- bash -kc 'export HEADING_OS_YARD=1; claude go HEADING_OS_YARD=0'", neutral),
+        (f"hc run --cwd {clean} -- env HEADING_OS_YARD=1 /tmp/zzqx/claude go", neutral),
+        (f"hc run --cwd {clean} -- /tmp/zzqx/env HEADING_OS_YARD=1 claude go", neutral),
+        (f"hc run --cwd {clean} -- bash -lc 'export HEADING_OS_YARD=1; claude go'", neutral),
+    ]
+    allowed = [
+        (f"hc run --bg --keep --name yard-clean --cwd {clean} -- bash -c "
+         f"\"export HEADING_OS_YARD=1; claude --x 'go'; exec bash -i\"", neutral),
+        (f"hc run --bg --cwd {clean} -- env HEADING_OS_YARD=1 claude 'go'", neutral),
+        (f"hc run --bg --cwd {tmp_path / 'not-a-yard'} -- claude 'go'", neutral),
+        ("hc send yard-clean 'take HOS-1 into work'", clean),
+    ]
+    # An assignment beside the marker that chooses another claude, or loads code into it.
+    for extra in (f"PATH={tmp_path}/zzqx-planted:{agent_bin}", f"LD_PRELOAD={tmp_path}/zzqx-planted/x.so",
+                  f"PATH={agent_bin}:.", "PATH=", "PATH=/usr/bin:/bin"):
+        refused += [(f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1 {extra}; claude go'", neutral),
+                    (f"hc run --cwd {clean} -- env HEADING_OS_YARD=1 {extra} claude go", neutral)]
+    allowed += [(f"hc run --cwd {clean} -- bash -c 'export HEADING_OS_YARD=1 PATH={agent_bin}:/usr/bin:/bin; claude go'", neutral),
+                (f"hc run --cwd {clean} -- env HEADING_OS_YARD=1 PATH={agent_bin}:/usr/bin claude go", neutral)]
+    assert len(refused) >= HC_START_REFUSED_FLOOR
+    assert len(allowed) >= HC_START_ALLOWED_FLOOR
+    passed = [c for c, cwd in refused if decide(c, cwd) is None]
+    assert not passed, f"the agent-start wall let these through: {passed}"
+    blocked = [c for c, cwd in allowed if decide(c, cwd) is not None]
+    assert not blocked, f"the agent-start wall refused honest commands: {blocked}"
+    assert "export HEADING_OS_YARD=1" in decide(*refused[0])["reason"]
+
+
+RECORDING_HC = """
+import pathlib, sys
+here = pathlib.Path(__file__).parent
+with (here / "hc-calls.log").open("a", encoding="utf-8") as handle:
+    handle.write("\\x1f".join(sys.argv[1:]) + "\\n")
+sys.exit(int((here / "hc-exit").read_text()) if (here / "hc-exit").exists() else 0)
+"""
+
+
+@pytest.mark.parametrize("hc_exit", [0, 1])
+def test_the_bootstrap_under_herdr_core_starts_one_marked_agent_through_hc(tmp_path, hc_exit):
+    """HEADING_OS_YARD_BACKEND=core: the status reaches ok at step 11, no herdr
+    call is made, and one `hc run` starts the agent with the marker exported
+    and the first prompt, in a `bash -c` string that parses. When that `hc run`
+    fails, the bootstrap exits 3 (contour ok, no agent) and names the manual
+    start line, rather than exiting 0 over a yard with no agent."""
+    fake, env, herdr_log = _fake_checkout(tmp_path, None)
+    (herdr_log.parent / "hc-exit").write_text(str(hc_exit), encoding="utf-8")
+    stub = herdr_log.parent / "hc"
+    stub.write_text(f"#!{sys.executable}\n{RECORDING_HC}", encoding="utf-8")
+    stub.chmod(0o755)
+    env.update({
+        "HEADING_OS_YARD_BACKEND": "core",
+        "HERDR_PLUGIN_EVENT_JSON": json.dumps({"data": {"worktree": {
+            "path": str(fake), "branch": "yard-zzqx-branch"}}}),
+    })
+    result = _bootstrap(fake, env)
+    assert result.returncode == (3 if hc_exit else 0), result.stderr
+    if hc_exit:
+        assert "start it by hand: hc run --bg --no-parent --keep --name yard-zzqx-branch" in result.stderr
+    status = json.loads((fake / ".claude" / ".yard-bootstrap-status").read_text(encoding="utf-8"))
+    assert (status["status"], status["step"]) == ("ok", 11), status
+    assert _calls(herdr_log) == [], f"herdr was called under core: {_calls(herdr_log)}"
+    runs = _calls(herdr_log.parent / "hc-calls.log")
+    assert len(runs) == 1 and runs[0][0] == "run", runs
+    argv = runs[0]
+    assert argv[argv.index("--name") + 1] == "yard-zzqx-branch"
+    assert argv[argv.index("--cwd") + 1] == str(fake)
+    line = argv[-1]
+    assert line.split("; claude --zzqx")[0].split(" PATH=/")[0].endswith("export HEADING_OS_YARD=1"), line
+    assert "Reply with the single word READY, then wait for the brief from HELM." in line
+    parsed = subprocess.run(["bash", "-n", "-c", line], capture_output=True, text=True)
+    assert parsed.returncode == 0, parsed.stderr
+
+
+# ============================================================
 # The tenth: a checkout is offered only its own handoff (HOS-158)
 # ============================================================
 
@@ -2149,3 +2411,193 @@ def test_memory_reconcile_syncs_with_a_git_data_root_holding_auto_memory(tmp_pat
     proc = _run_reconcile(tmp_path, root)
     assert proc.returncode == 0, proc.stderr
     assert (root / "auto-memory" / "note.md").read_bytes() == native.read_bytes()
+
+
+# ============================================================
+# The yard marker wall: an unmarked yard session is refused every tool
+# ============================================================
+
+WALL = ROOT / ".claude" / "hooks" / "yard-marker-wall.py"
+WALL_TEMPLATES = ("linux", "macos", "windows")
+
+
+def _wall_checkout(tmp_path: Path, name: str, *, yard: bool, guard_body: str | None = None) -> Path:
+    """An invented checkout holding the wall and `scripts/utils/clone_guard.py`.
+
+    A yard has a `.git` FILE and a main clone a `.git` DIRECTORY, which is the
+    whole of what `is_main_clone` reads at a repository root (its fast path).
+    """
+    root = tmp_path / name
+    (root / ".claude" / "hooks").mkdir(parents=True)
+    shutil.copy2(WALL, root / ".claude" / "hooks" / WALL.name)
+    utils = root / "scripts" / "utils"
+    utils.mkdir(parents=True)
+    (root / "scripts" / "__init__.py").write_text("", encoding="utf-8")
+    (utils / "__init__.py").write_text("", encoding="utf-8")
+    guard = utils / "clone_guard.py"
+    if guard_body is None:
+        shutil.copy2(ROOT / "scripts" / "utils" / "clone_guard.py", guard)
+    else:
+        guard.write_text(guard_body, encoding="utf-8")
+    if yard:
+        (root / ".git").write_text(f"gitdir: {tmp_path / 'zzqx-gitdir'}\n", encoding="utf-8")
+    else:
+        (root / ".git").mkdir()
+    return root
+
+
+def _run_wall(root: Path, tool: str, marker: str | None) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "HEADING_OS_YARD"}
+    if marker is not None:
+        env["HEADING_OS_YARD"] = marker
+    return subprocess.run(
+        [str(ROOT / ".venv" / "bin" / "python"), str(root / ".claude" / "hooks" / WALL.name)],
+        input=json.dumps({"tool_name": tool, "tool_input": {}, "cwd": "/"}),
+        capture_output=True, text=True, env=env, cwd=str(root), timeout=60)
+
+
+def _denial(proc: subprocess.CompletedProcess) -> str:
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    spec = out["hookSpecificOutput"]
+    assert spec["hookEventName"] == "PreToolUse"
+    assert spec["permissionDecision"] == "deny"
+    return spec["permissionDecisionReason"]
+
+
+def test_an_unmarked_yard_session_is_refused_every_tool(tmp_path):
+    """A yard session whose HEADING_OS_YARD is absent, `0` or empty is refused
+    Bash, Read, Edit and an MCP tool alike.
+
+    MEASURED 2026-11-19, before this wall: in a copy of main's `.claude/` and
+    `scripts/utils/` extracted with `git archive` into the checkout scratch,
+    with `.git` a FILE (a yard's shape), the linux template's loader line for
+    this wall run with HEADING_OS_YARD unset printed nothing and exited 0,
+    because main carries no `yard-marker-wall.py`: there was no wall, and an
+    unmarked yard session could call every tool."""
+    root = _wall_checkout(tmp_path, "yard", yard=True)
+    cases = [(tool, None) for tool in ("Bash", "Read", "Edit", "mcp__lific__get_issue")]
+    cases += [("Bash", "0"), ("Bash", "")]
+    assert len(cases) == 6
+    for tool, marker in cases:
+        reason = _denial(_run_wall(root, tool, marker))
+        assert reason.startswith("YARD MARKER MISSING"), reason
+        assert str(root.resolve()) in reason
+        assert "HEADING_OS_YARD=1 claude --dangerously-skip-permissions" in reason
+
+
+def test_a_marked_yard_and_the_main_clone_pass_in_silence(tmp_path):
+    """The honest half: a yard with HEADING_OS_YARD=1, and the main clone with
+    or without the marker, print nothing and exit 0."""
+    yard = _wall_checkout(tmp_path, "yard", yard=True)
+    helm = _wall_checkout(tmp_path, "helm", yard=False)
+    cases = [(yard, "1"), (helm, None), (helm, "1"), (helm, "0")]
+    for root, marker in cases:
+        for tool in ("Bash", "mcp__lific__get_issue"):
+            proc = _run_wall(root, tool, marker)
+            assert proc.returncode == 0, proc.stderr
+            assert proc.stdout == "", (root, marker, proc.stdout)
+
+
+def test_a_wall_that_cannot_tell_a_yard_from_helm_refuses(tmp_path):
+    """When `clone_guard` raises on import, the call is refused with the
+    exception text, in a main-clone-shaped checkout too: unsure is not HELM."""
+    body = "raise RuntimeError('zzqx clone guard broken')\n"
+    for name, yard in (("yard", True), ("helm", False)):
+        root = _wall_checkout(tmp_path, name, yard=yard, guard_body=body)
+        reason = _denial(_run_wall(root, "Read", "1"))
+        assert reason.startswith("YARD MARKER MISSING"), reason
+        assert reason.endswith("\n\nRuntimeError: zzqx clone guard broken"), reason
+
+
+def test_every_platform_template_registers_the_wall_first_for_every_tool():
+    """Each of the three platform templates carries the wall as the FIRST
+    PreToolUse entry, matcher `.*`, loaded by the same loader line as
+    `_dispatch.py`."""
+    seen = 0
+    for plat in WALL_TEMPLATES:
+        data = json.loads((ROOT / ".claude" / f"settings.local.{plat}.json").read_text(encoding="utf-8"))
+        first = data["hooks"]["PreToolUse"][0]
+        assert first["matcher"] == ".*", plat
+        command = first["hooks"][0]["command"]
+        assert "yard-marker-wall.py" in command, plat
+        dispatch = next(h["command"] for g in data["hooks"]["PreToolUse"]
+                        for h in g["hooks"] if "_dispatch.py" in h["command"])
+        assert command == dispatch.replace("_dispatch.py", "yard-marker-wall.py"), plat
+        seen += 1
+    assert seen == 3
+
+
+@pytest.mark.parametrize("case", [
+    "yard-marker", "no-sender", "hc-get-raises", "no-address", "append-fails",
+    "sent", "send-fails"])
+def test_the_relay_journals_each_hc_send_and_refuses_from_a_yard(tmp_path, monkeypatch, case):
+    """HOS-380, HOS-385: the relay journals before it types (`type_text`) and the outcome after,
+    and types nothing without a journal, in a yard, or with sender or target unknown.
+    `type_text`, `hc get` and the main clone are stubbed; nothing reaches a live core."""
+    spec = importlib.util.spec_from_file_location("herdr_relay_hos380",
+                                                  ROOT / "scripts" / "herdr-relay.py")
+    relay = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(relay)
+    helm = tmp_path / "helm"
+    (helm / ".claude").mkdir(parents=True)
+    journal = helm / ".claude" / ".relay-journal.jsonl"
+    if case == "append-fails":
+        journal.mkdir()
+    sent, tokens = [], []
+
+    class Brief:
+        checkout_for_pane = staticmethod(lambda pane, ws: tmp_path)
+        herdr_workspaces = staticmethod(list)
+        target_dir = staticmethod(lambda checkout, root: tmp_path / "proj")
+        transcript_sizes = staticmethod(lambda root: {})
+        transcripts = staticmethod(lambda target: [])
+
+        @staticmethod
+        def verify_delivery(target, token, root, since, session):
+            tokens.append(token)
+            return 0
+
+    def hc_get(pane):
+        if case == "hc-get-raises":
+            raise relay.HA.HerdrUnavailable("zzqx hc down")
+        return {} if case == "no-address" else {"address": "t9z"}
+
+    def type_text(pane, text):
+        sent.append(text)
+        if case == "send-fails": raise relay.HA.HerdrUnavailable("zzqx keys failed")  # noqa: E701
+    monkeypatch.setattr(relay.HA, "type_text", type_text)
+    monkeypatch.setattr(relay, "require_main_clone", lambda f: None)
+    monkeypatch.setattr(relay, "_load_brief", lambda: Brief)
+    monkeypatch.setattr(relay, "main_clone_path", lambda root: helm)
+    monkeypatch.setattr(relay, "wait_until_ready", lambda pane, timeout: 0)
+    monkeypatch.setattr(relay, "not_ready", lambda pane: None)  # HOS-408: the re-check under the input lock
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))  # the input lock stays in tmp
+    monkeypatch.setattr(relay.HA, "is_claude_terminal", lambda pane: True)
+    monkeypatch.setattr(relay.HA, "_hc_get", hc_get)
+    monkeypatch.setattr(sys, "argv", ["herdr-relay.py", "t9z", "commit"])
+    monkeypatch.delenv("HEADING_OS_YARD", raising=False)
+    monkeypatch.setenv("HC_TERMINAL_ID", "t1")
+    if case == "yard-marker":
+        monkeypatch.setenv("HEADING_OS_YARD", "1")
+    if case == "no-sender":
+        monkeypatch.delenv("HC_TERMINAL_ID")
+
+    status = relay.main()
+
+    refused = {"yard-marker": 2, "no-sender": 5, "hc-get-raises": 5, "no-address": 5,
+               "append-fails": 5}
+    if case in refused:
+        assert status == refused[case] and sent == [], (case, status, sent)
+        assert case == "append-fails" or not journal.exists(), case
+        return
+    rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert sent == ["commit"] and len(rows) == 2, (case, sent, rows)
+    entry, outcome = rows
+    assert {k: entry[k] for k in ("sender", "target", "text")} == {
+        "sender": "t1", "target": "t9z", "text": "commit"}
+    assert outcome == {"id": entry["id"], "outcome": "failed" if case == "send-fails" else "sent"}
+    if case == "sent":
+        assert status == 0 and tokens == ['"content":"commit"'], tokens
+    else:
+        assert status == 3 and tokens == []

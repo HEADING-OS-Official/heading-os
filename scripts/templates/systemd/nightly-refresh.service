@@ -1,6 +1,7 @@
 [Unit]
 Description=HEADING OS nightly refresh (full suite -> day-mode green marker, verdict store, warm caches)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

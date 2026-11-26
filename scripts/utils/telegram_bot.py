@@ -213,11 +213,14 @@ class TelegramBot:
     def send_message(self, chat_id, text: str, parse_mode: str = "Markdown",
                      disable_web_page_preview: bool = True,
                      reply_to_message_id: Optional[int] = None,
-                     reply_markup: Optional[dict] = None) -> dict:
+                     reply_markup: Optional[dict] = None,
+                     message_thread_id: Optional[int] = None) -> dict:
         """Send a message to a chat. chat_id is integer (user/group id) or '@channel' string.
 
         reply_markup is an optional Telegram InlineKeyboardMarkup dict, e.g.
         {"inline_keyboard": [[{"text": "Yes", "callback_data": "x"}]]}.
+        message_thread_id names a forum topic, private chats with topics
+        included since Bot API 9.3 (DOCUMENTED, api-changelog, 2026-11-22).
         """
         params = {
             "chat_id": chat_id,
@@ -234,6 +237,8 @@ class TelegramBot:
             params["reply_to_message_id"] = reply_to_message_id
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
         return self._call("sendMessage", **params)
 
     def send_document(self, chat_id, path: Path, caption: Optional[str] = None,
@@ -311,12 +316,54 @@ class TelegramBot:
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
-            "parse_mode": parse_mode,
             "disable_web_page_preview": disable_web_page_preview,
         }
+        # Omitted when falsy, as in send_message: plain text never 400s on an
+        # unbalanced Markdown token. editMessageText takes no message_thread_id
+        # (DOCUMENTED, bots/api/methods/editmessagetext.md, 2026-11-22).
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
         return self._call("editMessageText", **params)
+
+    # Forum topics in a private chat with the bot (Bot API 9.4, 2026-02-09:
+    # createForumTopic in private chats; parameter tables DOCUMENTED in
+    # bots/api/methods/*.md, read 2026-11-22).
+
+    def create_forum_topic(self, chat_id, name: str) -> dict:
+        """Create a topic; returns the ForumTopic, whose `message_thread_id` addresses it."""
+        return self._call("createForumTopic", chat_id=chat_id, name=name[:128])
+
+    def edit_forum_topic(self, chat_id, message_thread_id: int, name: str,
+                         _timeout: int = 30) -> bool:
+        """Rename a topic, in a forum supergroup or a private chat with a user.
+
+        DOCUMENTED, core.telegram.org/bots/api#editforumtopic, read 2026-11-22:
+        "edit name and icon of a topic in a forum supergroup chat or a private
+        chat with a user"; the name is 0-128 characters.
+        """
+        return self._call("editForumTopic", _timeout=_timeout, chat_id=chat_id,
+                          message_thread_id=message_thread_id, name=name[:128])
+
+    def close_forum_topic(self, chat_id, message_thread_id: int) -> bool:
+        return self._call("closeForumTopic", chat_id=chat_id, message_thread_id=message_thread_id)
+
+    def reopen_forum_topic(self, chat_id, message_thread_id: int) -> bool:
+        return self._call("reopenForumTopic", chat_id=chat_id, message_thread_id=message_thread_id)
+
+    def delete_forum_topic(self, chat_id, message_thread_id: int) -> bool:
+        """Delete a topic with all its messages, in a forum supergroup or a private chat with a user.
+
+        DOCUMENTED, core.telegram.org/bots/api#deleteforumtopic, read 2026-11-22:
+        private chats included, unlike closeForumTopic and reopenForumTopic,
+        which name forum supergroups only.
+        """
+        return self._call("deleteForumTopic", chat_id=chat_id, message_thread_id=message_thread_id)
+
+    def set_my_settings(self, **settings) -> bool:
+        """`setMySettings` (Bot API 10.5): e.g. has_topics_enabled=True. Unnamed settings stay unchanged."""
+        return self._call("setMySettings", **settings)
 
     def edit_message_reply_markup(self, chat_id, message_id: int,
                                   reply_markup: Optional[dict] = None) -> dict:

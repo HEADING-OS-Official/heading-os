@@ -454,9 +454,20 @@ class ServiceFamily:
 
     @property
     def enable_units(self) -> tuple[str, ...]:
-        """The units `systemctl --user enable` is given: the timers, else the service."""
-        timers = tuple(u for u in self.units if u.endswith(".timer"))
-        return timers or tuple(u for u in self.units if u.endswith(".service"))
+        """The units `systemctl --user enable` is given: the timers, else the service.
+
+        A systemd template (`name@.service`) is never one: it cannot be enabled
+        without an instance, so a family of templates only (`unit-failure-alert`,
+        HOS-396) answers `()`, is copied by the install and is never enabled.
+        """
+        units = tuple(u for u in self.units if not is_template_unit(u))
+        timers = tuple(u for u in units if u.endswith(".timer"))
+        return timers or tuple(u for u in units if u.endswith(".service"))
+
+
+def is_template_unit(unit: str) -> bool:
+    """True for a systemd template unit name such as `unit-failure-alert@.service`."""
+    return "@." in unit
 
 
 def _pair(stem: str) -> tuple[str, str]:
@@ -528,6 +539,11 @@ SERVICE_FAMILIES: tuple[ServiceFamily, ...] = (
     _daemon_family("sync-exchange-daemon", "sync-exchange", f"the Exchange sync; {_MAIL_STEP}"),
     # Linux only: the component updater is "Linux and WSL2 on x86-64 only" (CLIPROXY guide).
     _timer_family("update-manager", platforms=("linux",)),
+    # HOS-396: started by `OnFailure=unit-failure-alert@%n.service` in every other
+    # service template but hindsight-pulse (another host's unit), so a failed unit reaches Telegram at once. A template:
+    # copied by the install, never enabled or started (`enable_units` is empty).
+    # Linux only: OnFailure= is systemd's.
+    ServiceFamily("unit-failure-alert", ("unit-failure-alert@.service",), True, platforms=("linux",)),
     # HOS-307: the model proxy, installed by the service layer itself. A
     # cliproxyapi.service already present and not written here is adopted, never
     # replaced or removed: the guide had executives write that unit by hand.
@@ -673,6 +689,10 @@ def manifest_rows() -> list[dict]:
     rows = []
     for fam in SERVICE_FAMILIES:
         schedules, commands = [], []
+        if not fam.enable_units:
+            schedules.append("started by OnFailure= of the other service units; never enabled")
+            for unit in fam.units:
+                commands.extend(_directives(_template(unit)).get("ExecStart", []))
         for primary in fam.enable_units:
             d = _directives(_template(primary))
             if primary.endswith(".timer"):
@@ -1120,12 +1140,16 @@ def _systemd_install(fam: ServiceFamily, workspace_dir: Path, dry_run: bool) -> 
     if dry_run:
         for unit in rendered:
             print(f"  would write {dest / unit}")
-        print(f"  would run: systemctl --user enable --now {' '.join(fam.enable_units)}")
+        if fam.enable_units:
+            print(f"  would run: systemctl --user enable --now {' '.join(fam.enable_units)}")
         return True
     dest.mkdir(parents=True, exist_ok=True)
     for unit, text in rendered.items():
         _write_atomic(dest / unit, text.encode("utf-8"))
     _run(["systemctl", "--user", "daemon-reload"])
+    if not fam.enable_units:
+        _ok(f"{fam.name}: {', '.join(fam.units)} copied, started by OnFailure= of the other units, never enabled")
+        return True
     result = _run(["systemctl", "--user", "enable", "--now", *fam.enable_units])
     if result.returncode != 0:
         _fail(f"{fam.name}: systemctl enable failed: {result.stderr.strip() or result.stdout.strip()}")
@@ -1196,23 +1220,27 @@ def remove_services(fams: list[ServiceFamily], *, target_platform: str | None = 
             dest = systemd_user_dir()
             if _adopted_units(fam, dest):
                 continue
+            # A template (`name@.service`) is neither enabled, stopped nor probed:
+            # systemd knows only its instances, which end on their own.
+            services = [u for u in fam.units if u.endswith(".service") and not is_template_unit(u)]
             if dry_run:
-                print(f"  would run: systemctl --user disable --now {' '.join(fam.enable_units)}")
-                print(f"  would run: systemctl --user stop "
-                      f"{' '.join(u for u in fam.units if u.endswith('.service'))}")
+                if fam.enable_units:
+                    print(f"  would run: systemctl --user disable --now {' '.join(fam.enable_units)}")
+                if services:
+                    print(f"  would run: systemctl --user stop {' '.join(services)}")
                 print(f"  would delete {', '.join(str(dest / u) for u in fam.units)} where present")
                 continue
             # Disabling a timer leaves a pass already in flight running, so every
             # service of the family is stopped too, and each unit is confirmed down.
-            _run(["systemctl", "--user", "disable", "--now", *fam.enable_units])
-            services = [u for u in fam.units if u.endswith(".service")]
+            if fam.enable_units:
+                _run(["systemctl", "--user", "disable", "--now", *fam.enable_units])
             if services:
                 _run(["systemctl", "--user", "stop", *services])
             for unit in fam.units:
                 (dest / unit).unlink(missing_ok=True)
             _run(["systemctl", "--user", "daemon-reload"])
-            still = [u for u in fam.units
-                     if _run(["systemctl", "--user", "is-active", u]).returncode == 0]
+            still = [u for u in fam.units if not is_template_unit(u)
+                     and _run(["systemctl", "--user", "is-active", u]).returncode == 0]
             if still:
                 _fail(f"{fam.name}: still active after removal: {', '.join(still)}")
                 ok = False
@@ -1239,7 +1267,8 @@ def remove_services(fams: list[ServiceFamily], *, target_platform: str | None = 
 
 
 def service_status(fams: list[ServiceFamily], *, target_platform: str | None = None) -> bool:
-    """Print one line per unit or agent; True when every mandatory family here is installed and running."""
+    """Print one line per unit or agent; True when every mandatory family here is installed and running
+    (a family of templates only, never enabled: when its files are installed)."""
     target = _target(target_platform)
     _preflight(target, dry_run=False)
     healthy = True
@@ -1248,6 +1277,13 @@ def service_status(fams: list[ServiceFamily], *, target_platform: str | None = N
             continue
         if target == "linux":
             dest = systemd_user_dir()
+            if not fam.enable_units:
+                # A family of templates only is healthy when its files are in place.
+                for unit in fam.units:
+                    present = (dest / unit).is_file()
+                    line = f"{fam.name}: {unit} file={'yes' if present else 'no'} (never enabled)"
+                    (_ok if present else _warn if not fam.mandatory else _fail)(line)
+                    healthy = healthy and (present or not fam.mandatory)
             for unit in fam.enable_units:
                 enabled = _run(["systemctl", "--user", "is-enabled", unit]).stdout.strip() or "absent"
                 active = _run(["systemctl", "--user", "is-active", unit]).stdout.strip() or "unknown"

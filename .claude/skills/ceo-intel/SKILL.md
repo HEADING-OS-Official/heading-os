@@ -186,8 +186,8 @@ With no `strategy` or `pipeline` record, the callouts and implications stay at t
    - Font: Segoe UI / Helvetica Neue / Arial
    - Body: 10pt, line-height 1.55
    - Page: A4 with 20mm margins
-   - Colors: #1a1a1a (ink), #c77b30 (accent/relevance), #c0392b (danger), #1a7a3a (up)
-   - Relevance callouts: #f7f3ed background, 3px left border in #c77b30
+   - Colors: #151515 (ink), #494ddf (violet-deep, accent text), #c0392b (danger), #1a7a3a (up)
+   - Relevance callouts: #f5f5fb background, 3px left border in #f5922b
    - Metrics strip: bordered boxes, large values (14pt bold), small uppercase labels (7pt)
    - Regional columns: flex layout, 3 equal columns
    - Section titles: 11pt, 800 weight, uppercase, letter-spacing 1.5px

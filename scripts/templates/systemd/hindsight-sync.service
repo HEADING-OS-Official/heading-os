@@ -1,6 +1,7 @@
 [Unit]
 Description=Send new and changed workspace files to Hindsight (hindsight-sync.py push)
 After=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

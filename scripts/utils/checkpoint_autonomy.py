@@ -21,8 +21,10 @@ registry name `skill-design-references` (skill `checkpoint`).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import subprocess  # nosec B404 - fixed argv, never shell=True
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,6 +33,8 @@ from pathlib import Path
 from scripts.utils import checkpoint_paths as CP
 from scripts.utils import herdr_agent as HA
 from scripts.utils import provenance
+from scripts.utils import push_progress
+from scripts.utils import workspace as WS
 
 
 # ============================================================
@@ -65,7 +69,19 @@ def config() -> dict:
     hard = CP.env_int("CLAUDE_HANDOFF_HARD_THRESHOLD", 55)
     if soft >= hard:
         soft, hard = 45, 55
-    return {"soft": soft, "hard": hard}
+    # Where a menu held for a pause shows anyway (HOS-387): `hard + 3`, from the
+    # hard threshold in force (HELM's decision 2026-11-19, after a fixed 58 let
+    # a held menu wait 18 points past this machine's hard threshold of 40).
+    # `CLAUDE_HANDOFF_HOLD_CEILING` overrides it only when set above `hard`.
+    ceiling = CP.env_int("CLAUDE_HANDOFF_HOLD_CEILING", 0)
+    if ceiling <= hard:
+        ceiling = hard + 3
+    return {"soft": soft, "hard": hard, "hold_ceiling": ceiling}
+
+
+def hold_menu_enabled() -> bool:
+    """`CLAUDE_HANDOFF_HOLD_MENU`: hold the threshold menu until a pause. Off by default."""
+    return CP.env_bool("CLAUDE_HANDOFF_HOLD_MENU")
 
 
 def threshold_bucket(used: float, cfg: dict) -> int:
@@ -635,6 +651,62 @@ def _turn_started_at(payload: dict, turn: str, session: str) -> datetime | None:
 _ARCHIVE_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{6})_prompt_")
 
 
+def spec_is_backup_push(text: str) -> bool:
+    """Is the spec block of `text` the `backup-push` preset? Raises on a broken block.
+
+    `prompt_spec` and `yaml` are imported here, never at module top: the Stop
+    hook runs under the system interpreter, and a missing library must make the
+    caller's check fail, not this module's import (HOS-389).
+    """
+    import yaml
+    from scripts.utils import prompt_spec
+    block = prompt_spec.extract(text)
+    if block is None:
+        return False
+    data = yaml.safe_load(block)
+    return (isinstance(data, dict) and data.get("spec_version") == 1
+            and data.get("preset") == "backup-push")
+
+
+def _zero_ahead(root: Path) -> bool:
+    """Does `git rev-list --count origin/main..main` print exactly `0` in `root`?"""
+    done = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+        ["git", "-C", str(root), "rev-list", "--count", "origin/main..main"],
+        capture_output=True, text=True, timeout=5,
+    )
+    return done.returncode == 0 and done.stdout.strip() == "0"
+
+
+# Contract, read 2026-11-20 from scripts/utils/push_progress.py: RECORD_FILE "push-progress.json"; finish() sets state in {done, partial, failed} and ended_at; start() sets started_at; both epoch seconds from time.time().
+def _backup_push_finished(path: str, payload: dict) -> bool:
+    """Is this archived prompt a `backup-push` that has finished? False on any doubt.
+
+    All three must hold (HOS-389): the spec is the `backup-push` preset; the
+    push record is `done` and started at or after the prompt's archive second;
+    the engine and the data repository are both 0 commits ahead of origin/main.
+    """
+    try:
+        match = _ARCHIVE_STAMP.search(Path(path).name)
+        if match is None:
+            return False
+        if not spec_is_backup_push(Path(path).read_text(encoding="utf-8")):
+            return False
+        saved = datetime.strptime(match.group(1), "%Y-%m-%d-%H%M%S").replace(
+            tzinfo=timezone.utc).timestamp()
+        record = push_progress.read()
+        if not isinstance(record, dict) or record.get("state") != "done":
+            return False
+        started = record.get("started_at")
+        if isinstance(started, bool) or not isinstance(started, (int, float)):
+            return False
+        if not (math.isfinite(started) and started >= saved):
+            return False
+        return _zero_ahead(CP.project_root(payload)) and _zero_ahead(WS.get_data_root())
+    except Exception as exc:  # noqa: BLE001 - doubt keeps today's answer: open
+        print(f"checkpoint-offer: backup-push check: {exc}", file=sys.stderr)
+        return False
+
+
 def _open_work(payload: dict, tasks: dict | None, turn: str, session: str) -> bool:
     """Does STATE show work still owed? Never read from the assistant's prose.
 
@@ -656,6 +728,9 @@ def _open_work(payload: dict, tasks: dict | None, turn: str, session: str) -> bo
     for path in paths:
         match = _ARCHIVE_STAMP.search(Path(path).name)
         if match is None or match.group(1) >= floor:
+            # A finished backup-push owes nothing more (HOS-389).
+            if match is not None and _backup_push_finished(path, payload):
+                continue
             return True
     return False
 
@@ -1269,22 +1344,3 @@ def freshness_detail(fresh: dict) -> str:
     return (f"{p.get('merges', 0)} merge(s), {p.get('lific', 0)} Lific change(s), "
             f"{p.get('prompts', 0)} prompt(s) archived, "
             f"{p.get('operator', 0)} operator message(s)")
-
-
-# The light refresh, unattended (HOS-315 part 1): write only. No /clear, no
-# /compact, no goldfish cold read: it is a save of the record, not a reset.
-FRESH_REFRESH_NOTE = """\
-The handoff on disk is stale: {events} event(s) / {minutes} min of work since it \
-was written ({detail}). First refresh it with a light /handover: run \
-`python scripts/checkpoint-paths.py`, then pass the handoff, written per \
-.claude/skills/handover/references/handoff-template.md with `Trigger: manual \
-(freshness refresh)`, on stdin to `python scripts/checkpoint-paths.py --write`. \
-Write only: no goldfish cold read (end Current state with `Cold read: not run \
-(light freshness refresh)`), no /clear, no /compact. Then carry on."""
-
-#: A refresh asked for this many times on one baseline is not asked again.
-FRESH_REFRESH_MAX_ASKS = 2
-
-# The attended line (HOS-315 part 1): said once per handoff, never repeated.
-FRESH_LINE = ("Handoff is {events} event(s) / {minutes} min old ({detail}). "
-              "/handover refreshes it.")

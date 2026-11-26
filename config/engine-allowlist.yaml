@@ -595,6 +595,9 @@ files:
 - path: config/test-budget.json
   class: ratchet-baseline
   reason: scripts/check-test-budget.py and check-test-budget-raise.py (BUDGET_REL) load it.
+- path: config/test-exceptions.yaml
+  class: config-read-by-code
+  reason: "scripts/herdr-brief.py (EXCEPTIONS_PATH) loads it to admit a `Tests: exception HOS-N, <file>` brief line."
 - path: config/test-vacuity-baseline.json
   class: ratchet-baseline
   reason: scripts/check-test-vacuity.py (BASELINE_PATH) loads it.
@@ -742,6 +745,33 @@ files:
 - path: scripts/claude-mods/context-bar/types/index.d.ts
   class: engine-code
   reason: the context-bar mod's state contract, named in its plugin.json as "types" and checked by claude plugin validate against every $.state key the module uses; HOS-331.
+- path: scripts/claude-mods/lot-map/.claude-plugin/plugin.json
+  class: install-file
+  reason: Claude Code reads it as the manifest of the lot-map mod when the folder is loaded as a plugin (claude --plugin-dir, or an install); HOS-411.
+- path: scripts/claude-mods/lot-map/hooks/hooks.json
+  class: install-file
+  reason: Claude Code reads it to find the lot-map hooks module; HOS-411.
+- path: scripts/claude-mods/lot-map/hooks/register.tsx
+  class: engine-code
+  reason: the lot-map mod itself, the hooks module Claude Code runs (the /lot-map pane mapping tool calls to stations); HOS-411.
+- path: scripts/claude-mods/lot-map/hooks/stations.ts
+  class: engine-code
+  reason: the lot-map mod's station and label rules, imported by its hooks module register.tsx, a port of those in scripts/lot-map.py; HOS-411.
+- path: scripts/claude-mods/lot-map/hooks/braille.ts
+  class: engine-code
+  reason: the lot-map mod's braille map and its geometry, imported by its hooks module register.tsx, a port of render_map in scripts/lot-map.py; HOS-418.
+- path: scripts/claude-mods/lot-map/hooks/picture.ts
+  class: engine-code
+  reason: the lot-map mod's picture map (RGBA pixels with its own 5x7 font) drawn under the new Herdr, imported by its hooks module register.tsx; HOS-419.
+- path: scripts/claude-mods/lot-map/hooks/lot-map.test.tsx
+  class: engine-code
+  reason: the lot-map mod's own tests, run by claude plugin test against the engine's test kit, not by pytest; HOS-411.
+- path: scripts/claude-mods/lot-map/station-cases.json
+  class: engine-code
+  reason: the case corpus scripts/check-lot-map-rules.py runs against scripts/lot-map.py and the mod's stations.ts; HOS-414.
+- path: scripts/claude-mods/lot-map/types/index.d.ts
+  class: engine-code
+  reason: the lot-map mod's state contract, named in its plugin.json as "types" and checked by claude plugin validate against every $.state key the module uses; HOS-411.
 - path: scripts/herdr/heading-os-yard/data-overlay-pre-commit
   class: install-file
   reason: scripts/install-data-overlay-guard.py (BODY_PATH) reads it as the hook body it installs.

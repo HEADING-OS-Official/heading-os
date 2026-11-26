@@ -49,9 +49,11 @@ instead of the pinned `.venv`, a `{{TOOLPATH}}` that no longer resolves `node`.
 The placeholder is a wildcard and any value passes it.
 
 A drop-in (`<unit>.d/*.conf`) that overrides a directive this check just
-verified. Two units on this machine have one. They are COUNTED and named in the
-report so the blindness is visible, but their contents are neither read nor
-compared.
+verified. Drop-ins are read only to find a template directive they supply: a
+template line missing from the unit is not drift when a drop-in carries a
+matching line under the same `[Section]` header, after the last empty reset of
+that key in reading order (HOS-404). Nothing else in them is compared, and the
+report keeps naming every drop-in so the rest of the blindness stays visible.
 
 systemd's loaded state. A unit file can match its template perfectly and still
 not be what is running, because the file was written after the last
@@ -73,7 +75,7 @@ A unit the service layer ADOPTS is neither passed nor failed either: one listed
 by a family in `scripts/utils/schedule.py` that the installer leaves as it is
 (`is_adopted_unit`: no installer script, no service-layer marker), reported as
 `[adopted]` with no directive comparison, because re-running the installer, the
-advice for drift, does not touch it.
+advice for drift, does not touch it. A unit whose first line is exactly that marker is compared without it, because the service layer writes it and no template does.
 
 Tests: none live since the 2026-09-21 test-suite split. The case that mattered
 was an installed unit still carrying a template the repository had since fixed,
@@ -93,7 +95,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.utils.schedule import family_of_unit, is_adopted_unit  # noqa: E402
+from scripts.utils.schedule import (  # noqa: E402
+    SERVICE_LAYER_MARKER, family_of_unit, is_adopted_unit)
 
 DEFAULT_TEMPLATES = ROOT / "scripts" / "templates" / "systemd"
 UNIT_SUFFIXES = (".service", ".timer", ".path", ".socket")
@@ -231,6 +234,85 @@ def dropins_for(unit_path: Path) -> list[str]:
     return sorted(p.name for p in d.iterdir() if p.suffix == ".conf")
 
 
+def _section_of(lines: list[str], index: int) -> str | None:
+    """The last `[...]` header at or above `lines[index]`, or None."""
+    for line in reversed(lines[:index + 1]):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            return stripped
+    return None
+
+
+def dropin_supplier(template_line: str, section: str | None,
+                    dropin_dir: Path, dropins: list[str]) -> str | None:
+    """Name of the drop-in that supplies `template_line` under `section`.
+
+    Reading order is the drop-ins in name order, each top to bottom. A matching
+    line counts only when no empty reset of its key (`Key=`) follows it in that
+    section; a later reset cancels the supply. Returns None when nothing
+    supplies the line. A read failure propagates to the caller, which reports
+    it as an error and leaves the directive as drift.
+    """
+    if section is None or "=" not in template_line:
+        return None
+    key = template_line.split("=", 1)[0].strip()
+    if not key:
+        return None
+    pattern = _line_pattern(template_line.strip())
+    supplier: str | None = None
+    for name in dropins:
+        lines = (dropin_dir / name).read_text(encoding="utf-8").splitlines()
+        current: str | None = None
+        for raw in lines:
+            stripped = raw.strip()
+            if not stripped or stripped.startswith(("#", ";")):
+                continue
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current = stripped
+                continue
+            if current != section:
+                continue
+            if "=" not in stripped:
+                # systemd ignores a line with no `=` as an invalid assignment,
+                # so it is neither a supply nor a reset (HOS-404 review).
+                continue
+            line_key, _, value = stripped.partition("=")
+            if line_key.strip() != key:
+                continue
+            if pattern.fullmatch(stripped) is not None:
+                supplier = name
+            elif not value.strip():
+                supplier = None
+    return supplier
+
+
+def apply_dropins(entry: dict[str, Any], template_text: str, unit_path: Path) -> None:
+    """Move each missing directive a drop-in supplies into `supplied_by`."""
+    entry["supplied_by"] = []
+    if not entry["dropins"]:
+        return
+    template_lines = template_text.splitlines()
+    dropin_dir = unit_path.with_name(unit_path.name + ".d")
+    kept: list[dict[str, Any]] = []
+    supplied: list[dict[str, str]] = []
+    for finding in entry["findings"]:
+        if finding["kind"] == "missing_from_unit" and finding["directive"]:
+            section = _section_of(template_lines, finding["template_line"] - 1)
+            supplier = dropin_supplier(finding["text"], section, dropin_dir, entry["dropins"])
+            if supplier is not None:
+                supplied.append({"line": finding["text"], "dropin": supplier})
+                continue
+        kept.append(finding)
+    entry["findings"] = kept
+    entry["supplied_by"] = supplied
+    if not kept:
+        entry["verdict"] = "match"
+    elif any(f["directive"] for f in kept):
+        entry["verdict"] = "directive-drift"
+    else:
+        entry["verdict"] = "comment-drift"
+
+
 def survey(units_dir: Path, templates_dir: Path,
            only: list[str] | None = None) -> dict[str, Any]:
     """Compare every installed unit (or the named ones) against its template."""
@@ -262,7 +344,7 @@ def survey(units_dir: Path, templates_dir: Path,
     for path in paths:
         template = templates_dir / path.name
         entry: dict[str, Any] = {"unit": path.name, "path": str(path),
-                                 "dropins": dropins_for(path)}
+                                 "dropins": dropins_for(path), "supplied_by": []}
         if not template.is_file():
             entry["verdict"] = "no-template"
             entry["findings"] = []
@@ -289,8 +371,27 @@ def survey(units_dir: Path, templates_dir: Path,
             entry["template"] = str(template)
             results.append(entry)
             continue
+        # The service layer writes its marker as line 1 of every unit it
+        # installs and most templates do not carry it, so that exact line is
+        # expected, not drift. Exact equality, never startswith: a template
+        # whose own line 1 begins with the marker must keep that line compared.
+        disk_lines = disk_text.splitlines(keepends=True)
+        dropped = 0
+        if disk_lines and disk_lines[0].splitlines()[0] == SERVICE_LAYER_MARKER:
+            disk_text = "".join(disk_lines[1:])
+            dropped = 1
         entry.update(compare(template_text, disk_text))
+        for finding in entry["findings"]:
+            if "unit_line" in finding:
+                finding["unit_line"] += dropped
         entry["template"] = str(template)
+        try:
+            apply_dropins(entry, template_text, path)
+        except (OSError, UnicodeDecodeError) as exc:
+            # An unreadable drop-in REFUSES: the directives stay reported as
+            # drift and the read failure is an error, never a supply.
+            entry["supplied_by"] = []
+            errors.append(f"unreadable drop-in for {path}: {exc}")
         results.append(entry)
 
     return {"units_dir": str(units_dir), "templates_dir": str(templates_dir),
@@ -363,9 +464,12 @@ def render(survey_result: dict[str, Any], installer_hint: bool = True) -> str:
                 else:
                     where = f"unit line {finding['unit_line']}"
                     lines.append(f"         - {mark}  not in the template     ({where}): {finding['text']}")
+        for supplied in entry.get("supplied_by", []):
+            lines.append(f"         note: {supplied['line']} supplied by drop-in {supplied['dropin']}")
         if entry["dropins"]:
-            lines.append(f"         note: {len(entry['dropins'])} drop-in(s) override this unit "
-                         f"and are NOT compared: {', '.join(entry['dropins'])}")
+            lines.append(f"         note: {len(entry['dropins'])} drop-in(s) override this unit; "
+                         "they are read only for a template directive they supply, "
+                         f"nothing else in them is compared: {', '.join(entry['dropins'])}")
     lines.append("")
     lines.append(
         f"  {tally['template-rendered']} template-rendered, {tally['match']} match, "

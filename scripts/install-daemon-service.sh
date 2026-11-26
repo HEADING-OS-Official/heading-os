@@ -7,6 +7,7 @@
 #   <name> is one of:
 #     sentinel
 #     sync-exchange | sync-exchange-daemon
+#     telegram-bridge   (HOS-408; only on the operator's word, M004)
 #
 # Substitutes {{WORKSPACE}}, {{PYTHON}} and {{TZ}} placeholders in the matching
 # template at scripts/templates/systemd/<unit>.service, writes the unit
@@ -34,7 +35,7 @@ require_main_clone
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <name>" >&2
-    echo "  sentinel | sync-exchange" >&2
+    echo "  sentinel | sync-exchange | telegram-bridge" >&2
     exit 1
 fi
 
@@ -45,9 +46,12 @@ case "$1" in
     sync-exchange|sync-exchange-daemon)
         UNIT="sync-exchange-daemon"
         ;;
+    telegram-bridge)
+        UNIT="telegram-bridge"
+        ;;
     *)
         echo "Unknown daemon: $1" >&2
-        echo "Expected one of: sentinel sync-exchange" >&2
+        echo "Expected one of: sentinel sync-exchange telegram-bridge" >&2
         exit 2
         ;;
 esac

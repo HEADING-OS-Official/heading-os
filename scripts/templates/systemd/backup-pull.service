@@ -1,6 +1,7 @@
 [Unit]
 Description=Pull the server's pgBackRest repository and keep verified snapshots (backup-pull.py pull)
 After=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

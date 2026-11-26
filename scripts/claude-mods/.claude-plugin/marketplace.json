@@ -16,6 +16,11 @@
       "name": "context-bar",
       "source": "./context-bar",
       "description": "A band above the prompt (/context-bar to hide or show) showing what fills the context window, by category; /context-bar panel lists every item."
+    },
+    {
+      "name": "lot-map",
+      "source": "./lot-map",
+      "description": "A pane beside the chat (/lot-map on, off, toggle) mapping where this session's work goes: ten stations, the route, what runs now, and the last calls."
     }
   ]
 }

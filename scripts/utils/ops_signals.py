@@ -19,22 +19,40 @@ dict. The classifiers (`classify_backup`, `classify_ollama`, `classify_ollama_ac
 are unit-tested in isolation; the measurement wrappers (`backup_state`,
 `ollama_state`, ...) call them after gathering primitives.
 
-READ ONLY. No function here mutates workspace state. Consumed by
-scripts/ops-radar.py.
+HOS-398 added six machine checks with the same split: `disk_space_state`,
+`cert_expiry_state`, `security_updates_state`, `deps_audit_state`,
+`disabled_timers_state` and `mcp_liveness_state`, each beside its
+`classify_*`. The dependency audit and MCP liveness keep a JSON cache under the
+caller's `cache_dir` and re-measure only when called with `refresh=True`.
+
+READ ONLY. No function here mutates workspace state; the only writes are those
+two runtime caches, atomically. Consumed by scripts/ops-radar.py.
 """
 from __future__ import annotations
 
+import http.client
 import json
+import math
+import os
+import queue as _queue
+import re
+import shutil
+import signal
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
 from scripts.record_readers.sources.action_queue import SENDING, queue_path
+from scripts.utils.atomic import atomic_write_text
 from scripts.utils.odin_cadence import read_cadence_json
 from scripts.utils.data_homes import homes
 from scripts.utils.data_path import DataPathError, data_path, data_read
@@ -1473,6 +1491,80 @@ def unit_drift_state(engine_root: Path) -> dict:
                                 if r.get("verdict") == "adopted"])
 
 
+def classify_failed_units(units: list[str] | None, error: str = "") -> dict:
+    """Pure: the user units systemd lists as failed (HOS-396) -> signal dict.
+
+    Shaped like `classify_toolchain_pins`. `units` None means systemd could not
+    be asked: not due, and the summary names why in `error`. Any failed unit is
+    high: `unit-failure-alert@.service` already sent its Telegram message, and
+    this is the daily and /prime reminder that the unit is still down.
+    """
+    if units is None:
+        why = f" ({error})" if error else ""
+        return {"key": "failed_units", "value": None, "threshold": 0, "due": False,
+                "severity": "ok", "tier": "B", "summary": f"failed units: not checked{why}"}
+    value = sorted(units)
+    return {"key": "failed_units", "value": value, "threshold": 0, "due": bool(value),
+            "severity": "high" if value else "ok", "tier": "B",
+            "summary": "failed units: " + (", ".join(value) if value else "none")}
+
+
+def failed_units_state() -> dict:
+    """`systemctl --user list-units --failed`, read-only, classified by `classify_failed_units`."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend"],
+            capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        print("ops_signals: failed-unit read: timeout", file=sys.stderr)
+        return classify_failed_units(None, error="timeout")
+    except OSError as exc:
+        print(f"ops_signals: failed-unit read: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return classify_failed_units(None, error=type(exc).__name__)
+    if proc.returncode != 0:
+        print(f"ops_signals: failed-unit read: exit {proc.returncode}: {proc.stderr.strip()}", file=sys.stderr)
+        return classify_failed_units(None, error=f"exit {proc.returncode}")
+    return classify_failed_units([line.split()[0] for line in proc.stdout.splitlines() if line.strip()])
+
+
+def classify_toolchain_pins(findings: list[dict] | None, error: str = "") -> dict:
+    """Pure: `toolchain_pins` findings (HOS-395) -> signal dict, shaped like `classify_unit_drift`.
+
+    `findings` None means the scan could not run: not due, and the summary names
+    the exception type in `error`. A MISSING executable is high (the next call of
+    that hook or unit fails); a MISSING PATH entry, a STALE pin and an
+    unresolvable nvm default are warn.
+    """
+    if findings is None:
+        return {"key": "toolchain_pins", "value": None, "threshold": 0, "due": False,
+                "severity": "ok", "tier": "B",
+                "summary": f"toolchain pins: not checked ({error or 'scan failed'})"}
+    home = str(Path.home())
+    value = [f"{f['kind']} {f['file']}: {f['where']}: {f['path']}".replace(home, "~").rstrip()
+             for f in findings]
+    if any(f["kind"] == "MISSING" and f["what"] == "executable" for f in findings):
+        severity = "high"
+    elif findings:
+        severity = "warn"
+    else:
+        severity = "ok"
+    summary = f"toolchain pins: {len(value)} ({value[0]})" if value else "toolchain pins: none"
+    return {"key": "toolchain_pins", "value": value, "threshold": 0, "due": bool(findings),
+            "severity": severity, "tier": "B", "summary": summary}
+
+
+def toolchain_pins_state(engine_root: Path) -> dict:
+    """Scan this machine's units, hooks and MCP servers for toolchain paths pinned to a
+    missing or non-default version (`toolchain_pins`), and classify. Read-only."""
+    from scripts.utils.install_commands import default_toolchain_pin_args, toolchain_pins
+    try:
+        findings = toolchain_pins(**default_toolchain_pin_args(engine_root))
+    except Exception as exc:  # noqa: BLE001 - any failure is reported as "not checked"
+        print(f"ops_signals: toolchain pin scan failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return classify_toolchain_pins(None, error=type(exc).__name__)
+    return classify_toolchain_pins(findings)
+
+
 # ============================================================
 # Tier-B: a hostname pinned in /etc/hosts that public DNS no longer answers
 # ============================================================
@@ -1637,3 +1729,1000 @@ def hosts_pin_state(data_root: Path | None = None, hosts_file: Path = HOSTS_FILE
         results.append({"host": host, "pinned": pinned,
                         "public": resolve(host) if pinned else None})
     return classify_hosts_pins(results)
+
+
+# ============================================================
+# Tier-B: machine checks nothing else made (HOS-398, 2026-11-20)
+# ============================================================
+#
+# Six signals: local disk space, certificate expiry, pending security updates,
+# the dependency audit, expected timers that are not enabled, and MCP server
+# liveness. Each is a pure `classify_*` plus a `*_state` reader whose inputs are
+# parameters with live defaults. The dependency audit and the MCP probe are
+# slow, so they cache their outcome under the ops-radar runtime state and
+# re-measure only when the caller passes `refresh=True` (the daily timer runs
+# `ops-radar.py --quiet --refresh`). All six are read-only: no sudo, no unit
+# change, no install; the MCP probe's stdio child lives at most a few seconds.
+
+ROOT_FS = Path("/")                       # the root filesystem, the same on every machine
+WINDOWS_MOUNT = Path("/mnt/c")            # the WSL default Windows mount
+APT_LISTS_DIR = Path("/var/lib/apt/lists")  # apt's package index directory on Ubuntu
+APT_PERIODIC_KEYS = ("APT::Periodic::Update-Package-Lists", "APT::Periodic::Unattended-Upgrade")
+
+DISK_WARN_PCT = 80
+DISK_HIGH_PCT = 90
+DISK_CRITICAL_PCT = 95
+DISK_ROOT_MIN_FREE_GB = 20
+
+CERT_WARN_DAYS = 21
+CERT_HIGH_DAYS = 7
+CERT_TIMEOUT = 10
+#: (env key, connect to the name itself?) in brief order; the first source wins a shared name.
+CERT_SOURCES = (("HINDSIGHT_HEALTH_UI_NAME", False),)
+CERT_TUNNEL_HOST = "127.0.0.1"            # the local tunnel `hindsight-health.py` `_ui_ok` uses
+
+SECURITY_HIGH_COUNT = 10
+APT_LISTS_STALE_DAYS = 3
+APT_TIMEOUT = 60
+
+DEPS_AUDIT_CACHE = "deps-audit.json"
+DEPS_AUDIT_REFRESH_DAYS = 7
+DEPS_AUDIT_STALE_DAYS = 14
+DEPS_AUDIT_TIMEOUT = 600
+
+TIMERS_TIMEOUT = 10
+TIMER_ENABLED_STATES = {"enabled", "enabled-runtime"}
+
+MCP_CACHE = "mcp-liveness.json"
+MCP_REFRESH_HOURS = 6
+MCP_STALE_HOURS = 24
+MCP_STDIO_TIMEOUT = 15
+MCP_HTTP_TIMEOUT = 10
+MCP_TOTAL_CAP = 30
+MCP_KILL_GRACE = 3
+MCP_VPN_ENV = "OPS_RADAR_MCP_VPN_SERVERS"
+MCP_NOT_ON_PATH = "command not on this PATH"
+MCP_REFUSED = "answers but refuses the configured credentials"
+MCP_INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "heading-os-ops-radar", "version": "1"}}}
+
+
+def _worst(severities) -> str:
+    return max(severities, key=severity_rank, default="ok")
+
+
+def _tier_b(key: str, value, threshold: int, severity: str, summary: str) -> dict:
+    return {"key": key, "value": value, "threshold": threshold, "due": severity != "ok",
+            "severity": severity, "tier": "B", "summary": summary}
+
+
+def _not_checked(key: str, label: str, threshold: int, why: str) -> dict:
+    return _tier_b(key, None, threshold, "ok", f"{label}: not checked ({why})")
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+
+
+def _age_seconds(iso: str | None, now: float) -> float | None:
+    try:
+        return max(0.0, now - datetime.fromisoformat(str(iso)).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_cache(path: Path) -> dict | None:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        print(f"ops_signals: cache {path.name} unreadable ({type(exc).__name__}); re-measuring",
+              file=sys.stderr)
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _write_cache_atomic(path: Path, obj: dict) -> None:
+    """Through `atomic_write_text`: a unique same-directory temp file per write,
+    then `os.replace`, so two writers of one cache (the daily notifier and a
+    manual `--refresh`) never share a temp file and a reader never sees half a
+    cache."""
+    atomic_write_text(path, json.dumps(obj, indent=2, sort_keys=True), mode=0o600)
+
+
+def _home_tilde(text: str) -> str:
+    return text.replace(str(Path.home()), "~")
+
+
+def _bounded(fn, timeout: float, default, label: str):
+    """`fn()` in a daemon thread, waited for at most `timeout` s; `default` past it.
+
+    A daemon thread is not joined at interpreter exit, so a call stuck where no
+    socket timeout reaches (name resolution) cannot hold the radar open.
+    """
+    box: dict = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # noqa: BLE001 - reported as the default below
+            print(f"ops_signals: {label} failed ({type(exc).__name__})", file=sys.stderr)
+
+    worker = threading.Thread(target=target, daemon=True, name=f"ops-{label}")
+    worker.start()
+    worker.join(timeout)
+    if "value" in box:
+        return box["value"]
+    if worker.is_alive():
+        print(f"ops_signals: {label} still running after {timeout:.0f} s; abandoned", file=sys.stderr)
+    return default
+
+
+def _signal_group(pgid: int, sig) -> bool:
+    """True when the signal reached a group member; False when no member is left."""
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _kill_group(proc, grace: float) -> None:
+    """SIGTERM the process group `proc` leads, then SIGKILL the group after `grace` s.
+
+    SIGKILL goes to the group whether or not the leader already exited: a
+    descendant that ignores SIGTERM outlives a leader that does not. The leader
+    is left unreaped (WNOWAIT) until after the SIGKILL, so its pid, which is the
+    group id, cannot be reused by an unrelated process in between. Where
+    `os.waitid` or `WNOWAIT` does not exist (macOS), the early exit is skipped:
+    the full grace period passes, then SIGKILL; the leader stays unreaped all
+    the same, because nothing waits on it before `proc.wait()`.
+    """
+    if _signal_group(proc.pid, signal.SIGTERM):
+        deadline = time.monotonic() + grace
+        if not (hasattr(os, "waitid") and hasattr(os, "WNOWAIT")):
+            print("ops_signals: os.waitid unavailable here; SIGKILL after the full grace period",
+                  file=sys.stderr)
+            time.sleep(grace)
+        else:
+            while time.monotonic() < deadline:
+                try:
+                    if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+                        break
+                except ChildProcessError:
+                    print(f"ops_signals: child {proc.pid} already reaped", file=sys.stderr)
+                    break
+                time.sleep(0.05)
+        _signal_group(proc.pid, signal.SIGKILL)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        print(f"ops_signals: child {proc.pid} not reaped after SIGKILL", file=sys.stderr)
+
+
+def _c_env() -> dict:
+    """The env for every subprocess whose output is parsed as text: a copy of
+    os.environ (so X31C_TRACE_ID and PATH are inherited) with LC_ALL=C, because
+    the messages of systemd and apt are translated and the matches here are
+    English. No parsed output carries a time, so TZ is left alone."""
+    return dict(os.environ, LC_ALL="C")
+
+
+def _run_in_own_group(cmd: list[str], *, cwd: str | None = None, timeout: float,
+                      env: dict | None = None) -> subprocess.CompletedProcess:
+    """`subprocess.run(capture_output=True, text=True)` in a new session; on timeout the
+    whole process group is killed before `TimeoutExpired` is re-raised."""
+    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, start_new_session=True, env=env)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc, MCP_KILL_GRACE)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+# -- 1. disk space -------------------------------------------------------------
+
+def _is_root_label(label: str) -> bool:
+    return label == "/" or label.startswith("/ (")
+
+
+def classify_disk_space(rows: dict[str, dict], skipped: list[str] | None = None) -> dict:
+    """Pure: {label: {"used_pct", "free_gb"}} (unrounded floats) -> signal dict.
+
+    Thresholds compare the unrounded values; only the display and `value` are
+    rounded, DOWN, so a shown figure never contradicts its verdict. warn at DISK_WARN_PCT used, high at DISK_HIGH_PCT, critical at
+    DISK_CRITICAL_PCT; the root filesystem also warns under
+    DISK_ROOT_MIN_FREE_GB free. Labels, never absolute paths, are the keys: the
+    data root's path holds the home folder and summaries reach the wire.
+    """
+    skipped = skipped or []
+    if not rows:
+        return _not_checked("disk_space", "disk", DISK_WARN_PCT, "; ".join(skipped) or "no filesystem read")
+    parts, due_parts, sevs, shown = [], [], [], {}
+    for label, r in rows.items():
+        pct, free = r["used_pct"], r["free_gb"]
+        shown[label] = {"used_pct": math.floor(pct), "free_gb": math.floor(free * 10) / 10}
+        sev = ("critical" if pct >= DISK_CRITICAL_PCT else "high" if pct >= DISK_HIGH_PCT
+               else "warn" if pct >= DISK_WARN_PCT else "ok")
+        if _is_root_label(label) and free < DISK_ROOT_MIN_FREE_GB:
+            sev = _worst([sev, "warn"])
+        sevs.append(sev)
+        text = f"{label} {shown[label]['used_pct']}% used, {shown[label]['free_gb']} GB free"
+        parts.append(text)
+        if sev != "ok":
+            due_parts.append(text)
+    summary = "disk: " + "; ".join(due_parts or parts)
+    if skipped:
+        summary += "; " + "; ".join(skipped)
+    return _tier_b("disk_space", shown, DISK_WARN_PCT, _worst(sevs), summary)
+
+
+def disk_space_state(data_root: Path, paths: list[tuple[str, Path]] | None = None,
+                     usage=shutil.disk_usage, ismount=os.path.ismount, stat=os.stat) -> dict:
+    """Read `/`, the data root and `/mnt/c`, one row per filesystem, and classify. Read-only.
+
+    Rows are de-duplicated by device: a data root on the root filesystem reads
+    as `/ (data root)`. `/mnt/c` is skipped when it is not a mount point.
+    """
+    if paths is None:
+        paths = [("/", ROOT_FS), ("data root", Path(data_root)), ("/mnt/c", WINDOWS_MOUNT)]
+    rows: dict[str, dict] = {}
+    seen: dict[int, str] = {}
+    skipped: list[str] = []
+    for label, path in paths:
+        if path == WINDOWS_MOUNT and not ismount(str(path)):
+            skipped.append(f"{label} not mounted")
+            continue
+        try:
+            dev = stat(path).st_dev
+            du = usage(path)
+        except OSError as exc:
+            print(f"ops_signals: disk usage of {label} unreadable ({type(exc).__name__})", file=sys.stderr)
+            skipped.append(f"{label} unreadable")
+            continue
+        if dev in seen:
+            merged = f"{seen[dev]} ({label})"
+            rows[merged] = rows.pop(seen[dev])
+            seen[dev] = merged
+            continue
+        # df's own arithmetic, used / (used + available), kept unrounded for the thresholds.
+        denom = du.used + du.free
+        seen[dev] = label
+        rows[label] = {"used_pct": du.used * 100 / denom if denom else 0.0, "free_gb": du.free / 1e9}
+    return classify_disk_space(rows, skipped)
+
+
+# -- 2. certificate expiry -----------------------------------------------------
+
+def classify_cert_expiry(results: dict[str, dict], not_configured: list[str]) -> dict:
+    """Pure: {name: {"days_left": float | None, "error": str | None}} -> signal dict.
+
+    `days_left` is unrounded and the thresholds compare it as it is; the
+    summary and `value` show whole days.
+
+    An error starting "verification failed" is critical (an expired certificate
+    fails verification); any other error is warn, unreachable. Otherwise warn
+    under CERT_WARN_DAYS, high under CERT_HIGH_DAYS, critical when expired.
+    """
+    if not results:
+        why = ", ".join(not_configured) + " not configured" if not_configured else "no source"
+        return _not_checked("cert_expiry", "certificates", CERT_WARN_DAYS, why)
+    sevs, due_parts, days, answered, shown = [], [], [], [], {}
+    for name, r in results.items():
+        err, left = r.get("error"), r.get("days_left")
+        whole = None if left is None else (math.floor(left) if left >= 0 else -math.ceil(-left))
+        shown[name] = {**r, "days_left": whole}
+        if not err and r.get("route"):
+            answered.append(f"{name} via {r['route']} route")
+        if err:
+            if err.startswith("verification failed"):
+                sevs.append("critical")
+                due_parts.append(f"{name} {err}")
+            else:
+                sevs.append("warn")
+                due_parts.append(f"{name} unreachable")
+            continue
+        days.append(whole)
+        if left < 0:
+            sevs.append("critical")
+            due_parts.append(f"{name} expired {-whole} days ago")
+        elif left < CERT_HIGH_DAYS:
+            sevs.append("high")
+            due_parts.append(f"{name} expires in {whole} days")
+        elif left < CERT_WARN_DAYS:
+            sevs.append("warn")
+            due_parts.append(f"{name} expires in {whole} days")
+        else:
+            sevs.append("ok")
+    if due_parts:
+        summary = "certificates: " + "; ".join(due_parts)
+    else:
+        summary = f"certificates: {len(results)} checked, nearest expiry in {min(days)} days"
+    if answered:
+        summary += f" ({', '.join(answered)})"
+    if not_configured:
+        summary += f" ({', '.join(not_configured)} not configured)"
+    return _tier_b("cert_expiry", shown, CERT_WARN_DAYS, _worst(sevs), summary)
+
+
+def _cert_probe(host: str, sni: str, port: int = 443,
+                timeout: int = CERT_TIMEOUT) -> tuple[float | None, str | None]:
+    """(notAfter as epoch seconds, None), or (None, error). TLS verification stays on."""
+    ctx = ssl.create_default_context()
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as raw, \
+                ctx.wrap_socket(raw, server_hostname=sni) as tls:
+            cert = tls.getpeercert()
+    except ssl.SSLCertVerificationError as exc:
+        print(f"ops_signals: certificate of {sni} failed verification", file=sys.stderr)
+        return None, f"verification failed ({exc.verify_message or exc.reason})"
+    except OSError as exc:  # ssl.SSLError, socket.timeout and refusals are all OSError
+        print(f"ops_signals: certificate of {sni} unreachable ({type(exc).__name__})", file=sys.stderr)
+        return None, f"unreachable ({type(exc).__name__})"
+    try:
+        return ssl.cert_time_to_seconds(cert["notAfter"]), None
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"ops_signals: certificate of {sni} has no readable notAfter ({exc})", file=sys.stderr)
+        return None, "unreachable (no readable expiry date)"
+
+
+def cert_expiry_state(sources: list[tuple[str, str, str]] | None = None, probe=_cert_probe,
+                      now: float | None = None) -> dict:
+    """Read each configured certificate's expiry over TLS and classify. Read-only.
+
+    `sources` is [(env key, name, host to connect to)]; by default
+    CERT_SOURCES from `.env`: `HINDSIGHT_HEALTH_UI_NAME` through the tunnel on 127.0.0.1. A name two keys
+    share is probed once, by the first source.
+    """
+    now = time.time() if now is None else now
+    not_configured: list[str] = []
+    if sources is None:
+        from scripts.utils.api import load_api_key
+        sources = []
+        for key, direct in CERT_SOURCES:
+            name = load_api_key(key, required=False).strip()
+            if not name:
+                not_configured.append(key)
+                continue
+            sources.append((key, name, name if direct else CERT_TUNNEL_HOST))
+    routes: dict[str, list[str]] = {}
+    for _key, name, host in sources:
+        if host not in routes.setdefault(name, []):
+            routes[name].append(host)
+    results: dict[str, dict] = {}
+    for name, hosts in routes.items():
+        # The first source's route first. A connect failure falls through to a
+        # later source's route for the same name; a verification failure never
+        # does (HELM decision 2026-11-20: the public route of a name both keys
+        # share did not speak TLS while the tunnel verified, MEASURED 2026-11-20).
+        for i, host in enumerate(hosts):
+            # Bounded as a whole: the connect timeout does not cover name resolution.
+            not_after, err = _bounded(lambda h=host, n=name: probe(h, n), CERT_TIMEOUT + 5,
+                                      (None, f"unreachable (no answer within {CERT_TIMEOUT + 5} s)"),
+                                      "certificate probe")
+            if err and err.startswith("unreachable") and i + 1 < len(hosts):
+                continue
+            break
+        days = None if not_after is None else (not_after - now) / 86400
+        results[name] = {"days_left": days, "error": err,
+                         "route": "public" if host == name else "tunnel"}
+    return classify_cert_expiry(results, not_configured)
+
+
+# -- 3. security updates -------------------------------------------------------
+
+def classify_security_updates(pending: int | None, lists_age_days: float | None,
+                              auto_updates: bool | None, error: str = "",
+                              auto_error: str = "") -> dict:
+    """Pure: pending security upgrades, age of the security index, auto-update switch -> signal.
+
+    warn at 1 pending, high at SECURITY_HIGH_COUNT; a security index older than
+    APT_LISTS_STALE_DAYS (or absent) is warn, because the count is then
+    unreliable; automatic security updates off is warn. `auto_updates` None
+    means the switch could not be read: said as not checked, neither on nor off.
+    """
+    if pending is None:
+        return _not_checked("security_updates", "security updates", 1, error or "apt-get failed")
+    sevs, parts = [], []
+    if pending >= SECURITY_HIGH_COUNT:
+        sevs.append("high")
+    elif pending:
+        sevs.append("warn")
+    parts.append(f"{pending} pending" if pending else "none pending")
+    if lists_age_days is None:
+        sevs.append("warn")
+        parts.append("no security package list found")
+    elif lists_age_days > APT_LISTS_STALE_DAYS:  # unrounded; shown to one decimal, rounded down
+        sevs.append("warn")
+        parts.append(f"package lists not refreshed for {math.floor(lists_age_days * 10) / 10} days")
+    if auto_updates is None:
+        parts.append(f"automatic updates not checked ({auto_error or 'apt-config failed'})")
+    elif auto_updates:
+        parts.append("automatic updates on")
+    else:
+        sevs.append("warn")
+        parts.append("automatic security updates off: sudo dpkg-reconfigure -plow unattended-upgrades")
+    value = {"security_pending": pending,
+             "lists_age_days": None if lists_age_days is None else math.floor(lists_age_days),
+             "auto_updates": auto_updates}
+    return _tier_b("security_updates", value, 1, _worst(sevs), "security updates: " + ", ".join(parts))
+
+
+def apt_periodic_on(run=subprocess.run, env: dict | None = None) -> tuple[bool | None, str]:
+    """Whether APT's effective configuration turns both periodic switches on.
+
+    Asks APT, never parses its files: `apt-config dump` prints the merged
+    result, so the last assignment and the apt.conf.d file order are APT's own.
+    A key is off when it is missing or "0", the test apt.systemd.daily applies
+    (its default is 0); any other value ("1", "7", "always") is on. `(None, why)`
+    when apt-config cannot answer: not checked, never on or off. Read-only.
+    """
+    try:
+        proc = run(["apt-config", "dump", "APT::Periodic"], capture_output=True, text=True,
+                   timeout=TIMERS_TIMEOUT, env=env or _c_env())
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"ops_signals: apt-config dump failed ({type(exc).__name__})", file=sys.stderr)
+        return None, f"apt-config: {type(exc).__name__}"
+    if proc.returncode != 0:
+        return None, f"apt-config exit {proc.returncode}"
+    values = {}
+    for line in proc.stdout.splitlines():
+        m = re.fullmatch(r'(\S+) "(.*)";', line.strip())
+        if m:
+            values[m.group(1)] = m.group(2)
+    return all(values.get(key, "0").strip() not in ("", "0") for key in APT_PERIODIC_KEYS), ""
+
+
+def security_updates_state(run=subprocess.run, lists_dir: Path = APT_LISTS_DIR,
+                           now: float | None = None) -> dict:
+    """Simulate `apt-get -s upgrade` (no sudo), read the index age and the switch, classify. Read-only."""
+    now = time.time() if now is None else now
+    env = _c_env()
+    try:
+        proc = run(["apt-get", "-s", "upgrade"], capture_output=True, text=True,
+                   timeout=APT_TIMEOUT, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"ops_signals: apt-get -s upgrade failed ({type(exc).__name__})", file=sys.stderr)
+        return classify_security_updates(None, None, False, f"apt-get: {type(exc).__name__}")
+    if proc.returncode != 0:
+        return classify_security_updates(None, None, False, f"apt-get exit {proc.returncode}")
+    # `Inst <pkg> [<old>] (<new> <origin>/<suite>, ... [<arch>])`: the origin is in the parentheses.
+    pending = sum(1 for line in proc.stdout.splitlines()
+                  if line.startswith("Inst ") and "-security" in line.partition("(")[2])
+    mtimes = []
+    for p in lists_dir.glob("*-security_InRelease"):
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except OSError as exc:
+            print(f"ops_signals: {p.name} unreadable ({type(exc).__name__})", file=sys.stderr)
+    lists_age = (now - max(mtimes)) / 86400 if mtimes else None
+    switches, switch_error = apt_periodic_on(run, env)
+    try:
+        timer = run(["systemctl", "is-enabled", "apt-daily-upgrade.timer"], capture_output=True,
+                    text=True, timeout=TIMERS_TIMEOUT, env=env)
+        timer_on = timer.stdout.strip() in TIMER_ENABLED_STATES
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"ops_signals: systemctl is-enabled apt-daily-upgrade.timer failed ({type(exc).__name__})",
+              file=sys.stderr)
+        timer_on = False
+    auto = None if switches is None else bool(switches and timer_on)
+    return classify_security_updates(pending, lists_age, auto, auto_error=switch_error)
+
+
+# -- 4. dependency audit -------------------------------------------------------
+
+def deps_audit_outcome(returncode: int | None, stdout: str, stderr: str,
+                       error: str | None = None, checked_at: str | None = None) -> dict:
+    """Pure: one `audit-deps.py --json` run -> the cached record.
+
+    Contract, read in `scripts/audit-deps.py` on 2026-11-20: pip-audit missing
+    prints plain text and exits 0; an invalid acceptance file prints
+    `audit-deps: ...` on stderr and exits 1 with no JSON; an unassemblable scope
+    exits 2; otherwise stdout is pip-audit's JSON (`dependencies[*].vulns`,
+    `dependencies[*].skip_reason`; confirmed in pip-audit 2.10.1
+    `_format/json.py`), and the scope line, the fallback included, is on stderr.
+    """
+    base = {"checked_at": checked_at, "vulns": 0, "skipped": 0, "packages": 0}
+
+    def not_audited(why: str) -> dict:
+        return {**base, "outcome": "not audited", "severity": "warn", "detail": f"not audited: {why}"}
+
+    if error:
+        return not_audited(error)
+    if returncode == 2:
+        return not_audited("dependency scope unavailable")
+    try:
+        doc = json.loads(stdout)
+    except ValueError:
+        doc = None
+    deps = doc.get("dependencies") if isinstance(doc, dict) else None
+    if not isinstance(deps, list):
+        if "pip-audit not installed" in stdout:
+            return not_audited("pip-audit missing")
+        line = next((ln.strip() for ln in stderr.splitlines() if ln.startswith("audit-deps:")), "")
+        return not_audited(_home_tilde(line)[:200] if line else "unparseable output")
+    deps = [d for d in deps if isinstance(d, dict)]
+    vulnerable = [str(d.get("name")) for d in deps if d.get("vulns")]
+    n = sum(len(d.get("vulns") or []) for d in deps)
+    skipped = sum(1 for d in deps if d.get("skip_reason"))
+    if n:
+        severity, detail = "high", (f"{n} known vulnerabilities in {len(vulnerable)} packages: "
+                                    + ", ".join(vulnerable[:3]))
+    elif skipped:
+        severity, detail = "warn", f"{skipped} packages not audited"
+    else:
+        severity, detail = "ok", f"{len(deps)} packages, no known vulnerabilities"
+    if "pip-audit scope: active virtualenv" in stderr:
+        detail += " (fallback scope: active virtualenv)"
+        severity = _worst([severity, "warn"])
+    return {**base, "outcome": "audited", "severity": severity, "detail": detail,
+            "vulns": n, "skipped": skipped, "packages": len(deps)}
+
+
+def classify_deps_audit(record: dict | None, now: float | None = None) -> dict:
+    """Pure: the cached audit record -> signal dict; a record older than DEPS_AUDIT_STALE_DAYS warns."""
+    now = time.time() if now is None else now
+    if record is None:
+        return _not_checked("deps_audit", "dependency audit", 1,
+                            "no audit result yet; ops-radar.py --refresh runs it")
+    age = _age_seconds(record.get("checked_at"), now)
+    severity = record.get("severity", "warn")
+    summary = f"dependency audit: {record.get('detail', 'unknown outcome')}"
+    if age is not None:
+        summary += f" (checked {str(record['checked_at'])[:10]})"
+        if age > DEPS_AUDIT_STALE_DAYS * 86400:  # unrounded; shown to one decimal, rounded down
+            severity = _worst([severity, "warn"])
+            summary += f"; audit result is {math.floor(age / 8640) / 10} days old"
+    value = {"vulns": record.get("vulns", 0), "skipped": record.get("skipped", 0),
+             "checked_at": record.get("checked_at"), "outcome": record.get("outcome")}
+    return _tier_b("deps_audit", value, 1, severity, summary)
+
+
+def deps_audit_state(cache_dir: Path, refresh: bool, engine_root: Path | None = None,
+                     run=_run_in_own_group, now: float | None = None) -> dict:
+    """Read the cached audit; with `refresh`, re-run `audit-deps.py --json` when the cache is stale.
+
+    Stale: absent, older than DEPS_AUDIT_REFRESH_DAYS, or the last run did not
+    audit (so a failure is retried on the next refreshing run, not in a week).
+    The cache is written atomically.
+    """
+    now = time.time() if now is None else now
+    engine_root = Path(engine_root) if engine_root else Path(__file__).resolve().parents[2]
+    cache = Path(cache_dir) / DEPS_AUDIT_CACHE
+    record = _read_cache(cache)
+    age = _age_seconds(record.get("checked_at"), now) if record else None
+    stale = (record is None or age is None or age >= DEPS_AUDIT_REFRESH_DAYS * 86400
+             or record.get("outcome") != "audited")
+    if refresh and stale:
+        from scripts.utils.venv_guard import venv_python
+        stamp = _iso(now)
+        try:
+            proc = run([str(venv_python()), str(engine_root / "scripts" / "audit-deps.py"), "--json"],
+                       cwd=str(engine_root), timeout=DEPS_AUDIT_TIMEOUT, env=_c_env())
+            record = deps_audit_outcome(proc.returncode, proc.stdout or "", proc.stderr or "",
+                                        checked_at=stamp)
+        except subprocess.TimeoutExpired:
+            print(f"ops_signals: audit-deps.py timed out after {DEPS_AUDIT_TIMEOUT} s", file=sys.stderr)
+            record = deps_audit_outcome(None, "", "", f"timed out after {DEPS_AUDIT_TIMEOUT} s", stamp)
+        except OSError as exc:
+            print(f"ops_signals: audit-deps.py could not start ({type(exc).__name__})", file=sys.stderr)
+            record = deps_audit_outcome(None, "", "", f"could not start ({type(exc).__name__})", stamp)
+        try:
+            _write_cache_atomic(cache, record)
+        except OSError as exc:
+            print(f"ops_signals: {DEPS_AUDIT_CACHE} not written ({type(exc).__name__})", file=sys.stderr)
+    return classify_deps_audit(record, now)
+
+
+# -- 5. disabled timers --------------------------------------------------------
+
+def expected_timers(families=None, platform: str = "linux") -> list[str]:
+    """Timers the install turns on here: mandatory families for this platform and machine,
+    minus a family a conflicting installed unit keeps off (as `install-agreement.py` selects)."""
+    from scripts.utils.schedule import conflict_reason, select_families
+    if families is None:
+        families = [f for f in select_families(mandatory_only=True)
+                    if platform in f.platforms and f.this_machine]
+    return [u for f in families if conflict_reason(f) is None for u in f.units if u.endswith(".timer")]
+
+
+def classify_disabled_timers(states: dict[str, str] | None, error: str = "") -> dict:
+    """Pure: {timer: `systemctl --user is-enabled` word} -> signal; anything not enabled is warn."""
+    if states is None:
+        return _not_checked("disabled_timers", "timers", 1, error or "systemctl --user failed")
+    off = sorted(t for t, s in states.items() if s not in TIMER_ENABLED_STATES)
+    if off:
+        detail = ", ".join(f"{t} ({states[t]})" for t in off)
+        summary = f"timers: {len(off)} expected timers not enabled: {detail}"
+    else:
+        summary = f"timers: all {len(states)} expected timers enabled"
+    return _tier_b("disabled_timers", off, 1, "warn" if off else "ok", summary)
+
+
+def disabled_timers_state(timers: list[str] | None = None, run=subprocess.run,
+                          platform: str | None = None) -> dict:
+    """Read-only `systemctl --user is-enabled`, one call per expected timer, classified.
+
+    One call per unit, never one batched call paired with its inputs by
+    position: some systemd versions write a missing unit's diagnostic to
+    stderr with no stdout word, which shifted or shortened the batched output.
+    A unit whose call prints no state reads `not-found` only when a stderr line
+    names that unit and says it is missing, and `unreadable` otherwise; when NO
+    unit yields a state (a bus or manager failure), the signal is "not checked".
+    """
+    platform = platform or sys.platform
+    if platform == "darwin":
+        return classify_disabled_timers(None, "darwin")
+    if not platform.startswith("linux"):
+        return classify_disabled_timers(None, platform)
+    try:
+        timers = expected_timers() if timers is None else timers
+    except Exception as exc:  # noqa: BLE001 - a manifest that cannot load is reported as not checked
+        print(f"ops_signals: service manifest unreadable ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return classify_disabled_timers(None, f"manifest unreadable: {type(exc).__name__}")
+    if not timers:
+        return classify_disabled_timers({})
+    states: dict[str, str] = {}
+    first_error = ""
+    answered = 0
+    for timer in timers:
+        try:
+            proc = run(["systemctl", "--user", "is-enabled", timer], capture_output=True, text=True,
+                       timeout=TIMERS_TIMEOUT, env=_c_env())
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"ops_signals: systemctl --user is-enabled {timer} failed ({type(exc).__name__})",
+                  file=sys.stderr)
+            first_error = first_error or type(exc).__name__
+            states[timer] = "unreadable"
+            continue
+        word = proc.stdout.strip().split("\n")[0].strip()
+        if word:
+            answered += 1
+            states[timer] = word
+            continue
+        diag = proc.stderr.strip()
+        first_error = first_error or (diag.splitlines() or [f"exit {proc.returncode}"])[0][:120]
+        # Missing only on a diagnostic that NAMES this unit ("Failed to get unit
+        # file state for <unit>: No such file or directory"); a bus or manager
+        # failure ("Failed to connect to bus: No such file ...") names no unit.
+        if any(timer in line and re.search(r"no such file|not found|does not exist", line, re.I)
+               for line in diag.splitlines()):
+            answered += 1
+            states[timer] = "not-found"
+        else:
+            states[timer] = "unreadable"
+    if not answered:
+        return classify_disabled_timers(None, f"systemctl --user failed: {first_error}")
+    return classify_disabled_timers(states)
+
+
+# -- 6. MCP liveness -----------------------------------------------------------
+
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _expand_env(text: str) -> str:
+    """Claude Code's `${VAR}` / `${VAR:-default}` expansion in MCP config strings."""
+    return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), text)
+
+
+def _pump_lines(stream, q) -> None:
+    try:
+        for line in stream:
+            q.put(line)
+    except (OSError, ValueError) as exc:
+        print(f"ops_signals: MCP probe stdout closed ({type(exc).__name__})", file=sys.stderr)
+    q.put(None)
+
+
+def _stop_child(proc) -> None:
+    """Close stdin, then end the process group this probe created (`_kill_group`)."""
+    try:
+        proc.stdin.close()
+    except OSError as exc:
+        print(f"ops_signals: MCP probe stdin close failed ({type(exc).__name__})", file=sys.stderr)
+    _kill_group(proc, MCP_KILL_GRACE)
+
+
+def _probe_stdio(entry: dict, start: bool) -> str | None:
+    """None when the server answers `initialize`; else the cause. Never prints env values."""
+    command = entry.get("command")
+    if not isinstance(command, str) or not command:
+        return "no command configured"
+    exe = shutil.which(_expand_env(command))
+    if exe is None:
+        return MCP_NOT_ON_PATH
+    if not start:
+        return None
+    raw_args = entry.get("args")
+    args = [_expand_env(str(a)) for a in raw_args] if isinstance(raw_args, list) else []
+    env = dict(os.environ)
+    if isinstance(entry.get("env"), dict):
+        env.update({str(k): _expand_env(str(v)) for k, v in entry["env"].items()})
+    try:
+        proc = subprocess.Popen([exe, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=env, text=True, start_new_session=True)
+    except OSError as exc:
+        print(f"ops_signals: MCP probe could not start ({type(exc).__name__})", file=sys.stderr)
+        return f"could not start ({type(exc).__name__})"
+    try:
+        q: _queue.Queue = _queue.Queue()
+        threading.Thread(target=_pump_lines, args=(proc.stdout, q), daemon=True).start()
+        proc.stdin.write(json.dumps(MCP_INIT) + "\n")
+        proc.stdin.flush()
+        deadline = time.monotonic() + MCP_STDIO_TIMEOUT
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                line = q.get(timeout=remaining)
+            except _queue.Empty:
+                break
+            if line is None:
+                return "exited before answering initialize"
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == 1 and ("result" in msg or "error" in msg):
+                return None
+        return f"no answer to initialize within {MCP_STDIO_TIMEOUT} s"
+    except OSError as exc:  # BrokenPipeError: the child exited before reading
+        print(f"ops_signals: MCP probe write failed ({type(exc).__name__})", file=sys.stderr)
+        return "exited before answering initialize"
+    finally:
+        _stop_child(proc)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so a 3xx surfaces as an HTTPError with its code."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102 - stdlib hook
+        return None
+
+
+def _probe_http(entry: dict) -> str | None:
+    """None when the server is alive (2xx, or a 4xx other than 401/403); else the cause."""
+    url = _expand_env(str(entry.get("url") or ""))
+    if not url.startswith(("https://", "http://")):
+        return "no usable url configured"
+    headers = {}
+    if isinstance(entry.get("headers"), dict):
+        headers = {str(k): _expand_env(str(v)) for k, v in entry["headers"].items()}
+    from scripts.utils.user_agent import UserAgentConfigError, user_agent
+    try:
+        agent = user_agent()
+    except UserAgentConfigError as exc:
+        print(f"ops_signals: MCP HTTP probe has no User-Agent ({exc})", file=sys.stderr)
+        return "not probed (workspace User-Agent not configured)"
+    headers.update({"Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream", "User-Agent": agent})
+    req = urllib.request.Request(url, data=json.dumps(MCP_INIT).encode(), headers=headers,  # noqa: S310 - scheme checked above
+                                 method="POST")
+    try:
+        # No redirects: urllib copies every header but the content ones onto a
+        # redirect, so a 3xx would carry the configured credentials elsewhere.
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=MCP_HTTP_TIMEOUT) as resp:  # noqa: S310 - scheme checked above
+            code = resp.status
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        print(f"ops_signals: MCP HTTP probe failed ({type(exc).__name__})", file=sys.stderr)
+        if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+            return f"no answer within {MCP_HTTP_TIMEOUT} s"
+        return "unreachable"
+    if code in (401, 403):
+        return MCP_REFUSED
+    if 200 <= code < 300 or 400 <= code < 500:
+        return None
+    return f"answered HTTP {code}"
+
+
+def _probe_server(entry: dict, start_stdio: bool) -> str | None:
+    try:
+        if entry.get("type") in ("http", "sse") or "url" in entry:
+            return _probe_http(entry)
+        return _probe_stdio(entry, start_stdio)
+    except Exception as exc:  # noqa: BLE001 - one broken probe must not hide the others
+        print(f"ops_signals: MCP probe crashed ({type(exc).__name__})", file=sys.stderr)
+        return f"probe failed ({type(exc).__name__})"
+
+
+def _server_identity(entry: dict) -> str:
+    """What makes two entries the same server: transport, command, args, URL, headers and env.
+
+    Headers and env are part of it, so an entry with other credentials is probed
+    on its own. The result is a SHA-256 digest computed in this process and used
+    only for comparison; it is never written, logged or put in a thread name.
+    """
+    import hashlib
+    doc = json.dumps({k: entry.get(k) for k in ("type", "command", "args", "url", "headers", "env")},
+                     sort_keys=True, default=str)
+    return hashlib.sha256(doc.encode("utf-8")).hexdigest()
+
+
+def _add_server(servers: dict[str, dict], name: str, entry: dict) -> None:
+    """Add `entry` as `{"name": name, "entry": entry}` under a display label.
+
+    The label is `name`, or `name (2)`, `name (3)`, ... when another entry holds
+    it, so a healthy entry cannot hide a broken one. An entry collapses only into
+    one with the same CONFIGURED name and the same identity. The configured name
+    is kept as its own field and is never parsed back out of a label: a server
+    can genuinely be called "x (2)".
+    """
+    identity = _server_identity(entry)
+    if any(s["name"] == name and _server_identity(s["entry"]) == identity for s in servers.values()):
+        return
+    label, n = name, 1
+    while label in servers:
+        n += 1
+        label = f"{name} ({n})"
+    servers[label] = {"name": name, "entry": entry}
+
+
+def mcp_config_files(engine_root: Path) -> list[Path]:
+    """The user config, plus the engine `.mcp.json` when it exists (as `default_toolchain_pin_args`)."""
+    from scripts.utils.install_lific import claude_config_path
+    files = [claude_config_path(Path.home())]
+    if (Path(engine_root) / ".mcp.json").exists():
+        files.append(Path(engine_root) / ".mcp.json")
+    return files
+
+
+def classify_mcp_liveness(record: dict | None, vpn_servers: set[str] | None = None,
+                          now: float | None = None, error: str = "") -> dict:
+    """Pure: the cached probe record -> signal.
+
+    The record is {"checked_at", "probe", "results": {label: cause | None},
+    "names": {label: configured name}}; the VPN list is matched against the
+    configured name, so a label is never parsed back into a name.
+
+    A command not on PATH, a server that refuses the configured credentials and
+    a failing server named in OPS_RADAR_MCP_VPN_SERVERS are warn; any other
+    failure is high; a record older than MCP_STALE_HOURS is warn.
+
+    The value keeps metadata and servers apart, {"checked_at", "probe",
+    "servers": {label: {"ok", "cause"}}}, so a server named like a metadata
+    field cannot overwrite it.
+    """
+    now = time.time() if now is None else now
+    if record is None:
+        return _not_checked("mcp_liveness", "MCP", 1,
+                            error or "no liveness result yet; ops-radar.py --refresh runs it")
+    vpn = vpn_servers or set()
+    results = record.get("results") or {}
+    # Display label -> configured name, written where the entries were built.
+    names = record.get("names") if isinstance(record.get("names"), dict) else {}
+    servers: dict = {}
+    value: dict = {"checked_at": record.get("checked_at"), "probe": record.get("probe"), "servers": servers}
+    sevs, parts = [], []
+    for name in sorted(results):
+        cause = results[name]
+        if cause and cause != MCP_NOT_ON_PATH and str(names.get(name, name)) in vpn:
+            cause = "unreachable, the VPN it needs is probably off"
+            sevs.append("warn")
+        elif cause in (MCP_NOT_ON_PATH, MCP_REFUSED):
+            sevs.append("warn")
+        elif cause:
+            sevs.append("high")
+        servers[name] = {"ok": cause is None, "cause": cause}
+        if cause:
+            parts.append(f"{name}: {cause}")
+    if parts:
+        summary = "MCP: " + "; ".join(parts)
+    elif not results:
+        summary = "MCP: no servers configured"
+    else:
+        summary = f"MCP: {len(results)} servers pass"
+        if record.get("probe") == "path-only":
+            summary += " (stdio servers checked on PATH only, not started)"
+    age = _age_seconds(record.get("checked_at"), now)
+    if age is None or age > MCP_STALE_HOURS * 3600:
+        sevs.append("warn")
+        summary += ("; MCP liveness last checked "
+                    + (f"{int(age // 3600)} h ago" if age is not None else "at an unknown time"))
+    return _tier_b("mcp_liveness", value, 1, _worst(sevs), summary)
+
+
+def mcp_liveness_state(cache_dir: Path, refresh: bool, start_stdio: bool = True,
+                       engine_root: Path | None = None, config_files: list[Path] | None = None,
+                       vpn_servers: set[str] | None = None, now: float | None = None) -> dict:
+    """Read the cached liveness; with `refresh`, probe every configured MCP server when it is stale.
+
+    Probes run in parallel with an MCP_TOTAL_CAP s cap. `start_stdio=False`
+    resolves stdio commands on PATH and starts nothing. The cache is written
+    atomically; header and env values never reach it, a summary or a log.
+    """
+    from scripts.utils.install_commands import _mcp_blocks
+    now = time.time() if now is None else now
+    engine_root = Path(engine_root) if engine_root else Path(__file__).resolve().parents[2]
+    if vpn_servers is None:
+        from scripts.utils.api import load_api_key
+        vpn_servers = {s.strip() for s in load_api_key(MCP_VPN_ENV, required=False).split(",") if s.strip()}
+    cache = Path(cache_dir) / MCP_CACHE
+    record = _read_cache(cache)
+    age = _age_seconds(record.get("checked_at"), now) if record else None
+    if not (refresh and (age is None or age >= MCP_REFRESH_HOURS * 3600)):
+        return classify_mcp_liveness(record, vpn_servers, now)
+    servers: dict[str, dict] = {}
+    readable = 0
+    for f in config_files if config_files is not None else mcp_config_files(engine_root):
+        try:
+            config = json.loads(Path(f).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            print(f"ops_signals: MCP config {Path(f).name} unreadable ({type(exc).__name__})", file=sys.stderr)
+            continue
+        readable += 1
+        for block in _mcp_blocks(config):
+            for name, entry in block.items():
+                if isinstance(entry, dict):
+                    _add_server(servers, str(name), entry)
+    if not readable:
+        return classify_mcp_liveness(None, vpn_servers, now, "no MCP config file readable")
+    results: dict[str, str | None] = {}
+    # Daemon threads, not a pool: a pool's workers are joined at interpreter exit,
+    # so one probe stuck in name resolution held the whole radar past the cap.
+    box: dict[str, str | None] = {}
+
+    def probe(label: str, entry: dict) -> None:
+        box[label] = _probe_server(entry, start_stdio)
+
+    workers = {label: threading.Thread(target=probe, args=(label, server["entry"]), daemon=True,
+                                       name=f"mcp-probe-{label}")
+               for label, server in servers.items()}
+    for worker in workers.values():
+        worker.start()
+    deadline = time.monotonic() + MCP_TOTAL_CAP
+    for worker in workers.values():
+        worker.join(max(0.0, deadline - time.monotonic()))
+    for label in servers:
+        results[label] = box.get(label, f"no answer within {MCP_TOTAL_CAP} s")
+    record = {"checked_at": _iso(now), "probe": "full" if start_stdio else "path-only", "results": results,
+              "names": {label: server["name"] for label, server in servers.items()}}
+    try:
+        _write_cache_atomic(cache, record)
+    except OSError as exc:
+        print(f"ops_signals: {MCP_CACHE} not written ({type(exc).__name__})", file=sys.stderr)
+    return classify_mcp_liveness(record, vpn_servers, now)
+
+
+# -- 7. update-manager telemetry ----------------------------------------------
+
+def update_telemetry_state(data_root: Path) -> dict:
+    """Components whose recorded telemetry verdict is not `off` (HOS-412, rule M056).
+
+    Read-only: the `update-state` record under `data_root`, which
+    `update-manager.py check` writes. high when any verdict is `on`, warn when
+    any is `unverified`; an entry with no `telemetry` record (a state older
+    than the check, or a stale one) counts as unverified. A missing or
+    unreadable state is not checked.
+    """
+    label = "update telemetry"
+    try:
+        path = data_path("update-state", data_root=data_root)
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return _not_checked("update_telemetry", label, 1, "no update state; run update-manager.py check")
+    except (DataPathError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"ops_signals: update state unreadable ({type(exc).__name__})", file=sys.stderr)
+        return _not_checked("update_telemetry", label, 1, f"update state unreadable: {type(exc).__name__}")
+    comps = state.get("components") if isinstance(state, dict) else None
+    if not isinstance(comps, dict):
+        return _not_checked("update_telemetry", label, 1, "update state has no components")
+    flagged: list[tuple[str, str]] = []
+    for name, entry in comps.items():
+        rec = entry.get("telemetry") if isinstance(entry, dict) else None
+        verdict = rec.get("verdict") if isinstance(rec, dict) else None
+        verdict = verdict if verdict in ("off", "on") else "unverified"
+        if verdict != "off":
+            flagged.append((name, verdict))
+    if not flagged:
+        return _tier_b("update_telemetry", 0, 1, "ok", f"telemetry off for all {len(comps)} components")
+    severity = "high" if any(v == "on" for _, v in flagged) else "warn"
+    summary = "telemetry not verified off: " + ", ".join(f"{n} ({v})" for n, v in flagged)
+    return _tier_b("update_telemetry", len(flagged), 1, severity, summary)

@@ -19,6 +19,8 @@ Usage:
   python scripts/checkpoint-paths.py --unattended on|off|status
   python scripts/checkpoint-paths.py --done "plan X: 7 of 7"  # the plan is finished
   python scripts/checkpoint-paths.py --compact-history    # where compaction fired
+  python scripts/checkpoint-paths.py --preflight          # can the Stop hook send here?
+  python scripts/checkpoint-paths.py --facts              # the assembled records, nothing written
 
 Archive paths are DATA-root-relative, the form the @-reference and the inject
 hook resolve. The state path is project-relative.
@@ -47,10 +49,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils import checkpoint_autonomy as AU  # noqa: E402
 from scripts.utils import checkpoint_paths as CP  # noqa: E402
+from scripts.utils import herdr_agent as HA  # noqa: E402
 from scripts.utils import dossier  # noqa: E402
+from scripts.utils import handoff_facts as HF  # noqa: E402
 
 # The archive sections this script writes itself; the model's text never needs them.
-SCRIPT_SECTIONS = ("## Continuation prompt", CP.PROMPTS_HEADING, CP.TASK_PROMPTS_HEADING)
+SCRIPT_SECTIONS = (CP.RECORDS_HEADING, "## Continuation prompt", CP.PROMPTS_HEADING,
+                   CP.TASK_PROMPTS_HEADING)
 POINTER_CORE = ("Objective", "Current state", "Next steps")
 
 
@@ -131,6 +136,8 @@ def collect(kind: str = "manual", master: str | None = None) -> dict:
         ),
         "master_instruction": master,
         "compacted": was if was != "yes" else f"yes ({count} time(s))",
+        # Which template the skills use and what `--write` adds (HOS-387).
+        "handoff_mode": CP.handoff_mode(),
     }
 
 
@@ -142,12 +149,23 @@ def request_reset(kind: str) -> None:
         state["reset_requested_kind"] = kind
 
 
-def _sealed(text: str, paths: dict, tasks: list[str]) -> tuple[str, str, str, list[str]]:
+def _facts_header(kind: str) -> list[str]:
+    """`Generated:`, `Session:` and `Trigger:`, read by the script (assembled mode, HOS-387)."""
+    session = (CP.session_id() if CP.session_id_is_known()
+               else "unknown (CLAUDE_CODE_SESSION_ID not set)")
+    return [f"{CP.GENERATED_PREFIX} {CP.utc_now().isoformat(timespec='seconds')}",
+            f"{CP.SESSION_PREFIX} {session}",
+            f"{CP.TRIGGER_PREFIX} {kind}"]
+
+
+def _sealed(text: str, paths: dict, tasks: list[str],
+            facts: list[str] | None = None) -> tuple[str, str, str, list[str]]:
     """`text` with the script-owned header lines and the pins section. Idempotent.
 
     `Master instruction:` and `Compacted before this handoff:` go under the
     title and the session's pins become `## Pinned items`, all by script so the
     model can neither forget nor reword them (operator decision 2026-09-27).
+    `facts`, given in assembled mode only, go first (HOS-387).
     """
     root = CP.engine_root()
     pins = CP.read_pins(CP.pins_path(CP.handoff_dir(CP.project_root(), root),
@@ -157,7 +175,8 @@ def _sealed(text: str, paths: dict, tasks: list[str]) -> tuple[str, str, str, li
     state = CP.read_json(CP.state_path(CP.project_root(), paths["session_slug"]))
     unattended_line = CP.unattended_line(state)
     task_line = dossier.task_header(tasks)
-    text = CP.set_header_lines(text, [master_line, compacted_line, unattended_line])
+    text = CP.set_header_lines(text, [*(facts or []), master_line, compacted_line,
+                                      unattended_line])
     # Not through `set_header_lines`, which drops a matching line ANYWHERE in the
     # body: a handoff may well say "Task: ..." in its own prose.
     lines = text.splitlines()
@@ -239,6 +258,7 @@ def write(kind: str, text: str) -> int:
                                            project, CP.prompt_archive_tool(root))
     paths = collect(kind, CP.master_value(prompts, refusal, CP.carried_master(state)))
     archive_ref = paths["archive"]
+    assembled = paths["handoff_mode"] == "assembled"
 
     body = text
     for heading in SCRIPT_SECTIONS:
@@ -249,13 +269,18 @@ def write(kind: str, text: str) -> int:
     others = CP.task_prompts_section(tasks, prompts, project, CP.prompt_archive_tool(root))
     if others:
         owned += f"\n{others}"
+    if assembled:
+        # The first part of the script-owned block (HOS-387, correction 2).
+        owned = (HF.records_section(kind, body, state, _transcript_path(project, sid), project)
+                 + "\n" + owned)
     lines = body.rstrip("\n").splitlines()
     note = next((i for i, ln in enumerate(lines) if ln.strip() == "## User note"), None)
     if note is None:
         body = "\n".join(lines) + "\n\n" + owned
     else:
         body = "\n".join(lines[:note]).rstrip("\n") + "\n\n" + owned + "\n" + "\n".join(lines[note:]) + "\n"
-    body, master_line, compacted_line, pins = _sealed(body, paths, tasks)
+    body, master_line, compacted_line, pins = _sealed(
+        body, paths, tasks, _facts_header(kind) if assembled else None)
 
     archive = _resolve(paths, "archive")
     CP.write_text_atomic(archive, body)
@@ -300,6 +325,10 @@ def write(kind: str, text: str) -> int:
             print(f"checkpoint-paths: no {CP.RESUME_HEADING} section, so the screen "
                   f"after /clear shows the first line of Objective, Current state, "
                   f"Next steps and Open issues instead", file=sys.stderr)
+        wf = CP.working_file(body)
+        if wf is not None:
+            print(f"Working file: {wf}"
+                  + ("" if Path(wf).exists() else " (no such file on this machine)"))
     # The hidden-character advisory the Write tool's PostToolUse hook gave when
     # the model wrote these files itself.
     try:
@@ -310,6 +339,33 @@ def write(kind: str, text: str) -> int:
     except Exception as exc:  # noqa: BLE001 - an advisory, never a refusal
         print(f"checkpoint-paths: hidden-character scan unavailable: {exc}", file=sys.stderr)
     return 0
+
+
+def facts() -> int:
+    """Print the records section `--write` adds in assembled mode. Writes nothing (HOS-387)."""
+    project = CP.project_root()
+    sid = CP.session_id()
+    state = CP.read_json(CP.state_path(project, CP.safe_slug(sid)))
+    print(HF.records_section("manual", "", state, _transcript_path(project, sid), project), end="")
+    return 0
+
+
+def preflight() -> int:
+    """Say whether the Stop hook can send /clear or /compact to this session's terminal. Writes nothing.
+
+    The same lookup `_reset` in `.claude/hooks/checkpoint-offer.py` makes, run
+    before the cold read so a run that cannot be sent says so first (HOS-386).
+    """
+    try:
+        pane, how = HA.resolve_pane_how(CP.session_id())
+    except HA.HerdrUnavailable as exc:
+        pane, how = None, f"herdr unavailable: {exc}"
+    if pane:
+        print(f"preflight: the hook can send to {pane} ({how})")
+        return 0
+    print(f"preflight: the hook cannot send /clear or /compact here ({how}); "
+          "type it yourself after the handoff is saved")
+    return 1
 
 
 def compact_history() -> int:
@@ -390,10 +446,21 @@ def main(argv=None) -> int:
              "script-owned sections and all four pointer files",
     )
     ap.add_argument(
+        "--preflight",
+        action="store_true",
+        help="check that the Stop hook can send /clear or /compact to this "
+             "session's terminal; prints one line, writes nothing",
+    )
+    ap.add_argument(
         "--seal",
         metavar="ARCHIVE",
         help="stamp the master instruction, the compaction warning and the pins "
              "into an existing archive, and the master line into the pointers",
+    )
+    ap.add_argument(
+        "--facts",
+        action="store_true",
+        help="print the session records an assembled handoff carries; writes nothing",
     )
     ap.add_argument(
         "--compact-history",
@@ -402,6 +469,10 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
 
+    if args.preflight:
+        return preflight()
+    if args.facts:
+        return facts()
     if args.write:
         return write(args.kind or "manual", sys.stdin.read())
 

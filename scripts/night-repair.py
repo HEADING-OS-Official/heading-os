@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.utils.colors import BOLD, CYAN, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.checkpoint_autonomy import UNATTENDED_STANDING_INSTRUCTION  # noqa: E402
 from scripts.utils.checkpoint_paths import state_root  # noqa: E402
+from scripts.utils.claude_child import claude_child_env  # noqa: E402
 from scripts.utils.workspace import get_default_tz, get_workspace_root  # noqa: E402
 
 ROOT = get_workspace_root()
@@ -362,7 +363,8 @@ def cmd_run(timeout_s: int) -> int:
     # must not add a second driver if CLAUDE_HANDOFF_UNATTENDED is set in the
     # environment the night session inherits. Built from os.environ, so the
     # trace id and everything else still pass through.
-    child_env = dict(os.environ, CLAUDE_HANDOFF_UNATTENDED="0")
+    # `claude_child_env` adds the no-telemetry switches (HOS-410).
+    child_env = claude_child_env(dict(os.environ, CLAUDE_HANDOFF_UNATTENDED="0"))
     transcript = []
     continuations = 0
     while True:

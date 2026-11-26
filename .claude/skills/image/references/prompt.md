@@ -28,7 +28,7 @@ Match content type to visual language:
 | Sovereignty/independence | National landmarks, flags in wind, fortified structures, vaults |
 | Speed/growth | Motion blur, launch trajectories, acceleration, time-lapse |
 
-Default brand palette, the same one `/design` applies: dark backgrounds (#000000), blue-purple (#5B5FFF) and orange (#FF8C00) accents.
+Default brand palette, the same one `/design` applies: near-black night backgrounds (#0d0f11), violet (#5b5fff) and orange (#f5922b) accents.
 
 ## Output Format
 

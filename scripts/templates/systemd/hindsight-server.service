@@ -5,6 +5,7 @@
 Description=Hindsight memory server for HEADING OS (127.0.0.1:8888)
 After=network-online.target
 Wants=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=simple

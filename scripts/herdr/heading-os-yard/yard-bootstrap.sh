@@ -44,6 +44,24 @@ set -uo pipefail
 
 HERDR="${HERDR_BIN_PATH:-herdr}"
 
+# HERDR-CORE. `scripts/yard.py create` runs this script itself under herdr-core
+# (`hc`), which has no plugin events, panes, badges or toasts, and says so with
+# HEADING_OS_YARD_BACKEND=core. Then every "$HERDR" call below is skipped with
+# one log line per kind, and the last step starts the agent in an `hc` terminal
+# named after the branch. With the variable unset every line runs as before.
+CORE=0
+[ "${HEADING_OS_YARD_BACKEND:-}" = core ] && CORE=1
+CORE_SKIPPED=" "
+core_skip() {       # core_skip <what>: true under core, logging <what> once
+  [ "$CORE" -eq 1 ] || return 1
+  case "$CORE_SKIPPED" in
+    *" $1 "*) ;;
+    *) CORE_SKIPPED="$CORE_SKIPPED$1 "
+       printf '[YARD] %s\n' "herdr-core: $1 skipped" >&2 ;;
+  esac
+  return 0
+}
+
 # THE SWITCHES HAVE TO LIVE SOMEWHERE THE OPERATOR CAN REACH.
 #
 # An event hook inherits the herdr SERVER's environment, not the shell the
@@ -55,8 +73,11 @@ HERDR="${HERDR_BIN_PATH:-herdr}"
 # PARSED, never sourced. `. "$file"` executes whatever is in it, which is the
 # shell's `eval` and is forbidden here. Only the two names this script actually
 # honours are read, so a stray line in that file cannot reach the environment.
-PLUGIN_ENV="$("$HERDR" plugin config-dir heading-os.yard 2>/dev/null)/.env"
-if [ -f "$PLUGIN_ENV" ]; then
+PLUGIN_ENV=""
+if ! core_skip "plugin config-dir"; then
+  PLUGIN_ENV="$("$HERDR" plugin config-dir heading-os.yard 2>/dev/null)/.env"
+fi
+if [ -n "$PLUGIN_ENV" ] && [ -f "$PLUGIN_ENV" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
       HEADING_OS_AUTOSTART|HEADING_OS_AGENT_CMD)
@@ -103,6 +124,7 @@ log() { printf '[YARD] %s\n' "$*" >&2; }
 # Both are no-ops without a target pane, which is what makes `--doctor-only`
 # and every by-hand run safe: no event, no pane, nothing written anywhere.
 badge() {           # badge <state> <title>
+  core_skip "pane report-metadata" && return 0
   [ -n "$PANE_ID" ] || return 0
   "$HERDR" pane report-metadata "$PANE_ID" --source heading-os.yard \
     --token "hos=$1" --title "$2" >/dev/null 2>&1 || true
@@ -120,6 +142,7 @@ badge() {           # badge <state> <title>
 notify() {          # notify <title> <body> [sound]
   local response reason
   local -a sound=()
+  core_skip "notification show" && return 0
   [ -n "${3:-}" ] && sound=(--sound "$3")
   response="$("$HERDR" notification show "$1" --body "$2" ${sound[@]+"${sound[@]}"} 2>/dev/null)"
   reason="$(printf '%s' "$response" | python3 -c '
@@ -264,7 +287,7 @@ fi
 # `WorkspaceInfo.required`). So the pane is resolved FROM THE TARGET WORKSPACE,
 # which the event does give. `pane list --workspace <id>` is anchored to that
 # workspace; the ambient focus is not, and that is the whole difference.
-if [ -z "$PANE_ID" ] && [ -n "$WS_ID" ] && command -v python3 >/dev/null 2>&1; then
+if [ -z "$PANE_ID" ] && [ -n "$WS_ID" ] && ! core_skip "pane list" && command -v python3 >/dev/null 2>&1; then
   PANE_ID="$("$HERDR" pane list --workspace "$WS_ID" 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -278,7 +301,7 @@ for pane in panes:
 ' 2>/dev/null)"
 fi
 
-if [ -z "$WT_PATH" ] && [ -n "$WS_ID" ] && command -v python3 >/dev/null 2>&1; then
+if [ -z "$WT_PATH" ] && [ -n "$WS_ID" ] && ! core_skip "workspace get" && command -v python3 >/dev/null 2>&1; then
   # `result.workspace.cwd` until 2026-09-03. There is no `cwd` key at any depth
   # of this response -- VERIFIED by a live `herdr workspace get w3Q` and against
   # `WorkspaceInfo` in `herdr api schema --json`, whose only path field is
@@ -364,7 +387,8 @@ apply_label() {
   if [ -z "$BRANCH" ]; then
     BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
-  if [ -n "$WS_ID" ] && [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ]; then
+  if [ -n "$WS_ID" ] && [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ] \
+      && ! core_skip "workspace rename"; then
     # THE WORKSPACE ID GOES IN THE LABEL, NEVER IN THE BRANCH OR THE PATH.
     #
     # The operator asked on 2026-09-06 for the code he hears from the assistant
@@ -766,6 +790,48 @@ write_status "ok" 11
 badge "ok" "YARD ready"
 log "contour intact"
 
+# scan_occupant <pane json> <pane id>: one line per agent already standing in
+# this checkout. The pane half is asked only with a pane id (the TUI); the
+# /proc half always. Shared by both launch branches below.
+scan_occupant() {
+  PANE_JSON="$1" python3 - "$WT_PATH" "$2" <<'PROBE' 2>/dev/null
+import json, os, sys
+root = os.path.realpath(sys.argv[1])
+pane_id = sys.argv[2]
+# No pane id is herdr-core: there is no pane to ask, so only /proc is.
+if pane_id:
+    try:
+        pane = json.loads(os.environ.get("PANE_JSON") or "")["result"]["pane"]
+        agent = pane.get("agent")
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        print(f"pane {pane_id} could not be read ({type(exc).__name__}), so whether "
+              f"an agent already stands in it cannot be established")
+    else:
+        if isinstance(agent, str) and agent:
+            print(f"pane {pane_id} already runs an agent ({agent})")
+for entry in os.scandir("/proc"):
+    if not entry.name.isdigit():
+        continue
+    try:
+        cwd = os.readlink(f"/proc/{entry.name}/cwd")
+        argv = open(f"/proc/{entry.name}/cmdline", "rb").read().split(b"\0")
+    except OSError:
+        continue
+    if cwd != root and not cwd.startswith(root + os.sep):
+        continue
+    if os.path.basename(argv[0]) != b"claude":
+        continue
+    try:
+        env = open(f"/proc/{entry.name}/environ", "rb").read().split(b"\0")
+    except OSError:
+        env = []
+    marked = any(v.startswith(b"HEADING_OS_YARD=") and v.split(b"=", 1)[1]
+                 for v in env)
+    print(f"agent pid {entry.name} already runs in this checkout "
+          f"{'with' if marked else 'WITHOUT'} HEADING_OS_YARD")
+PROBE
+}
+
 if [ "$DOCTOR_ONLY" -eq 0 ]; then
   apply_label
 
@@ -835,41 +901,7 @@ if [ "$DOCTOR_ONLY" -eq 0 ]; then
     # exist yet; whether it came up with the marker is answered inside its own
     # process by `check_yard_marker` in `.claude/hooks/session-start.py`.
     PANE_JSON="$("$HERDR" pane get "$PANE_ID" 2>/dev/null || true)"
-    OCCUPANT="$(PANE_JSON="$PANE_JSON" python3 - "$WT_PATH" "$PANE_ID" <<'PROBE' 2>/dev/null
-import json, os, sys
-root = os.path.realpath(sys.argv[1])
-pane_id = sys.argv[2]
-try:
-    pane = json.loads(os.environ.get("PANE_JSON") or "")["result"]["pane"]
-    agent = pane.get("agent")
-except (ValueError, KeyError, TypeError, AttributeError) as exc:
-    print(f"pane {pane_id} could not be read ({type(exc).__name__}), so whether "
-          f"an agent already stands in it cannot be established")
-else:
-    if isinstance(agent, str) and agent:
-        print(f"pane {pane_id} already runs an agent ({agent})")
-for entry in os.scandir("/proc"):
-    if not entry.name.isdigit():
-        continue
-    try:
-        cwd = os.readlink(f"/proc/{entry.name}/cwd")
-        argv = open(f"/proc/{entry.name}/cmdline", "rb").read().split(b"\0")
-    except OSError:
-        continue
-    if cwd != root and not cwd.startswith(root + os.sep):
-        continue
-    if os.path.basename(argv[0]) != b"claude":
-        continue
-    try:
-        env = open(f"/proc/{entry.name}/environ", "rb").read().split(b"\0")
-    except OSError:
-        env = []
-    marked = any(v.startswith(b"HEADING_OS_YARD=") and v.split(b"=", 1)[1]
-                 for v in env)
-    print(f"agent pid {entry.name} already runs in this checkout "
-          f"{'with' if marked else 'WITHOUT'} HEADING_OS_YARD")
-PROBE
-)"
+    OCCUPANT="$(scan_occupant "$PANE_JSON" "$PANE_ID")"
 
     if [ -n "$OCCUPANT" ]; then
       printf '%s\n' "$OCCUPANT" | while IFS= read -r line; do log "$line"; done
@@ -883,9 +915,76 @@ PROBE
       "$HERDR" pane run "$PANE_ID" \
         "export HEADING_OS_YARD=1; $AGENT_CMD; echo; echo 'agent exited. This YARD is intact.'; echo 'Back to the same conversation:  $AGENT_CMD --continue'; echo 'Fresh session instead:         $AGENT_CMD'" \
         >/dev/null 2>&1 \
-        || log "could not start the agent; start it by hand: HEADING_OS_YARD=1 $AGENT_CMD"
+        || { log "could not start the agent; start it by hand: HEADING_OS_YARD=1 $AGENT_CMD"
+             LAUNCH_FAILED=1; }
+    fi
+  elif [ "$AUTOSTART" = "1" ] && [ "${HEADING_OS_YARD_BACKEND:-}" = core ]; then
+    # HERDR-CORE. No pane, so the agent gets its own `hc` terminal named after
+    # the branch, started in this checkout with the marker exported, exactly
+    # as the TUI line above. Two differences, both measured in HELM 2026-11-18
+    # (plan 5a): a bare `claude` under hc opens Claude Code's agents launcher
+    # rather than a session, so a first prompt is passed, written WITHOUT an
+    # apostrophe so it nests inside the single quotes; and `hc run --keep`
+    # replaces a lost program with a shell, so the trailing `exec bash -i`
+    # replaces only the wrapper shell after the agent exited, never the agent.
+    # The occupancy question keeps only its /proc half: there is no pane.
+    # Two fresh window labels, generated once per run: herdr.space and
+    # herdr.tab on the agent's terminal make the Windows app show this yard
+    # as its own space nested under the engine clone, named after the folder
+    # (MEASURED in HELM 2026-11-19 with `hc label`, HOS-379). The ids only
+    # have to be new; the window derives the name itself.
+    SP="sp$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    TB="tb$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    # NODE ON THE AGENT'S PATH, WITHOUT A PROFILE. `bash -c` reads no
+    # `.bashrc`, so a node installed by a version manager that `.bashrc` loads
+    # (nvm) is missing in the yard, and every node-based hook and MCP server
+    # fails there while HELM, started from an interactive shell, keeps them
+    # (MEASURED 2026-11-19: HELM's PATH held the nvm node directory, the three
+    # herdr-core yards' did not; the Hindsight Stop hook failed "node: not
+    # found" in each). The TUI line above runs inside the pane's interactive
+    # shell and never had the gap. Reading the profile instead (`bash -lc`,
+    # `bash -ic`) is refused by the operator's decision of 2026-11-18, kept in
+    # `_HC_SHELL_FORMS` of `.claude/hooks/_dispatch.py`. So the caller's PATH
+    # (HELM's, where node resolves) goes into the opening export as a LITERAL,
+    # a plain assignment that guard already allows: the agent gets the PATH
+    # HELM runs with, no more. Only when every entry is absolute and the value
+    # holds no character the guard or the shell would read as more than text;
+    # the guard (`_hc_path_keeps_agent`) refuses a printed line otherwise.
+    PATH_EXPORT=""
+    if command -v node >/dev/null 2>&1; then
+      if [[ "$PATH" =~ ^/[A-Za-z0-9_./+@-]*(:/[A-Za-z0-9_./+@-]*)*$ ]]; then
+        PATH_EXPORT=" PATH=$PATH"
+      else
+        log "node is not passed to the agent: this PATH has a relative entry or characters other than plain path text."
+      fi
+    else
+      log "node is not on this PATH: the yard agent starts without it, and node-based hooks will fail there."
+    fi
+    core_skip "pane get"
+    OCCUPANT="$(scan_occupant "" "")"
+    if [ -n "$OCCUPANT" ]; then
+      printf '%s\n' "$OCCUPANT" | while IFS= read -r line; do log "$line"; done
+      log "the agent was NOT started: one already stands in this checkout."
+      log "if no agent carrying the marker runs here, stop it and start one as:"
+      log "  hc run --bg --no-parent --keep --name $BRANCH --cwd $WT_PATH --label herdr.space=$SP --label herdr.tab=$TB -- bash -c \"export HEADING_OS_YARD=1$PATH_EXPORT; $AGENT_CMD\""
+    else
+      hc run --bg --no-parent --keep --name "$BRANCH" --cwd "$WT_PATH" --label herdr.space=$SP --label herdr.tab=$TB -- bash -c "export HEADING_OS_YARD=1$PATH_EXPORT; $AGENT_CMD 'Reply with the single word READY, then wait for the brief from HELM.'; echo; echo 'agent exited. This YARD is intact.'; echo 'Back to the same conversation:  $AGENT_CMD --continue'; exec bash -i" \
+        >/dev/null 2>&1 \
+        || { log "could not start the agent; start it by hand: hc run --bg --no-parent --keep --name $BRANCH --cwd $WT_PATH --label herdr.space=$SP --label herdr.tab=$TB -- bash -c \"export HEADING_OS_YARD=1$PATH_EXPORT; $AGENT_CMD\""
+             LAUNCH_FAILED=1; }
     fi
   fi
 fi
 
+# A LAUNCH THAT FAILED IS NOT A SUCCESS. The contour is intact, so the status
+# file keeps `ok` at step 11, but the exit says the yard has no agent, so a
+# caller (`scripts/yard.py create`) does not report a working yard. Until
+# 2026-11-18 a failed launch only logged and this exited 0 (HELM review of
+# 950a2d7d). Exit 3 is "contour ok, agent not started"; 1 stays "contour
+# broken". An occupied pane or checkout starts nothing by design and is not
+# a failure here.
+if [ "${LAUNCH_FAILED:-0}" = "1" ]; then
+  log "STOP: the yard is provisioned but its agent did not start (see the line above)"
+  exit 3
+fi
 exit 0

@@ -306,7 +306,9 @@ def run_skill(skill, args, *, budget_usd=None, model=None) -> int:
     cmd = build_skill_command(
         skill, args, tier=tier, budget_usd=budget_usd, model=model
     )
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    from scripts.utils.claude_child import claude_child_env
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=claude_child_env())
     # Exit code is authoritative; the JSON envelope is best-effort enrichment.
     out = proc.stdout
     try:

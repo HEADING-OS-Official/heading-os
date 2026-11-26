@@ -20,6 +20,10 @@ it deletes, in portions, the documents of files that left the repository, never 
 flight and never an id this script did not send. `cleanup` reaches the rest only on an
 explicit command. `--dry-run` sends, deletes and writes nothing.
 
+A server that gives no HTTP answer (refused, reset, timed out) ends any command with one
+line, "Hindsight server unreachable (...)", and no traceback: `push` exits 0, because
+`hindsight-health.py` owns that alert, and every other command exits 1 (HOS-429).
+
 Conversations are the Hindsight plugin's (`conversation:<session_id>`, retained on Stop);
 older `conversation/<session>/<time>` documents from a removed command are still in the bank.
 
@@ -562,14 +566,29 @@ def pick_named(root: Path, entries: list[str], send: list[tuple[str, int]], too_
     return picked, refused, unmatched
 
 
+class ServerUnreachable(urllib.error.URLError):
+    """The Hindsight server gave no HTTP answer at all: refused, reset, timed out, or the
+    name did not resolve. An answer with an error status stays `HTTPError`. A subclass of
+    `URLError`, so every handler that already copes with an unreachable server (deferring
+    a delete, skipping the resend list) keeps doing so; one that does not reaches `main`,
+    which ends the pass with one plain line instead of a traceback (HOS-429)."""
+
+
 def _api(method: str, url: str, key: str, body: dict | None = None) -> dict:
     data = json.dumps(body).encode() if body is not None else None
     if not url.startswith(("http://", "https://")):
         raise ValueError(f"not an http(s) URL: {url}")
     req = urllib.request.Request(url, data=data, method=method,  # noqa: S310 - scheme checked above
                                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310 - URL comes from the operator's .env
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310 - URL comes from the operator's .env
+            return json.load(r)
+    except urllib.error.HTTPError:
+        raise  # the server answered; its status is the caller's to judge
+    except urllib.error.URLError as exc:
+        raise ServerUnreachable(exc.reason) from exc
+    except (ConnectionError, TimeoutError) as exc:  # raised while the answer was being read
+        raise ServerUnreachable(exc) from exc
 
 
 def split_text(text: str, max_bytes: int) -> list[str]:
@@ -1291,6 +1310,8 @@ def cmd_push(args) -> int:
         except urllib.error.HTTPError as exc:
             print(f"  batch {n}: HTTP {exc.code} {exc.read()[:300]!r}", file=sys.stderr)
             return 1
+        except ServerUnreachable:
+            raise  # this batch has no ledger line, so its files go again next pass
         except (urllib.error.URLError, OSError) as exc:
             print(f"  batch {n}: {exc}", file=sys.stderr)
             return 1
@@ -1435,6 +1456,8 @@ def resend_failed(api: str, bank: str, key: str, seen: dict[str, dict], sendable
     unreadable listing resends nothing this pass and says so."""
     try:
         failed = failed_since_send(seen, failed_operations(api, bank, key))
+    except ServerUnreachable:
+        raise  # nothing can be sent either: the pass ends in `main`, before any file is labelled
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"failed extractions unreadable ({type(exc).__name__}: {exc}); none sent again this pass", file=sys.stderr)
         return {}
@@ -3405,9 +3428,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+#: Exit code of a push pass that ended because the Hindsight server did not answer. Zero,
+#: so the unit-failure alert stays quiet: `hindsight-health.py check` already reports an
+#: unreachable server hourly, on a change of state, and the server is refused for minutes
+#: at a time while it restarts (MEASURED 2026-11-25: three refused runs in 24 h, each
+#: followed by a successful one). Every other command run by hand exits 1.
+UNREACHABLE_PUSH_EXIT = 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except ServerUnreachable as exc:
+        print(f"Hindsight server unreachable ({exc.reason}); this pass ends here, nothing more is sent, "
+              "the next run tries again", file=sys.stderr)
+        return UNREACHABLE_PUSH_EXIT if args.fn is cmd_push else 1
 
 
 if __name__ == "__main__":

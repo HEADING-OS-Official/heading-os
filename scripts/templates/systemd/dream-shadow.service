@@ -1,6 +1,7 @@
 [Unit]
 Description=Dream-shadow scan (nightly salience-ranked memory consolidation worklist)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

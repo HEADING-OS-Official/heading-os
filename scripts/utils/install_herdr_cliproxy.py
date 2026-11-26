@@ -253,8 +253,21 @@ def _herdr(h: Host, ctx, *args: str) -> subprocess.CompletedProcess:
 
 
 def herdr_ready(ctx) -> bool:
-    """The program at its place, new enough, and settings that Herdr itself accepts."""
+    """The program at its place, new enough, and settings that Herdr itself accepts.
+
+    Also says whether herdr-core (`hc`) is present; it installs nothing for it
+    and its presence decides nothing here.
+    """
     h = host(ctx)
+    hc = shutil.which("hc", path=_env(ctx, h).get("PATH"))
+    hc_probe = _run([hc, "--version"], env=_env(ctx, h)) if hc else None
+    if hc_probe is not None and hc_probe.returncode == 0:
+        version = ".".join(str(n) for n in _version(hc_probe.stdout)) or "?"
+        print(f"  hc {version} found at {hc}")
+    elif hc:
+        print(f"  hc found at {hc}, but hc --version exited {hc_probe.returncode}")
+    else:
+        print("  hc not installed")
     if not os.access(herdr_bin(h), os.X_OK):
         return False
     probe = _herdr(h, ctx, "--version")

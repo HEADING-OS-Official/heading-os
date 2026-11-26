@@ -1,6 +1,7 @@
 [Unit]
 Description=Daily snapshot of what lives only in the Hindsight bank (HOS-203)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

@@ -4,6 +4,7 @@
 [Unit]
 Description=Hindsight web console for HEADING OS (127.0.0.1:9999)
 After=hindsight-server.service
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=simple

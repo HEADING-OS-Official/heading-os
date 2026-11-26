@@ -105,6 +105,9 @@ names:
     what: "one engine checkout's hook and guard state: rate limiter, graph-first and fan-out stamps, checkpoint state; what <checkout>/.claude/state/ used to be"
     runtime: hook-state/tmp
     under: "{checkout}"
+  yard-scratch-archive:
+    what: "the scratch directories of removed yards, moved whole on worktree removal as <checkout name>-<UTC stamp>; never pruned automatically"
+    path: archive/yard-scratch
   council-reports:
     what: "the council transcripts whose topic classified them as a report"
     path: system/reports/council

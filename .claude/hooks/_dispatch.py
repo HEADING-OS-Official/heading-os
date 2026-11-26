@@ -4984,6 +4984,440 @@ def _mid_turn_operator_word(transcript_path: str) -> str | None:
     return None
 
 
+#: The only typed record a relayed word may arrive as under herdr-core (HOS-380).
+#: Claude Code 2.1.326 never sets `lastPrompt` from user text opening with a tag
+#: (MEASURED 2026-11-19 in the binary and in yard transcripts), so the enveloped
+#: word leaves no `last-prompt` and the typed path above refuses it as
+#: unconfirmed. No `reach=` attribute, no whitespace, nothing else: an hc release
+#: that changes the envelope refuses until it is re-measured.
+_HC_RELAY_RE = re.compile(
+    r'<hc from="(?P<addr>t[0-9a-z]+)">'
+    r'(?P<word>commit|commit, merge and delete [A-Za-z0-9][A-Za-z0-9_-]*)</hc>')
+_RELAY_JOURNAL_REL = Path(".claude") / ".relay-journal.jsonl"
+#: hc's 60 s draft hold plus its 3 s quiet pause, with room.
+_RELAY_WINDOW_S = 90.0
+_RELAY_TAIL = 1 << 18  # 256 KiB, the window the two readers above use
+
+
+def _relay_main_clone() -> Path:
+    """HELM's main clone: where the relay journal lives and where its sender runs."""
+    from scripts.utils.clone_guard import main_clone_path
+    return main_clone_path(WORKSPACE)
+
+
+def _relay_tail(path: Path) -> list[bytes]:
+    """The file's last 256 KiB as lines, a cut first line dropped. Raises OSError."""
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        if size > _RELAY_TAIL:
+            fh.seek(size - _RELAY_TAIL)
+            return fh.read().splitlines()[1:]
+        return fh.read().splitlines()
+
+
+def _relay_time(value):
+    """An ISO timestamp as an aware datetime (`Z` accepted), or None."""
+    if not isinstance(value, str):
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else None
+
+
+def _hc_boundary(path: Path) -> tuple[dict, list[dict], object] | None:
+    """The newest turn-opening user record, every typed user record before it, and the horizon.
+
+    The boundary is the record `_mid_turn_operator_word` treats as a turn's
+    start: a `type: "user"` record with a `promptSource` or string content. The
+    list holds the typed user records with string content, oldest first, from
+    the same 256 KiB tail: `_journal_binds_first` reads it to bind one journal
+    entry to one record. The horizon is None when the whole file was read, else
+    the timestamp of the oldest record the tail still shows (False when that
+    record carries none): nothing older than it can be seen, so a window that
+    opens before it cannot be proved to hold no earlier match. Raises OSError
+    as `_relay_tail`.
+    """
+    boundary = None
+    typed: list[dict] = []
+    lines = _relay_tail(path)
+    horizon = None
+    if path.stat().st_size > _RELAY_TAIL:
+        first = _loads_or_none(lines[0]) if lines else None
+        horizon = (_relay_time(first.get("timestamp")) if isinstance(first, dict) else None) or False
+    for raw in lines:
+        if b'"user"' not in raw:
+            continue
+        rec = _loads_or_none(raw)
+        if rec is None or rec.get("type") != "user":
+            continue
+        message = rec.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(rec.get("promptSource"), str) or isinstance(content, str):
+            boundary = rec
+            if rec.get("promptSource") == "typed" and isinstance(content, str):
+                typed.append(rec)
+    if boundary is None:
+        return None
+    return boundary, typed, horizon
+
+
+def _journal_binds_first(boundary: dict, typed: list[dict], horizon, matches, at, window) -> bool:
+    """Whether `boundary` is the FIRST typed record in the window that `matches` accepts.
+
+    One journal entry authorises one record (HOS-408, both reviewers): a second
+    record with the same text inside the same window, a replay or a duplicate
+    delivery, finds the first one ahead of it and is refused here, whether or
+    not the first one ever released anything. `_claim_journal_entry` closes the
+    same hole across transcripts. When the tail was cut at or after the moment
+    the window opened (`horizon`, see `_hc_boundary`; an equal timestamp
+    proves nothing), an earlier match may sit in the part not read, so nothing
+    is bound (HOS-408 review rounds 1 and 2).
+    """
+    if horizon is not None and (horizon is False or horizon >= at):
+        return False
+    for rec in typed:
+        stamp = _relay_time(rec.get("timestamp"))
+        if stamp is None or not (at <= stamp <= at + window):
+            continue
+        if not matches((rec.get("message") or {}).get("content")):
+            continue
+        return rec.get("uuid") == boundary.get("uuid")
+    return False
+
+
+def _relayed_hc_word(transcript_path: str) -> tuple[str, str, str, str] | None:
+    """(word, envelope text, journal id, record uuid) for a word HELM relayed through hc, or None.
+
+    A THIRD SOURCE for the operator's word, and the narrowest. herdr-core wraps
+    every relayed text in an `hc from` envelope; Claude Code writes no
+    `last-prompt` for it, and `from` is the caller's own claim (`hc schema`:
+    `terminal.send` takes a free `caller` string, DOCUMENTED 2026-11-19). The
+    confirmation that `last-prompt` used to give is replaced by HELM's relay
+    journal, which only `scripts/herdr-relay.py` writes, in HELM's checkout,
+    where `check_yard_write_guard` refuses a yard's writes.
+
+    Every condition below is a refusal; the design (registry name `plans`,
+    2026-11-19-release-gate-hc-design.md) lists the case each one closes. The
+    strength is that of the yard walls, not of cryptography: same UID, same
+    machine, as the `last-prompt` check before it.
+
+    HOS-408 (2026-11-22): the record must be `promptSource: "typed"` (the only
+    source the relay produces; "queued" was never measured for it), it must
+    carry a `uuid`, and it must be the first typed record with this envelope
+    inside the entry's window (`_journal_binds_first`). The caller then claims
+    the entry for that uuid (`_claim_journal_entry`). Before this, one `sent`
+    entry authorised every matching record for 90 s, and `_record_release`
+    stored the journal id without anything reading it back.
+    """
+    if not transcript_path:
+        return None
+    path = Path(transcript_path)
+    if not path.is_file():
+        return None
+    found = _hc_boundary(path)
+    if found is None:
+        return None
+    boundary, typed, horizon = found
+    if boundary.get("promptSource") != "typed":
+        return None
+    uuid_ = boundary.get("uuid")
+    if not isinstance(uuid_, str) or not uuid_:
+        return None
+    content = (boundary.get("message") or {}).get("content")
+    if not isinstance(content, str):
+        return None
+    match = _HC_RELAY_RE.fullmatch(content)
+    if match is None:
+        return None
+    addr, word = match.group("addr"), match.group("word")
+    stamp = _relay_time(boundary.get("timestamp"))
+    if stamp is None:
+        return None
+    me = os.environ.get("HC_TERMINAL_ID")
+    if not me:
+        return None
+
+    if _yard_in_a_yard():
+        if word != "commit":
+            return None
+    elif word == "commit" or addr != me:
+        return None
+
+    helm = _relay_main_clone().resolve()
+    sender = _yard_hc_terminal(addr)
+    if not isinstance(sender, dict) or sender.get("state") != "live":
+        return None
+    foreground = sender.get("foreground")
+    if not isinstance(foreground, dict) or foreground.get("name") != "claude":
+        return None
+    cwd = foreground.get("cwd")
+    if not isinstance(cwd, str) or not cwd or Path(cwd).resolve() != helm:
+        return None
+
+    from datetime import timedelta
+    window = timedelta(seconds=_RELAY_WINDOW_S)
+    # A missing journal raises here, and the call site refuses on it.
+    for entry in reversed(_journal_entries(helm / _RELAY_JOURNAL_REL)):
+        if entry.get("sender") != addr:
+            continue
+        if entry.get("target") != me:
+            continue
+        if entry.get("text") != word:
+            continue
+        if entry.get("_outcomes") != {"sent"}:
+            continue
+        at = _relay_time(entry.get("at"))
+        if at is None or not (at <= stamp <= at + window):
+            continue
+        if not _journal_binds_first(boundary, typed, horizon, lambda c: c == content, at, window):
+            return None
+        return word, content, entry["id"], uuid_
+    return None
+
+
+def _journal_entries(path: Path) -> list[dict]:
+    """A journal's entries in file order, each with `_outcomes`, the set of its outcome lines.
+
+    The format the relay and the bridge share: one entry line with an `id`, then
+    outcome lines `{"id", "outcome"}`. An outcome line before its entry is
+    ignored. Raises OSError when the file cannot be read.
+    """
+    entries: list[dict] = []
+    by_id: dict[str, dict] = {}
+    for raw in _relay_tail(path):
+        rec = _loads_or_none(raw)
+        if rec is None or not isinstance(rec.get("id"), str):
+            continue
+        if "outcome" in rec:
+            owner = by_id.get(rec["id"])
+            if owner is not None:
+                owner["_outcomes"].add(rec.get("outcome"))
+            continue
+        rec = {**rec, "_outcomes": set()}
+        entries.append(rec)
+        by_id[rec["id"]] = rec
+    return entries
+
+
+#: HOS-408. Where the Telegram bridge (`scripts/telegram-bridge.py`, run in HELM
+#: only) journals every text it types into a session, under both Herdr
+#: versions: HELM's checkout, beside the relay journal, where
+#: `check_yard_write_guard` refuses a yard's writes. An entry holds the text's
+#: SHA-256, never the text.
+_BRIDGE_JOURNAL_REL = Path(".claude") / ".bridge-journal.jsonl"
+#: Claude Code wraps a long paste in this pair around the hc envelope. MEASURED
+#: 2026-11-22 in yard w126-tg-bridge's own transcript: two multi-line `hc send`
+#: briefs arrived as typed records whose content opens with two newlines and
+#: the `pasted_content` tag, holds the envelope ending in a newline before its
+#: closing tag, and closes with the matching `pasted_content` tag and a
+#: newline; `last-prompt` did not move. Which lengths get the wrapper: NOT
+#: MEASURED.
+_PASTE_WRAP_RE = re.compile(
+    r'\s*<pasted_content id="(?P<pid>[0-9A-Za-z]{1,16})">\n(?P<body>.*)\n'
+    r'</pasted_content id="(?P=pid)">\s*', re.DOTALL)
+#: The envelope of any hc-sent text. `from` is the caller's own claim and is
+#: never compared for a bridge text: the bridge is a daemon, not a terminal, and
+#: hc then names "the calling process's parent" (DOCUMENTED 2026-11-19, `hc
+#: schema`). The exact `from` form for such a send: NOT MEASURED.
+_HC_TEXT_RE = re.compile(r'<hc from="(?P<addr>[^"<>\n]{1,64})">(?P<text>.*)</hc>', re.DOTALL)
+
+
+def _hc_inner_text(content: str) -> str | None:
+    """The text inside one hc envelope, unwrapping Claude Code's paste wrapper once; None if not one."""
+    wrapped = _PASTE_WRAP_RE.fullmatch(content)
+    body = wrapped.group("body") if wrapped else content
+    match = _HC_TEXT_RE.fullmatch(body)
+    return match.group("text") if match else None
+
+
+def _text_digests(text: str) -> set[str]:
+    """The SHA-256 of the text, and of it minus one trailing newline.
+
+    MEASURED 2026-11-22: a multi-line hc send arrived with a newline before the
+    closing tag; whether hc adds it or the text carried it is NOT MEASURED, so
+    both readings are accepted and nothing else is.
+    """
+    digests = {hashlib.sha256(text.encode("utf-8")).hexdigest()}
+    if text.endswith("\n"):
+        digests.add(hashlib.sha256(text[:-1].encode("utf-8")).hexdigest())
+    return digests
+
+
+def _bridged_hc_text(transcript_path: str) -> tuple[str, str, str, str] | None:
+    """(text, envelope, journal id, record uuid) for text the Telegram bridge typed, or None.
+
+    A FOURTH SOURCE, HOS-408, and the relay's twin. The operator decided on
+    2026-11-22 that text the bridge types from his verified Telegram account is
+    his own word, unmarked, commit and push included. Under the old Herdr TUI
+    that text arrives as a plain typed record with a `last-prompt`, and nothing
+    here is involved. Under herdr-core it arrives inside an hc envelope with no
+    `last-prompt`, like the relay's word, and only this reader can confirm it:
+    HELM's bridge journal must hold an entry for THIS terminal with the text's
+    SHA-256, outcome `sent` and nothing else, written at most 90 s before the
+    record, and the record must be the first typed one in that window carrying
+    the same text. The caller claims the entry for the record's uuid.
+
+    WEAKER THAN THE RELAY BY ONE CHECK, said here so nobody reads it as equal:
+    the relay also proves that `from` is HELM's live Claude terminal. The bridge
+    is not a terminal, so there is no sender to prove. What stands behind an
+    entry is that only HELM-side code writes HELM's checkout and the yard walls
+    refuse a yard's writes there; same UID, same machine.
+    """
+    if not transcript_path:
+        return None
+    path = Path(transcript_path)
+    if not path.is_file():
+        return None
+    found = _hc_boundary(path)
+    if found is None:
+        return None
+    boundary, typed, horizon = found
+    if boundary.get("promptSource") != "typed":
+        return None
+    uuid_ = boundary.get("uuid")
+    if not isinstance(uuid_, str) or not uuid_:
+        return None
+    content = (boundary.get("message") or {}).get("content")
+    if not isinstance(content, str):
+        return None
+    text = _hc_inner_text(content)
+    if text is None:
+        return None
+    stamp = _relay_time(boundary.get("timestamp"))
+    if stamp is None:
+        return None
+    me = os.environ.get("HC_TERMINAL_ID")
+    if not me:
+        return None
+    digests = _text_digests(text)
+
+    def same_text(other) -> bool:
+        inner = _hc_inner_text(other) if isinstance(other, str) else None
+        return inner is not None and bool(_text_digests(inner) & digests)
+
+    from datetime import timedelta
+    window = timedelta(seconds=_RELAY_WINDOW_S)
+    helm = _relay_main_clone().resolve()
+    # A missing journal raises here, and the call site refuses on it.
+    for entry in reversed(_journal_entries(helm / _BRIDGE_JOURNAL_REL)):
+        if entry.get("target") != me:
+            continue
+        if entry.get("sha256") not in digests:
+            continue
+        if entry.get("_outcomes") != {"sent"}:
+            continue
+        at = _relay_time(entry.get("at"))
+        if at is None or not (at <= stamp <= at + window):
+            continue
+        if not _journal_binds_first(boundary, typed, horizon, same_text, at, window):
+            return None
+        return text, content, entry["id"], uuid_
+    return None
+
+
+#: HOS-408. The journal entries the gate has accepted, one line each: `source`
+#: (`relay` or `bridge`), `id`, the `uuid` of the transcript record it
+#: authorised, `at`. Beside the authorised-release log, in the data
+#: repository, so HELM and every yard read one file. Append-only, never pruned.
+_CONSUMED_NAME = "consumed-journal-entries.jsonl"
+
+
+def _consumed_path() -> Path | None:
+    """The consumed-entry store beside the release log, or None when that log records nothing."""
+    log = _release_log_path()
+    return None if log is None else log.parent / _CONSUMED_NAME
+
+
+def _claim_journal_entry(source: str, entry_id: str, record_uuid: str) -> bool:
+    """Whether this journal entry may authorise this record; claims it when it may.
+
+    True when nobody claimed (`source`, `entry_id`) yet, after appending the
+    claim, or when it was claimed for this same record (one turn may release a
+    commit and then a push). False when it was claimed for another record, or
+    when the store cannot be read or written: an entry nobody can prove unused
+    authorises nothing. The read and the append happen under one exclusive
+    `flock`, so two sessions cannot both claim one entry.
+    """
+    import fcntl
+    path = _consumed_path()
+    if path is None:
+        print(f"[_dispatch] no consumed-entry store (the release log records nothing); "
+              f"the {source} entry is refused", file=sys.stderr)
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    except OSError as exc:
+        print(f"[_dispatch] consumed-entry store unavailable ({exc}); refused", file=sys.stderr)
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        # The WHOLE store, never a tail: a claim pushed out of a tail could be
+        # made again (HOS-408 review round 1). One short line per release.
+        for raw in path.read_bytes().splitlines():
+            rec = _loads_or_none(raw)
+            if rec and rec.get("source") == source and rec.get("id") == entry_id:
+                return rec.get("uuid") == record_uuid
+        from datetime import timezone as _tz
+        stamp = datetime.now(_tz.utc).isoformat(timespec="milliseconds")
+        blob = (json.dumps({"source": source, "id": entry_id, "uuid": record_uuid,
+                            "at": stamp}) + "\n").encode("utf-8")
+        written = os.write(fd, blob)
+        if written != len(blob):
+            print(f"[_dispatch] consumed-entry store wrote {written} of {len(blob)} bytes; "
+                  f"refused", file=sys.stderr)
+            return False
+        return True
+    except OSError as exc:
+        print(f"[_dispatch] consumed-entry store failed ({exc}); refused", file=sys.stderr)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _journaled_hc_text(transcript_path: str) -> tuple[str, str, str, str, str] | None:
+    """(text, envelope, source, journal id, record uuid) when a HELM journal confirms this turn.
+
+    The one reader `check_release_gate` calls for an enveloped turn: the relay
+    rule first, then the bridge rule, each its own policy over one boundary
+    reader and one journal format. A reader that fails is reported and refuses.
+    """
+    for source, reader in (("relay", _relayed_hc_word), ("bridge", _bridged_hc_text)):
+        try:
+            found = reader(transcript_path)
+        except Exception as exc:  # noqa: BLE001 - reported, and means refuse
+            print(f"[_dispatch] {source} journal reader failed ({type(exc).__name__}: "
+                  f"{exc})", file=sys.stderr)
+            continue
+        if found is not None:
+            text, content, entry_id, record_uuid = found
+            return text, content, source, entry_id, record_uuid
+    return None
+
+
+def _journaled_release(transcript_path: str, action: str, command: str) -> bool:
+    """Whether a journal-confirmed enveloped turn authorises `action`; records it when it does.
+
+    The words go through the unchanged `prompt_authorises` first, so an entry
+    is claimed only for a turn that actually releases something; then the
+    entry is claimed for the record's uuid, and a claim that fails refuses.
+    """
+    found = _journaled_hc_text(transcript_path)
+    if found is None:
+        return False
+    text, content, source, entry_id, record_uuid = found
+    if not prompt_authorises(text, action):
+        return False
+    if not _claim_journal_entry(source, entry_id, record_uuid):
+        return False
+    _record_release(action, command, content, journal_id=f"{source}:{entry_id}")
+    return True
+
+
 # WHAT ONE ROW OF THIS JOURNAL MEANS, written here 2026-09-23 because nothing
 # said it and the absence cost a false reading of the file (HOS-81).
 #
@@ -5018,7 +5452,8 @@ def _mid_turn_operator_word(transcript_path: str) -> str | None:
 # is no session id and no turn id, so two identical authorisations typed in a row
 # are indistinguishable from one, and any decision count taken off this file is a
 # floor. Rows written before 2026-09-08 carry no `checkout` and no `branch`.
-def _record_release(action: str, command: str, prompt: str) -> None:
+def _record_release(action: str, command: str, prompt: str,
+                    journal_id: str | None = None) -> None:
     """Append one authorised release to a log the operator can audit.
 
     Telemetry only; it can never change a decision. The point is that every
@@ -5060,6 +5495,9 @@ def _record_release(action: str, command: str, prompt: str) -> None:
             "checkout": str(WORKSPACE)[:400],
             "branch": _checkout_branch(WORKSPACE)[:200],
         }
+        if journal_id is not None:
+            # HOS-380: the relay journal entry that confirmed an hc-relayed word.
+            rec["journal_id"] = journal_id[:64]
         blob = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
@@ -5165,6 +5603,12 @@ def check_release_gate(payload: dict) -> dict | None:
         if mid is not None and prompt_authorises(mid, action):
             _record_release(action, command, mid)
             return None
+        # HOS-380: a word HELM relayed through hc after the slash command is the
+        # newest boundary; only the relay journal can confirm it. HOS-408: or
+        # text the Telegram bridge typed, confirmed by the bridge journal. One
+        # entry authorises one record (`_claim_journal_entry`).
+        if _journaled_release(transcript, action, command):
+            return None
         return {
             "decision": "block",
             "_policy_deny": True,
@@ -5180,6 +5624,13 @@ def check_release_gate(payload: dict) -> dict | None:
                 "not edit the transcript, and do not work around this."
             ),
         }
+    # HOS-380: an hc-relayed word never gets a `last-prompt`, so it always
+    # lands here. HELM's relay journal confirms it, or nothing does.
+    # HOS-408: the same for text the Telegram bridge typed, through the
+    # bridge journal.
+    if (prompt is None and why in (_PROMPT_UNCONFIRMED, _PROMPT_MISMATCH)
+            and _journaled_release(transcript, action, command)):
+        return None
     if prompt is None and why in (_PROMPT_UNCONFIRMED, _PROMPT_MISMATCH):
         # A DIFFERENT refusal, because a different thing happened. The wall is
         # unchanged: both states still refuse, and both still refuse for the
@@ -6419,21 +6870,50 @@ def _yard_homes() -> list[Path]:
 
 
 # Data registry names of live daemon state a yard may read but never write,
-# resolved under every data root at check time. The official tree ships no
-# daemon whose state needs this, so the list is empty.
-_YARD_HELM_ONLY_DATA: tuple[str, ...] = ()
-# Every spelling of the places above. Nothing fills it in this tree; it stays so
-# that `_yard_machine_reason` keeps one shape with the maintainer's copy.
+# resolved under every data root at check time: the Telegram bridge's state
+# (the kill-switch file, its SQLite store of inbound messages, topics and
+# buttons, its pid). A yard that removed `off` or forged a stored message would
+# type into sessions through HELM's daemon.
+_YARD_HELM_ONLY_DATA = ("runtime:telegram-bridge/state",)
+# Every spelling of the places above, filled by `_yard_machine_places(helm)`, so
+# that `_yard_machine_reason` can say which refusal it is giving.
 _YARD_HELM_ONLY_PLACES: set[Path] = set()
 
 
 def _yard_machine_places(helm: Path | None = None) -> tuple[list[Path], list[Path]]:
     """(guarded, exempt): every spelling of the places above, raw and resolved.
 
-    `helm` changes nothing in this tree: no live daemon state is shipped.
+    With `helm`, the live daemon state of `_YARD_HELM_ONLY_DATA` under each data
+    root is guarded too.
     """
     guarded: list[Path] = [Path("/etc")]      # root-owned; reached through `sudo`
     exempt: list[Path] = []
+    if helm is not None:
+        from scripts.utils.data_path import DataPathError, data_path
+        for root in _yard_data_roots(helm):
+            for name in _YARD_HELM_ONLY_DATA:
+                try:
+                    # Each name spelled at its call, so the leak guard can read
+                    # which data it names.
+                    if name == "runtime:telegram-bridge/state":
+                        place = data_path("runtime:telegram-bridge/state", data_root=root)
+                    else:
+                        raise ValueError(f"no resolver for {name}")
+                except (DataPathError, OSError, ValueError) as exc:
+                    # Fails open for this one root, on purpose: a root whose
+                    # registry has no `telegram-bridge` row holds no bridge state
+                    # to protect, and refusing every write under it would close
+                    # the whole overlay to yards.
+                    print(f"[_dispatch:yard] {name} did not resolve "
+                          f"under {root} ({type(exc).__name__}); not guarded "
+                          f"there", file=sys.stderr)
+                    continue
+                guarded.append(place)
+                _YARD_HELM_ONLY_PLACES.add(place)
+                with contextlib.suppress(OSError):
+                    real = place.resolve()
+                    guarded.append(real)
+                    _YARD_HELM_ONLY_PLACES.add(real)
     for env_name in ("CLAUDE_CONFIG_DIR", "XDG_RUNTIME_DIR"):
         raw = os.environ.get(env_name, "")
         if raw and os.path.isabs(raw):
@@ -7416,9 +7896,13 @@ def check_yard_write_guard(payload: dict) -> dict | None:
 _YARD_DELETION_TEMP_ROOTS = (Path("/tmp"), Path("/var/tmp"))  # noqa: S108  # nosec B108
 
 # Cheap first question, asked before anything resolves a path or reads a
-# registry. Every deletion form below spells one of these two words, and almost
-# no other command does.
-_YARD_DELETION_HINT_RE = re.compile(r"(?:^|[^\w-])rm(?:$|[^\w-])|worktree")
+# registry. Every deletion form below spells one of these words, and almost no
+# other command does. `yard.py` and `hc kill`/`hc rm` are the herdr-core forms
+# (2026-11-18): `scripts/yard.py remove` removes a yard under either Herdr, and
+# `hc kill`/`hc rm` end or remove the terminal a yard's agent runs in.
+_YARD_DELETION_HINT_RE = re.compile(
+    r"(?:^|[^\w-])rm(?:$|[^\w-])|worktree|yard\.py"
+    r"|(?:^|[^\w-])hc\s+(?:-\S*\s+)*(?:\S+\s+)?(?:kill|rm)(?:$|[^\w-])")
 
 # `rm -r`, `rm -rf`, `rm -fr`, `rm --recursive`. A bare `rm` cannot remove a
 # directory, so it cannot remove a checkout.
@@ -7562,6 +8046,175 @@ def _yard_herdr_workspace_for(checkout: Path) -> str | None:
     return None
 
 
+# ------------------------------------------------------------
+# herdr-core (`hc`), added 2026-11-18
+# ------------------------------------------------------------
+#
+# Under herdr-core a yard's agent runs in an `hc` terminal named after its
+# branch (`scripts/yard.py create`), and the process carries
+# `HC_TERMINAL_ID=<address>` and no `HERDR_*` (MEASURED in HELM 2026-11-18 from
+# `/proc/<pid>/environ`, plan 5a). So the terminal a command ends is the
+# ownership claim for core, as the herdr workspace id is for the TUI. A `closes`
+# value carrying this prefix names a terminal address, never a workspace id.
+_HC_CLOSES_PREFIX = "hc-terminal:"
+_HC_TERMINAL_ENV = "HC_TERMINAL_ID"
+#: The subcommands of hc 0.1.21, from `hc --help` (read 2026-11-18).
+_HC_SUBCOMMANDS = frozenset({
+    "run", "ls", "get", "attach", "read", "kill", "rm", "label", "keep", "send",
+    "keys", "interrupt", "wait", "put", "exec", "file", "templates", "events",
+    "server", "update", "machine", "connect", "schema"})
+
+
+def _yard_hc_terminal(terminal: str) -> dict | None:
+    """`hc get <terminal> --json`, or None when it could not be had.
+
+    None covers a missing `hc`, any non-zero exit (`not_found` is exit 3), a
+    timeout and unreadable JSON; every caller REFUSES on it. `hc get` answers
+    for a finished terminal too and accepts an address or a name (MEASURED in
+    HELM 2026-11-18). The record is taken whole, or from a `terminal` key when
+    the answer wraps it, because the exact envelope was read from `hc --skill`
+    rather than from a live run here.
+    """
+    import subprocess
+    try:
+        completed = subprocess.run(["hc", "get", terminal, "--json"],
+                                   capture_output=True, text=True,
+                                   errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[_dispatch:yard-hc] hc get {terminal!r} failed "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+    if completed.returncode != 0:
+        print(f"[_dispatch:yard-hc] hc get {terminal!r} exited "
+              f"{completed.returncode}", file=sys.stderr)
+        return None
+    try:
+        record = json.loads(completed.stdout)
+    except ValueError as exc:
+        print(f"[_dispatch:yard-hc] hc get {terminal!r} unreadable ({exc})",
+              file=sys.stderr)
+        return None
+    if isinstance(record, dict) and isinstance(record.get("terminal"), dict):
+        record = record["terminal"]
+    return record if isinstance(record, dict) else None
+
+
+def _yard_hc_terminal_yards(record: dict) -> list[Path] | None:
+    """The yards a terminal stands in, by its `cwd` and `foreground.cwd`.
+
+    Empty means it stands in none; None means the yards could not be listed,
+    which the caller refuses on.
+    """
+    try:
+        guarded = _yard_guarded_checkouts()
+    except Exception as exc:  # noqa: BLE001 - the caller refuses on None
+        print(f"[_dispatch:yard-hc] yards could not be listed "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+    foreground = record.get("foreground")
+    spelled = [record.get("cwd"),
+               foreground.get("cwd") if isinstance(foreground, dict) else None]
+    found: list[Path] = []
+    for where in spelled:
+        if not isinstance(where, str) or not where:
+            continue
+        path = Path(where)
+        with contextlib.suppress(OSError):
+            path = path.resolve()
+        for root in guarded:
+            if _yard_is_under(path, root) and root not in found:
+                found.append(root)
+    return found
+
+
+def _yard_hc_closes(record: dict | None) -> str | None:
+    address = record.get("address") if isinstance(record, dict) else None
+    return f"{_HC_CLOSES_PREFIX}{address}" if isinstance(address, str) and address else None
+
+
+def _yard_branch_dir(branch: str) -> Path | None:
+    """The yard directory `scripts/yard.py` uses for `branch`, or None.
+
+    `<engine clone's parent>/.yard/<engine clone's name>/<branch>`, the layout
+    `herdr worktree create` produces, derived from `main_clone_path` through
+    `_yard_engine_clone`.
+    """
+    from scripts.utils.clone_guard import CloneGuardError
+    if not branch or "/" in branch or branch.startswith("-"):
+        return None
+    try:
+        engine = _yard_engine_clone()
+    except CloneGuardError as exc:
+        print(f"[_dispatch:yard-deletion] main clone unresolved ({exc})", file=sys.stderr)
+        return None
+    target = engine.parent / ".yard" / engine.name / branch
+    with contextlib.suppress(OSError):
+        target = target.resolve()
+    return target
+
+
+def _yard_engine_clone() -> Path:
+    """The engine's main clone, for resolving a bare yard code. Raises."""
+    from scripts.utils.clone_guard import main_clone_path
+    return main_clone_path(WORKSPACE)
+
+
+def _yard_code_target(argument: str) -> tuple[str, Path | None]:
+    """(branch, checkout) for `scripts/yard.py remove <argument>`.
+
+    A bare code (`w100`, HOS-379) resolves through `yard_for_code`, the one
+    resolver `scripts/yard.py` also uses, to its one registered `w100-`
+    worktree, and the checkout is the REGISTERED path, which `yard.py` removes
+    too: a worktree moved with `git worktree move` is not at `_yard_branch_dir`.
+    Zero or several matches, or an engine that cannot be listed, answer
+    ("", None), which the caller refuses on. Anything else is (argument, None),
+    and the caller derives the directory from the branch as before.
+    """
+    from scripts.utils.yard_code import is_code, yard_for_code
+    if not is_code(argument):
+        return argument, None
+    try:
+        path, branch = yard_for_code(_yard_engine_clone(), argument)
+    except Exception as exc:  # noqa: BLE001 - every failure refuses; logged
+        print(f"[_dispatch:yard-deletion] yard code {argument!r} unresolved "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return "", None
+    with contextlib.suppress(OSError):
+        path = path.resolve()
+    return branch, path
+
+
+def _yard_py_remove_branch(words: list[str]) -> tuple[bool, str]:
+    """(is a real `scripts/yard.py remove`, its branch or "").
+
+    Recognised as the program (`scripts/yard.py ...`) or as an interpreter's
+    script (`.venv/bin/python scripts/yard.py ...`). `--dry-run` executes
+    nothing and is not a removal.
+    """
+    verb = words[0].rsplit("/", 1)[-1] if words else ""
+    rest: list[str]
+    if verb == "yard.py":
+        rest = words[1:]
+    elif verb.startswith("python"):
+        args = [w for w in words[1:] if not w.startswith("-")]
+        if not args or args[0].strip("'\"").rsplit("/", 1)[-1] != "yard.py":
+            return False, ""
+        rest = words[words.index(args[0]) + 1:]
+    else:
+        return False, ""
+    rest = [w.strip("'\"") for w in rest if not _yard_is_redirection(w)]
+    if "--dry-run" in rest:
+        return False, ""
+    positional = [w for w in rest if not w.startswith("-")]
+    if positional[:1] != ["remove"]:
+        return False, ""
+    if len(positional) == 1 and rest and all(w in _YARD_HELP_FLAGS
+                                             for w in rest if w.startswith("-")) \
+            and any(w.startswith("-") for w in rest):
+        return False, ""          # usage only
+    return True, positional[1] if len(positional) > 1 else ""
+
+
 def _yard_deletion_requests(
         command: str, cwd: Path) -> list[tuple[str, list[Path], str | None]]:
     """Every link that would destroy a checkout: (form, targets, closes).
@@ -7596,6 +8249,47 @@ def _yard_deletion_requests(
         if verb == "cd":
             current = _yard_follow_cd(words, current)
             continue
+
+        removes, branch = _yard_py_remove_branch(words)
+        if removes:
+            branch, registered = _yard_code_target(branch)
+            target = registered or _yard_branch_dir(branch)
+            closes = None
+            if target is not None and os.environ.get("HERDR_PANE_ID"):
+                closes = _yard_herdr_workspace_for(target)
+            elif target is not None and os.environ.get(_HC_TERMINAL_ENV):
+                closes = _yard_hc_closes(_yard_hc_terminal(branch))
+            requests.append(("scripts/yard.py remove",
+                             [target] if target is not None else [], closes))
+            continue
+
+        if verb == "hc":
+            operands = _yard_deletion_operands(words)
+            sub_at = next((i for i, w in enumerate(operands) if w in ("kill", "rm")), None)
+            if sub_at is None or (sub_at > 0 and operands[0] in _HC_SUBCOMMANDS):
+                continue          # another subcommand; `kill` is its data
+            if sub_at > 0:
+                # A word before the subcommand (a global option's value, as in
+                # `hc --on vps kill t`) makes the terminal unknowable: refuse.
+                requests.append((f"hc {operands[sub_at]} {' '.join(operands[sub_at + 1:])}".strip()
+                                 + " (after a global option)", [], None))
+                continue
+            flags = [word.split("=", 1)[0] for word in words[1:] if word.startswith("-")]
+            if len(operands) == 1 and flags and all(
+                    flag in _YARD_HELP_FLAGS for flag in flags):
+                continue          # usage only
+            if len(operands) < 2:
+                # No terminal: hc picks one itself, so what ends is unknown.
+                requests.append((f"hc {operands[0]}", [], None))
+                continue
+            record = _yard_hc_terminal(operands[1])
+            yards = _yard_hc_terminal_yards(record) if record is not None else None
+            if yards is None:
+                requests.append((f"hc {operands[0]} {operands[1]}", [], None))
+            elif yards:
+                requests.append((f"hc {operands[0]} {operands[1]}", yards,
+                                 _yard_hc_closes(record)))
+            continue          # a terminal standing in no yard ends nothing guarded
 
         if verb == "rm":
             recursive = any(word == "--recursive" or _YARD_RM_RECURSIVE_RE.match(word)
@@ -7764,15 +8458,23 @@ def _yard_live_processes(
     this hook runs on every tool call and only ever reaches here on a deletion.
     """
     from scripts.utils.proc_cwd import processes_in
-    found = processes_in(root, nested=True, env_names=(_HERDR_WORKSPACE_ENV,))
+    found = processes_in(root, nested=True,
+                         env_names=(_HERDR_WORKSPACE_ENV, _HC_TERMINAL_ENV))
     if found is None:
         return None, None
 
+    # A `closes` naming an hc terminal (herdr-core) drops the processes of that
+    # terminal, by `HC_TERMINAL_ID`; any other `closes` is a herdr workspace.
+    owned_terminal = (owned_by[len(_HC_CLOSES_PREFIX):]
+                      if owned_by and owned_by.startswith(_HC_CLOSES_PREFIX) else None)
+    owned_workspace = None if owned_terminal is not None else owned_by
     live = _yard_live_workspaces()
     kept: list[str] = []
     for process in found:
         workspace = (process.env or {}).get(_HERDR_WORKSPACE_ENV)
-        if owned_by and workspace == owned_by:
+        if owned_workspace and workspace == owned_workspace:
+            continue
+        if owned_terminal and (process.env or {}).get(_HC_TERMINAL_ENV) == owned_terminal:
             continue
         if workspace and live is not None and workspace not in live:
             continue                   # an orphan: its own yard is already gone
@@ -7933,12 +8635,27 @@ def check_yard_deletion_guard(payload: dict) -> dict | None:
             # operand. So half of that sentence sent the operator to a spelling
             # that fails twice over, on the refusal path, which is exactly
             # where a wall has to be right or it gets switched off.
-            advice = (
-                "Name the workspace id herdr knows, as `--workspace <id>`, and "
-                "run it again. A path does not work for this form: herdr "
-                "resolves the checkout from `--workspace` alone."
-                if form == "herdr worktree remove"
-                else "Name the worktree by its path and run it again.")
+            if form == "herdr worktree remove":
+                advice = (
+                    "Name the workspace id herdr knows, as `--workspace <id>`, "
+                    "and run it again. A path does not work for this form: "
+                    "herdr resolves the checkout from `--workspace` alone.")
+            elif form.startswith("hc ") and len(form.split()) == 2:
+                advice = (
+                    f"`{form}` with no terminal lets hc pick one itself. Name "
+                    f"the terminal, by address or name, and run it again.")
+            elif form.startswith("hc "):
+                advice = (
+                    "The terminal could not be resolved: `hc get <t> --json` "
+                    "did not answer with a readable record (hc missing, the "
+                    "terminal not found, or unreadable output), so whether it "
+                    "stands in a yard cannot be established.")
+            elif form == "scripts/yard.py remove":
+                advice = ("Name the branch of the yard, a plain name with no "
+                          "`/`, or a code (`w<N>`) that matches exactly one "
+                          "registered worktree, and run it again.")
+            else:
+                advice = "Name the worktree by its path and run it again."
             return _yard_deny(
                 f"YARD deletion guard — intentional policy block, not an error. "
                 f"`{form}` names no checkout this hook could resolve, so whether "
@@ -8038,9 +8755,334 @@ def check_yard_deletion_guard(payload: dict) -> dict | None:
 # be resolved is refused, as there: an empty answer means "could not
 # establish", never "nothing to protect".
 
-_YARD_AGENT_START_HINT_RE = re.compile(r"herdr")
+_YARD_AGENT_START_HINT_RE = re.compile(
+    r"herdr|(?:^|[^\w-])hc\s+(?:-\S*\s+)*(?:\S+\s+)?run(?:$|[^\w-])")
 
 _YARD_AGENT_LAUNCH = "HEADING_OS_YARD=1 claude --dangerously-skip-permissions"
+
+# herdr-core (2026-11-18). `hc run [options] [--] <argv...>` starts a program in
+# a new terminal, in the caller's environment as hc passes it, so an agent
+# started into a yard that way carries the marker only when the argv exports
+# it. `hc send` is the core form of `herdr agent prompt` (how HELM briefs and
+# relays) and starts nothing, so it is never read here.
+# The options of `hc run`, from `hc run --help` of hc 0.1.21 (read 2026-11-18).
+# Any other option before the program FAILS CLOSED: whether it takes a value
+# decides which word is the program, so an unknown one leaves where the agent
+# runs unknown (a `--timeout 5` before `--cwd <yard>` passed the first version;
+# found by this branch's own security review).
+_HC_RUN_VALUE_OPTIONS = frozenset({"--name", "--cwd", "--on", "--label", "--parent",
+                                   "--timeout"})
+_HC_RUN_FLAG_OPTIONS = frozenset({"--json", "--no-parent", "--no-notify",
+                                  "--outlive-parent", "--rm", "--keep", "--bg",
+                                  "-h", "--help"})
+# A `cd` inside the program's argv moves the agent somewhere `--cwd` does not
+# say, so it leaves the place unknown too.
+_HC_CD_RE = re.compile(r"(?:^|[\s;&|(])cd(?:$|\s)")
+_HC_AGENT_RE = re.compile(r"(?:^|[\s;&|/(])claude(?:$|[\s;&|)])")
+_HC_MARKER = "HEADING_OS_YARD=1"
+
+
+# The only script shape whose export certainly reaches what follows: the
+# script OPENS with it (after `set` options at most), its words are `export`
+# and plain assignments, and it ends with `;`, `&&` or a newline. Anything
+# else fails closed: `export ... & claude` and `export ... | true` run the
+# export in a subshell, and `false && export ...` never runs it (second
+# security review of the HELM fix, 2026-11-18). A quoted value is not a
+# plain assignment, so it fails closed too.
+# Word breaks are a space or a tab only, and a value is an allowlist of
+# characters: `\s` also matched a newline, a CR and a no-break space, and the
+# old value class let a backslash-escaped space hide the marker inside another
+# value, five spellings bash does not export (third review, 2026-11-18). A
+# later `HEADING_OS_YARD=` in the same statement would override it, so none
+# may follow.
+_HC_SCRIPT_MARKER_RE = re.compile(
+    r"\A[ \t]*(?:set(?:[ \t]+[-+][eux]+)+[ \t]*(?:;|&&|\n)[ \t]*)*"
+    r"export(?:[ \t]+(?!HEADING_OS_YARD=)[A-Za-z_]\w*=[A-Za-z0-9_./:,=+@%-]*)*?"
+    r"[ \t]+HEADING_OS_YARD=1"
+    r"(?:[ \t]+(?!HEADING_OS_YARD=)[A-Za-z_]\w*=[A-Za-z0-9_./:,=+@%-]*)*[ \t]*(?:;|&&|\n)")
+
+
+def _hc_script_exports_marker_first(script: str) -> bool:
+    """True when a `sh -c` script OPENS with an `export HEADING_OS_YARD=1`
+    statement that takes effect, so it runs before the agent; see
+    `_HC_SCRIPT_MARKER_RE`. The marker in a quoted prompt, an `echo`, or a
+    statement after the agent is data and never matches.
+    """
+    return (bool(_HC_SCRIPT_MARKER_RE.match(script))
+            and _hc_script_statements_allowed(script, opens_with_export=True))
+
+
+#: The one statement allowed to name `exec`: the bootstrap's LAST statement,
+#: which replaces the wrapper shell once the agent has exited and so cannot
+#: change the environment the agent ran with.
+_HC_TRAILING_SHELL = ["exec", "bash", "-i"]
+#: Programs a statement after the export may start: the agent itself, and
+#: `echo`, which prints. Neither can change the shell's environment.
+_HC_ALLOWED_PROGRAMS = frozenset({"claude", "echo"})
+#: Names the opening export, or `env` before the agent, may assign. An
+#: ALLOWLIST, like the statements: any name used to pass, so `PATH=/tmp/x:...`
+#: chose which file the bare `claude` is, the planted wrapper the bare-name
+#: rule below exists to refuse, and `LD_PRELOAD` and its kin load code into
+#: the agent itself (MEASURED 2026-11-19 on the previous guard: `export
+#: HEADING_OS_YARD=1 PATH=<planted dir>:...; claude go` and `export
+#: HEADING_OS_YARD=1 LD_PRELOAD=<file>; claude go` both passed). PATH stays,
+#: under `_hc_path_keeps_agent`, because a non-interactive `bash -c` reads no
+#: `.bashrc` and the bootstrap hands the agent its caller's PATH that way.
+_HC_ASSIGN_NAMES = frozenset({"HEADING_OS_YARD", "PATH"})
+
+
+def _hc_path_keeps_agent(value: str) -> bool:
+    """True when a `PATH=` value given to the agent cannot change which
+    `claude` runs: every entry absolute (an empty or relative entry resolves
+    against the yard, which this hook does not stand in), every entry already
+    on this hook's own PATH, and `claude` resolving to the same file on both.
+    A file planted later in a directory of this hook's PATH is not closed
+    here; it reaches a launch with no PATH assignment the same way."""
+    import shutil
+    own = os.environ.get("PATH", "")
+    own_entries = set(own.split(os.pathsep))
+    entries = value.split(os.pathsep)
+    if not all(entry.startswith("/") and entry in own_entries for entry in entries):
+        return False
+    here = shutil.which("claude", path=own)
+    there = shutil.which("claude", path=value)
+    return bool(here and there) and os.path.realpath(here) == os.path.realpath(there)
+
+
+def _hc_assignments_allowed(assigns: list[str]) -> bool:
+    """True when every `NAME=value` is on `_HC_ASSIGN_NAMES`, and a PATH one
+    passes `_hc_path_keeps_agent`."""
+    for assign in assigns:
+        name, _, value = assign.partition("=")
+        if name not in _HC_ASSIGN_NAMES:
+            return False
+        if name == "PATH" and not _hc_path_keeps_agent(value):
+            return False
+    return True
+
+
+#: Unquoted, any of these makes a statement more than one program with
+#: literal arguments: a background job or pipe, a redirection, a subshell or
+#: group, an expansion, or a comment.
+_HC_UNSAFE_UNQUOTED = frozenset("&|<>(){}$`#")
+
+
+def _hc_link_is_literal(link: str) -> bool:
+    """True when one statement holds no unquoted `_HC_UNSAFE_UNQUOTED`
+    character and no `$` or backtick inside double quotes, where bash still
+    expands them. Single quotes are literal; an unclosed quote is not."""
+    quote = ""
+    index = 0
+    while index < len(link):
+        char = link[index]
+        if quote == "'":
+            quote = "" if char == "'" else quote
+        elif char == "\\":
+            index += 1               # the escaped character is literal
+        elif quote == '"':
+            if char in "$`":
+                return False
+            quote = "" if char == '"' else quote
+        elif char in "'\"":
+            quote = char
+        elif char in _HC_UNSAFE_UNQUOTED:
+            return False
+        index += 1
+    return not quote
+
+
+def _hc_script_statements_allowed(script: str, *, opens_with_export: bool) -> bool:
+    """True only when EVERY statement of the script is on a short allowlist.
+
+    An ALLOWLIST and not a denylist: each review round found a way to cancel
+    the marker that a list of forbidden words did not name (an `echo claude`
+    before an `unset`, HELM review round 3 of c063ce97; `env -i`, `setpriv
+    --reset-env`, `bwrap --clearenv`, a sourced file, its security reviews).
+    Allowed, in order: `set` options; with `opens_with_export`, the opening
+    `export` of plain assignments whose LAST `HEADING_OS_YARD=` is the marker;
+    then statements that start `claude` or `echo` with literal arguments
+    (quoted text, a prompt included, is data); and a final `exec bash -i`.
+    Anything else, an unreadable statement included, refuses.
+    """
+    import shlex
+    parsed: list[list[str]] = []
+    for link in _yard_links(script):
+        try:
+            words = shlex.split(link)
+        except ValueError:
+            return False
+        if not words or not _hc_link_is_literal(link):
+            return False
+        parsed.append(words)
+    if not parsed:
+        return False
+    index = 0
+    while index < len(parsed) and parsed[index][0] == "set":
+        # Only -e, -u, -x and their + forms: `set -k` moves every NAME=value
+        # word into the command's environment, which cancelled the marker in
+        # both forms (measured in bash by the security review, 2026-11-18).
+        if not all(re.fullmatch(r"[-+][eux]+", word) for word in parsed[index][1:]):
+            return False
+        index += 1
+    if opens_with_export:
+        if index >= len(parsed):
+            return False
+        words = parsed[index]
+        assigns = words[1:]
+        last = [a for a in assigns if a.startswith("HEADING_OS_YARD=")][-1:]
+        if (words[0] != "export" or last != [_HC_MARKER]
+                or not all(_YARD_ASSIGN_RE.match(a) for a in assigns)
+                or not _hc_assignments_allowed(assigns)):
+            return False
+        index += 1
+    for position in range(index, len(parsed)):
+        words = parsed[position]
+        if position == len(parsed) - 1 and words == _HC_TRAILING_SHELL:
+            continue
+        # The bare name, never a path: `./claude` or `/tmp/x/claude` may be a
+        # planted wrapper that clears the environment first.
+        if words[0] not in _HC_ALLOWED_PROGRAMS:
+            return False
+    return True
+
+
+#: The only shell invocations accepted, exactly: program, one option word, the
+#: script, nothing after it. An option given to the shell itself can rewrite
+#: the agent's environment (`bash -kc '...; claude go HEADING_OS_YARD=0'`,
+#: HELM review round 4 of 6ec971a5), so the invocation is an allowlist too.
+#: No login shell (`bash -lc`): it reads the operator's profiles before the
+#: script, and a `claude` function, alias or DEBUG trap there would sit
+#: between the marker and the agent. Operator decision 2026-11-18; the
+#: bootstrap and yard.py's recovery line both use `bash -c`.
+_HC_SHELL_FORMS = frozenset({("bash", "-c"), ("sh", "-c")})
+
+
+def _hc_shell_script(words: list[str]) -> str | None:
+    """The script of an argv that is exactly `bash -c <script>` or `sh -c
+    <script>`, or None for anything else."""
+    if len(words) == 3 and (words[0], words[1]) in _HC_SHELL_FORMS:
+        return words[2]
+    return None
+
+
+def _hc_argv_exports_marker(argv: list[str]) -> bool:
+    """True only when the marker reaches the agent's ENVIRONMENT.
+
+    Two forms, and the marker must come before the agent in both: `env
+    [NAME=v ...] HEADING_OS_YARD=1 [NAME=v ...] <agent ...>`, where it is one of
+    env's assignments; or a `bash -c`/`sh -c` script whose `export
+    HEADING_OS_YARD=1` statement runs before the agent's statement. Text after
+    the agent word, a prompt such as `claude 'export HEADING_OS_YARD=1'`
+    included, never counts (HELM review of 950a2d7d: that prompt passed).
+
+    What decides is the marker that REACHES the agent (HELM review round 2 of
+    8dc63536): in the env form the LAST `HEADING_OS_YARD=` assignment, a
+    `-u`/`--unset` among its options refuses, a second env, sudo or exec as
+    the program refuses, the program must be exactly `claude` or one of
+    `_HC_SHELL_FORMS` (HELM review round 4 of 6ec971a5), and its script must pass
+    `_hc_script_statements_allowed`; in the script form the script must open
+    with the export and every statement must pass that allowlist (HELM review
+    round 3 of c063ce97).
+    """
+    # Every executable is matched by its exact word, never by basename or
+    # path: `/tmp/zzqx/env` may drop the marker and exec the agent without it
+    # (HELM review round 5 of c2a19569). A path-qualified `env` falls through
+    # to the shell-form check below, which refuses it.
+    if argv and argv[0] == "env":
+        leading = []
+        for word in argv[1:]:
+            if not (word.startswith("-") or _YARD_ASSIGN_RE.match(word)):
+                break
+            leading.append(word)
+        if any(word.startswith(("-u", "--unset")) for word in leading):
+            return False
+        rest = argv[1:]
+        assigns: list[str] = []
+        while rest and _YARD_ASSIGN_RE.match(rest[0]):
+            assigns.append(rest.pop(0))
+        last = [a for a in assigns if a.startswith("HEADING_OS_YARD=")][-1:]
+        if (last != [_HC_MARKER] or not rest or rest[0].startswith("-")
+                or not _hc_assignments_allowed(assigns)):
+            return False
+        # Only the exact agent or an exact shell form below may follow; a
+        # second env, sudo or exec, by any spelling, is neither and refuses.
+        if rest[0] == "claude":      # exactly the agent, never a path
+            return True
+        script = _hc_shell_script(rest)
+        return script is not None and _hc_script_statements_allowed(
+            script, opens_with_export=False)
+    script = _hc_shell_script(argv)
+    return script is not None and _hc_script_exports_marker_first(script)
+_YARD_HC_LAUNCH = ('hc run --bg --no-parent --keep --name <branch> --cwd <yard> -- bash -c '
+                   '"export HEADING_OS_YARD=1; claude --dangerously-skip-permissions '
+                   '\'<first prompt>\'"')
+
+
+def _yard_hc_runs(command: str, cwd: Path) -> list[tuple[Path | None, bool]]:
+    """(where it runs, carries the marker) for every `hc run` starting an agent.
+
+    `where` is None when it cannot be established (an option this parser does
+    not know, or a `cd` in the argv); the caller refuses an unmarked one.
+    """
+    import shlex
+    runs: list[tuple[Path | None, bool]] = []
+    current = cwd
+    for segment in _yard_segments(command):
+        try:
+            words = _yard_strip_prefix(shlex.split(segment))
+        except ValueError:
+            words = _yard_words(segment)
+        if not words:
+            continue
+        verb = words[0].rsplit("/", 1)[-1]
+        if verb == "cd":
+            current = _yard_follow_cd(words, current)
+            continue
+        if verb != "hc" or "run" not in words[1:]:
+            continue
+        if words[1] != "run" and words[1] in _HC_SUBCOMMANDS:
+            continue          # `hc send <t> run ...`: another subcommand's data
+        # A global option between `hc` and `run` (`hc --json run ...`, which
+        # hc accepts) may take a value, so the words before `run` cannot be
+        # judged: the place is unknown (second security review, 2026-11-18).
+        run_at = words.index("run", 1)
+        unknown = run_at > 1
+        where: str | None = None
+        index = run_at + 1
+        while index < len(words):
+            word = words[index]
+            if word == "--":
+                index += 1
+                break
+            if not word.startswith("-"):
+                break
+            name = word.split("=", 1)[0]
+            if name not in _HC_RUN_VALUE_OPTIONS and name not in _HC_RUN_FLAG_OPTIONS:
+                unknown = True
+            if name == "--cwd":
+                where = word.split("=", 1)[1] if "=" in word else (
+                    words[index + 1] if index + 1 < len(words) else "")
+            if name in _HC_RUN_VALUE_OPTIONS and "=" not in word:
+                index += 1
+            index += 1
+        argv = words[index:]
+        if not any(_HC_AGENT_RE.search(word) for word in argv):
+            continue
+        marked = _hc_argv_exports_marker(argv)
+        # A `--cwd` the shell would still expand (`~`, `$`, a backtick) is read
+        # unexpanded here, so it names no place this guard can judge.
+        if where and any(mark in where for mark in "~$`"):
+            unknown = True
+        if unknown or any(_HC_CD_RE.search(word) for word in argv):
+            runs.append((None, marked))
+            continue
+        path = Path(where) if where else current
+        if not path.is_absolute():
+            path = current / path
+        with contextlib.suppress(OSError):
+            path = path.resolve()
+        runs.append((path, marked))
+    return runs
 
 
 def _yard_agent_start_panes(command: str) -> list[str | None]:
@@ -8103,6 +9145,44 @@ def check_yard_agent_start_guard(payload: dict) -> dict | None:
                 f"it, and a launch line the bootstrap sends afterwards would "
                 f"reach the live agent as a prompt.\n\n{remedy}"
             )
+
+    runs = _yard_hc_runs(command, Path(payload.get("cwd") or WORKSPACE))
+    if not any(not marked for _where, marked in runs):
+        return None
+    try:
+        guarded = _yard_guarded_checkouts()
+    except Exception as exc:  # noqa: BLE001 - resolving is what this rests on
+        return _yard_deny(
+            f"YARD agent-start guard: intentional policy block, not an error. "
+            f"`hc run` starts an agent without HEADING_OS_YARD, and the "
+            f"worktrees of this repository could not be enumerated "
+            f"({type(exc).__name__}: {exc}), so whether it lands in a yard "
+            f"cannot be established.\n\nExport the marker in its argv:\n\n"
+            f"  {_YARD_HC_LAUNCH}")
+    for where, marked in runs:
+        if marked:
+            continue
+        if where is None:
+            return _yard_deny(
+                f"YARD agent-start guard: intentional policy block, not an error. "
+                f"This `hc run` starts an agent without HEADING_OS_YARD, and where "
+                f"it runs cannot be established: an option this guard does not "
+                f"know stands before the program, or the program changes directory "
+                f"itself. Name the place with `--cwd` and export the marker:\n\n"
+                f"  {_YARD_HC_LAUNCH}")
+        yard = next((root for root in guarded if _yard_is_under(where, root)), None)
+        if yard is None:
+            continue
+        return _yard_deny(
+            f"YARD agent-start guard: intentional policy block, not an error. "
+            f"This `hc run` starts an agent in a yard:\n\n  {yard}\n\n"
+            f"without HEADING_OS_YARD reaching its environment (as `env "
+            f"HEADING_OS_YARD=1 claude ...`, or an `export HEADING_OS_YARD=1` "
+            f"statement before the agent in a `bash -c` script), so every "
+            f"yard-side guard would be inert in it. Start it as:\n\n"
+            f"  {_YARD_HC_LAUNCH}\n\n"
+            f"Normally nothing needs starting: `scripts/yard.py create` runs "
+            f"the bootstrap, which starts the agent itself at its last step.")
     return None
 
 

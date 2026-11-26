@@ -43,7 +43,6 @@ Truncates to bounded sizes so a very large handoff cannot dominate context.
 """
 
 import json
-import subprocess  # nosec B404 - fixed argv, never shell=True
 import sys
 import time
 from datetime import datetime, timezone
@@ -58,6 +57,9 @@ for _candidate in [_BOOT.parent, *_BOOT.parents]:
         break
 from scripts.utils import checkpoint_paths as CP  # noqa: E402
 from scripts.utils import checkpoint_autonomy as AU  # noqa: E402
+# One writer for the /clear mechanical handoff and `--write` (HOS-387).
+from scripts.utils.handoff_facts import (  # noqa: E402
+    MAX_WRITTEN, files_written_block, git_status)  # noqa: F401 - MAX_WRITTEN is the default the hook relies on
 
 CP.force_utf8()
 
@@ -121,7 +123,6 @@ MAX_INJECT = 9000
 MAX_EXCERPT = 3500
 OPERATOR_MESSAGES = 5
 MAX_MESSAGE_CHARS = 1200
-MAX_WRITTEN = 25
 # `Safe resume` first: the next session reads it before anything else (2026-10-14).
 CORE_SECTIONS = ("Safe resume", "Objective", "Current state", "Next steps")
 
@@ -132,37 +133,6 @@ def _stamp_of(path: Path) -> str:
             timespec="seconds")
     except OSError:
         return "unknown time"
-
-
-def _git_status(project: Path) -> str:
-    try:
-        proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
-            ["git", "status", "--short"], cwd=str(project),
-            capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"(git status unavailable: {exc})"
-    lines = proc.stdout.rstrip().splitlines()
-    if len(lines) > 30:
-        lines = lines[:30] + [f"[... {len(lines) - 30} more line(s)]"]
-    return "\n".join(lines) or "(clean)"
-
-
-def _written(transcript: str | None) -> str:
-    try:
-        from scripts.utils.session_scope import files_written
-    except Exception as exc:  # noqa: BLE001 - an absent fact, not a failure
-        return f"(unavailable: {exc})"
-    paths = files_written(transcript)
-    if paths is None:
-        return "(the transcript could not be read)"
-    live = sorted((p for p in paths if p.exists()),
-                  key=lambda p: -p.stat().st_mtime)
-    if not live:
-        return "(none recorded)"
-    shown = [p.as_posix() for p in live[:MAX_WRITTEN]]
-    if len(live) > MAX_WRITTEN:
-        shown.append(f"[... {len(live) - MAX_WRITTEN} more]")
-    return "\n".join(shown)
 
 
 def _bounded_handoff(path: Path, master: str, limit: int) -> str:
@@ -237,11 +207,11 @@ summary of the work: read the transcript for anything they do not settle.
 
 ## Files that session wrote
 
-{_written(transcript)}
+{files_written_block(transcript)}
 
 ## git status --short
 
-{_git_status(project)}{older}
+{git_status(project)}{older}
 """
 
 
@@ -400,6 +370,7 @@ def _after_clear(payload: dict, project: Path, slug: str,
                 mine["carried_unattended"] = True
     except Exception as exc:  # noqa: BLE001 - the injection still goes out
         print(f"checkpoint-inject: consumed mark not written: {exc}", file=sys.stderr)
+    unattended = AU.unattended_mode(CP.read_json(state_path))
     tasks = _carry_tasks(prev, state_path)
     # The pins stay with the work: the new session inherits them, so its own
     # compactions and handoffs carry them too.
@@ -426,10 +397,7 @@ The session before this /clear, in this same Claude Code process
 
 ---
 
-Your first reply shows where the work resumes and nothing else: the lines
-between BEGIN and END below, verbatim, without the two marker lines. If the
-operator has already asked for something, show them first and then answer.
-Repository state is authoritative.
+{CLEAR_FIRST_REPLY_UNATTENDED if unattended else CLEAR_FIRST_REPLY_ATTENDED}
 BEGIN
 {bottom}
 END
@@ -504,6 +472,21 @@ message.
 BEGIN
 {banner}
 END"""
+
+# Chosen by the same unattended_mode read as _rewake, so the injected context and the rewake reason never disagree (2026-11-21: "nothing else" stopped an unattended session after /second-wind).
+CLEAR_FIRST_REPLY_ATTENDED = """Your first reply shows where the work resumes and nothing else: the lines
+between BEGIN and END below, verbatim, without the two marker lines. If the
+operator has already asked for something, show them first and then answer.
+Repository state is authoritative."""
+
+CLEAR_FIRST_REPLY_UNATTENDED = """Your first reply opens with where the work resumes: the lines
+between BEGIN and END below, verbatim, without the two marker lines.
+Unattended is on, so do not end the turn there: in the same reply, resume
+as the handoff's `## Safe resume` block says when it has one, otherwise
+with the latest unfinished task, and keep working. Anything under Awaiting
+approval still waits for the operator. If the operator has already asked
+for something, show them first and then answer. Repository state is
+authoritative."""
 
 # The same, when unattended is on for the new session (a yard by default, or a
 # switch carried across /clear): the work goes on without the operator.

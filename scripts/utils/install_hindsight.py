@@ -70,6 +70,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from scripts.utils.claude_child import claude_child_env  # noqa: E402
 from scripts.utils.install_herdr_cliproxy import PROXY_BASE_URL, PROXY_KEY_ENV  # noqa: E402
 from scripts.utils.install_commands import bare_home_tools, claude_settings_path, hook_commands, home_tools  # noqa: E402 - HOS-312
 from scripts.utils.install_runner import changed_since_start, runner_env, runner_problem, service_pid  # noqa: E402
@@ -837,9 +838,11 @@ def run_claude(ctx) -> None:
     if registered_bridge(home) != (command, args):
         if registered_bridge(home) != (None, None):
             # Another hindsight-main at user scope: replaced by the engine's bridge.
-            _run(ctx, [claude, "mcp", "remove", "--scope", "user", MCP_NAME], timeout=60)
+            # `claude_child_env({})` is just the no-telemetry switches, laid over _run's environment.
+            _run(ctx, [claude, "mcp", "remove", "--scope", "user", MCP_NAME], timeout=60,
+                 extra_env=claude_child_env({}))
         proc = _run(ctx, [claude, "mcp", "add", "--scope", "user", "--transport", "stdio", MCP_NAME, "--",
-                          command, *args], timeout=60)
+                          command, *args], timeout=60, extra_env=claude_child_env({}))
         if proc.returncode != 0:
             raise HindsightError(f"`claude mcp add {MCP_NAME}` failed: {_why(proc)}")
     version = plugin_version(home)

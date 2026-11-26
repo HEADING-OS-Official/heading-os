@@ -5,9 +5,14 @@ Each component is described declaratively through source adapters. The one hard
 invariant: an `observed` component may not carry an executable `apply` (the
 manager cannot update a component that owns its own updater). Mirrors the
 send_capable -> gated invariant in .claude/rules/tiered-risk.md.
+
+Every component also carries a `telemetry:` entry (`none`, `switch` or
+`unknown`), required here so a new component cannot arrive unverified by
+omission; `update_common.telemetry_verdict` reads it (HOS-412).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +29,7 @@ CURRENT_KINDS = {"shell", "outdated_count", "claude_plugins", "script"}
 COUNT_KINDS = {"outdated_count", "claude_plugins"}
 LATEST_KINDS = {"github_release", "pypi", "npm", "https", "node_lts", "shell",
                 "zero_outdated"}
+TELEMETRY_KINDS = {"none", "switch", "unknown"}
 
 
 class RegistryError(Exception):
@@ -36,6 +42,7 @@ class Component:
     tier: str
     current: dict[str, Any]
     latest: dict[str, Any]
+    telemetry: dict[str, Any]
     display: str = ""
     apply: dict[str, Any] | None = None
     health: dict[str, Any] | None = None
@@ -165,12 +172,39 @@ def load_registry(path: Path) -> list[Component]:
             raise RegistryError(
                 f"component {name!r}: a counting current ({sorted(COUNT_KINDS)}) "
                 "pairs with latest.via zero_outdated, and only with it")
+        tel = body.get("telemetry")
+        if not isinstance(tel, dict):
+            raise RegistryError(
+                f"component {name!r}: missing `telemetry:` mapping (kind none, "
+                f"switch or unknown, with evidence)")
+        # The type first: a list or mapping `kind` is unhashable, and the set
+        # test raised TypeError past every caller catching RegistryError.
+        if not isinstance(tel.get("kind"), str) or tel["kind"] not in TELEMETRY_KINDS:
+            raise RegistryError(
+                f"component {name!r}: telemetry.kind {tel.get('kind')!r} not in "
+                f"{sorted(TELEMETRY_KINDS)}")
+        if not isinstance(tel.get("evidence"), str) or not tel["evidence"].strip():
+            raise RegistryError(f"component {name!r}: telemetry needs a string `evidence`")
+        if tel["kind"] == "switch":
+            if not isinstance(tel.get("probe"), str) or not tel["probe"].strip():
+                raise RegistryError(
+                    f"component {name!r}: a telemetry switch needs a string `probe`")
+            if not isinstance(tel.get("off"), str) or not tel["off"]:
+                raise RegistryError(
+                    f"component {name!r}: a telemetry switch needs a string `off` regex "
+                    f"(quote the key as \"off\": YAML reads a bare off as false)")
+            try:
+                re.compile(tel["off"], re.MULTILINE)
+            except re.error as exc:
+                raise RegistryError(
+                    f"component {name!r}: telemetry.off does not compile: {exc}") from exc
         out.append(
             Component(
                 name=name,
                 tier=tier,
                 current=body["current"],
                 latest=body["latest"],
+                telemetry=tel,
                 display=body.get("display", name),
                 apply=apply_block,
                 health=body.get("health"),

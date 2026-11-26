@@ -36,6 +36,9 @@ const history = atom({ plugin: 'context-bar', key: 'history' } as const, [])
 // undefined while there is no valid pointer: then the band is drawn above the
 // prompt. Never built here (no physical data path, M051).
 let barDir: string | undefined
+// The status line's own row width, from the same pointer (HOS-420): the rows it
+// prints are laid out for it, never for the chat column beside a docked pane.
+let barColumns: number | undefined
 // The session id and rows last written, so an unchanged render writes nothing.
 let lastWritten: string | undefined
 
@@ -54,11 +57,11 @@ const POINTER_EVERY_MS = 5000
 const refreshPointer = async ($: EngineInterface): Promise<void> => {
   const id = await $.session.id()
   const now = Date.now()
-  if (id === pointerFor && barDir !== undefined) return
   if (id === pointerFor && now - pointerReadAt < POINTER_EVERY_MS) return
   pointerFor = id
   pointerReadAt = now
   barDir = undefined
+  barColumns = undefined
   try {
     const home = ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
     if (!home.startsWith('/') || !SESSION_ID.test(id)) return
@@ -69,6 +72,8 @@ const refreshPointer = async ($: EngineInterface): Promise<void> => {
       return
     }
     barDir = dir.replace(/\/+$/, '')
+    const cols = p?.columns
+    if (Number.isInteger(cols) && cols >= 20 && cols <= 1000) barColumns = cols
   } catch (err) {
     // No pointer: the engine's status line does not draw in this session.
     $.ui.log(`context-bar: no pointer: ${String(err)}`, { to: 'debug' })
@@ -244,28 +249,36 @@ export const register: Register = on => {
     await refreshPointer($)
     const isOn = await read($, isBandOn)
     const f = await read($, figures)
+    // Rows for the status line are laid out at its own width when the pointer
+    // gave one (HOS-420); the band above the prompt keeps the chat column.
+    const toBar = barDir !== undefined && barColumns !== undefined
+    const width = toBar && barColumns !== undefined ? barColumns : e.props.bodyColumns
     if (!isOn || f === null) {
-      if (barDir !== undefined) await writeRows($, [], e.props.bodyColumns)
+      if (barDir !== undefined) await writeRows($, [], width)
       return next(e)
     }
     const inner = await next(e)
     if (inner.type !== 'engine') return inner
-    const lines = bandOf({
+    const input = {
       rows: usedOf(f),
       window: (await read($, contextWindow)) ?? 0,
       total: (await read($, contextTokens)) ?? undefined,
       thresholds: await thresholdsNow($),
       autoCompact: await autoCompactNow($, f),
       history: await read($, history),
-      columns: e.props.bodyColumns,
-    })
+    }
+    let lines = bandOf({ ...input, columns: width })
     if (lines === undefined) {
-      if (barDir !== undefined) await writeRows($, [], e.props.bodyColumns)
+      if (barDir !== undefined) await writeRows($, [], width)
       return inner
     }
     // No theme API turns a key into RGB (2.1.312 types), so the colours stay
     // theme keys and the status line maps them.
-    if (barDir !== undefined && (await writeRows($, lines, e.props.bodyColumns))) return inner
+    if (barDir !== undefined && (await writeRows($, lines, width))) return inner
+    if (toBar) {
+      lines = bandOf({ ...input, columns: e.props.bodyColumns })
+      if (lines === undefined) return inner
+    }
     const { Box, Text } = $.ui.resolve(e)
     const run = (r: Run, i: number) => (
       <Text key={`r${i}`} color={r.color} bold={r.bold} dimColor={r.dim}>

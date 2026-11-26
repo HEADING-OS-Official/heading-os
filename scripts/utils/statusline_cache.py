@@ -231,13 +231,25 @@ def _lific_time(stamp) -> str | None:
 
 
 def yards(board, repo_root: Path, deadline: float) -> tuple[int, list[dict]]:
-    """The running yards of this repository and the ones that need the operator."""
+    """The running yards of this repository and the ones that need the operator.
+
+    The TUI listing first. When it fails (no TUI server) under herdr-core, the
+    yards come from the herdr-core terminals instead (HOS-401, MEASURED
+    2026-11-20: with `herdr` on PATH and no TUI server, `herdr workspace list`
+    failed and the status line showed no yard at all on a herdr-core machine).
+    """
     from scripts.utils import herdr_agent as HA
 
-    payload = HA._run(["workspace", "list"], HA.LIST_TIMEOUT)
+    try:
+        payload = HA._run(["workspace", "list"], HA.LIST_TIMEOUT)
+        agents = HA.agents()
+    except HA.HerdrUnavailable:
+        core = board.core_yard_records(repo_root)
+        if core is None:
+            raise
+        return _core_yards(board, core, deadline)
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     workspaces = result.get("workspaces") or []
-    agents = HA.agents()
     status_by_ws: dict[str, list[str]] = {}
     for agent in agents:
         status_by_ws.setdefault(str(agent.get("workspace_id")), []).append(
@@ -261,30 +273,63 @@ def yards(board, repo_root: Path, deadline: float) -> tuple[int, list[dict]]:
         if name not in status_by_ws:
             continue
         total += 1
-        _check(deadline)
-        checkout_path = Path(str(tree.get("checkout_path")))
-        branch = ""
-        if trusted_git_dir(checkout_path):
-            branch = (_git(checkout_path, "branch", "--show-current") or "").strip()
-        ident = _first_task(branch)
-        title, reason, since = "", None, None
-        if "blocked" in status_by_ws[name]:
-            reason = "blocked"
-        if ident:
-            _check(deadline)
-            try:
-                title = str(_issue(board, ident).get("title") or "")
-                newest = board.newest_comment(board._all_comments(ident))
-                if reason is None and newest and board.waiting_on_helm(
-                        str(newest.get("content") or "")) == "escalate":
-                    reason = "escalated"
-                    since = _lific_time(newest.get("created_at"))
-            except Exception as exc:  # noqa: BLE001 - one yard's lific read never drops the rest
-                _log(f"lific read for {ident}: {exc}")
-        if reason:
-            waiting.append({"workspace": name, "issue": ident, "title": title,
-                            "reason": reason, "since": since})
+        row = _yard_row(board, name, status_by_ws[name], Path(str(tree.get("checkout_path"))), deadline)
+        if row:
+            waiting.append(row)
     return total, waiting
+
+
+def _core_yards(board, by_checkout: dict, deadline: float) -> tuple[int, list[dict]]:
+    """`yards()` from `board.core_yard_records()`: this repository's yard
+    checkouts only, already filtered there; statuses from their records."""
+    total = 0
+    waiting: list[dict] = []
+    for checkout, records in by_checkout.items():
+        _check(deadline)
+        total += 1
+        statuses = [str(r.get("agent_status") or "") for r in records]
+        row = _yard_row(board, checkout.name, statuses, checkout, deadline)
+        if row:
+            waiting.append(row)
+    return total, waiting
+
+
+def _yard_row(board, name: str, statuses: list[str], checkout_path: Path,
+              deadline: float) -> dict | None:
+    """The waiting row of one yard, or None: blocked, then escalated, then answer."""
+    _check(deadline)
+    branch = ""
+    if trusted_git_dir(checkout_path):
+        branch = (_git(checkout_path, "branch", "--show-current") or "").strip()
+    ident = _first_task(branch)
+    title, reason, since = "", None, None
+    if "blocked" in statuses:
+        reason = "blocked"
+    if ident:
+        _check(deadline)
+        try:
+            title = str(_issue(board, ident).get("title") or "")
+            comments = board._all_comments(ident)
+            newest = board.newest_comment(comments)
+            state = board.waiting_on_helm(str(newest.get("content") or "")) if newest else None
+            if reason is None and state == "escalate":
+                reason = "escalated"
+                since = _lific_time(newest.get("created_at"))
+            # HOS-401: a design or question after the newest brief, the
+            # yard idle, waits for HELM's answer. The yard's own statuses
+            # stand in for the yard-name lookup.
+            idle = all(s in board.YARD_IDLE for s in statuses)
+            found = (board.answer_state(comments, lambda _yard: idle)
+                     if reason is None and state is None else None)
+            if found is not None:
+                reason = "answer"
+                since = _lific_time(found["comment"].get("created_at"))
+        except Exception as exc:  # noqa: BLE001 - one yard's lific read never drops the rest
+            _log(f"lific read for {ident}: {exc}")
+    if reason:
+        return {"workspace": name, "issue": ident, "title": title,
+                "reason": reason, "since": since}
+    return None
 
 
 def _git_path(path: Path, flag: str) -> str:

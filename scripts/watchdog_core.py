@@ -9,7 +9,17 @@ This is the importable core (snake_case), wrapped by the
 ``scripts/daemon-watchdog.py`` CLI, its only caller, which the
 ``daemon-watchdog.timer`` systemd-user timer runs every two minutes.
 
-Console-first: it only reads files (heartbeats + a tiny dedup state file).
+Since HOS-397 the same pass also watches the user manager, read-only: every
+enabled user service that is not ``oneshot`` must be active/running, and every
+enabled user timer must have fired within twice its shortest recurring period
+plus 30 minutes. ``daemon.watchdog.ignore_units`` drops named services.
+Neither is suppressed by a missing heartbeat config; both share the dedup
+state file under the keys ``service:<unit>``, ``timer:<unit>``,
+``systemd:read`` and ``_meta``. Its own death is the one thing this timer
+cannot see; ``_meta.last_pass_ts`` is the hook for a check from outside.
+
+Console-first: it only reads files (heartbeats + a tiny dedup state file) and
+the read-only systemd queries named above.
 
 CEO-only: alerts route to the CEO's Telegram via ``scripts/utils/alert.py``
 (CEO-only during the spine prove-out).
@@ -18,13 +28,17 @@ Usage::
 
     from scripts import watchdog_core
     report = watchdog_core.check_once(workspace_root)
-    # report == {"verdict": "ok"|"down", "daemons": [...], "alerts_fired": N, ...}
+    # report == {"verdict": "ok"|"down", "daemons": [...], "services": [...],
+    #            "timers": [...], "alerts_fired": N, ...}
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -328,6 +342,379 @@ def _save_state(state_path: Path | None, state: dict) -> bool:
 
 
 # ============================================================
+# Services and timers (HOS-397)
+# ============================================================
+#
+# Read-only toward systemd: `systemctl --user show`, `list-unit-files` and
+# `systemd-analyze calendar`, nothing that starts, stops or reloads a unit.
+# Every call runs with LC_ALL=C TZ=UTC so timestamps read
+# `Mon 2026-11-16 07:43:05 UTC` (MEASURED 2026-11-20; `--timestamp=unix` left
+# `LastTriggerUSec` as local text, so it is not used).
+
+SYSTEMD_TIMEOUT_S = 10
+BOOT_GRACE_S = 30 * 60
+RESUME_GAP_S = 10 * 60
+RESUME_GRACE_S = 30 * 60
+TIMER_SLACK_S = 30 * 60
+CALENDAR_ITERATIONS = 8
+_SYSTEMD_TS_FMT = "%a %Y-%m-%d %H:%M:%S UTC"
+_ELAPSE_RE = re.compile(r"^\s*(Next elapse|Iteration #\d+): (.+ UTC)$", re.MULTILINE)
+_CAL_GROUP_RE = re.compile(r"\{ OnCalendar=(.*?) ; next_elapse=[^}]*\}")
+_MONO_GROUP_RE = re.compile(r"\{ (\w+)=(.*?) ; next_elapse=[^}]*\}")
+_SPAN_TOKEN_RE = re.compile(r"^(\d+(?:\.\d+)?)([A-Za-z]+)$")
+_SPAN_UNITS = {
+    "us": 1e-6, "ms": 1e-3, "s": 1.0, "min": 60.0, "h": 3600.0,
+    "d": 86400.0, "w": 7 * 86400.0, "M": 30.44 * 86400.0,
+    "month": 30.44 * 86400.0, "y": 365.25 * 86400.0,
+}
+# Recurring monotonic triggers; every other kind (OnBootUSec, OnStartupUSec,
+# OnActiveUSec) fires once and does not define a period.
+_RECURRING_MONO = ("OnUnitActiveUSec", "OnUnitInactiveUSec")
+_SERVICE_PROPS = ("Type", "LoadState", "ActiveState", "SubState", "NRestarts")
+_TIMER_PROPS = ("LoadState", "TimersCalendar", "TimersMonotonic",
+                "LastTriggerUSec", "ActiveEnterTimestamp")
+
+
+class SystemdUnreadable(Exception):
+    """A systemctl or systemd-analyze call exited non-zero or timed out."""
+
+    def __init__(self, command: str, error: str):
+        super().__init__(f"{command}: {error}")
+        self.command = command
+        self.error = error
+
+
+class SystemdReader:
+    """The live, read-only reader of the user manager."""
+
+    def _run(self, args: list[str]) -> str:
+        command = " ".join(args)
+        env = dict(os.environ, LC_ALL="C", TZ="UTC")
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, env=env,
+                                  timeout=SYSTEMD_TIMEOUT_S, check=False)
+        except subprocess.TimeoutExpired:
+            raise SystemdUnreadable(command, f"timed out after {SYSTEMD_TIMEOUT_S}s") from None
+        except OSError as exc:
+            raise SystemdUnreadable(command, str(exc)) from exc
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            raise SystemdUnreadable(command, f"exit {proc.returncode}: "
+                                    f"{err[0] if err else 'no output'}")
+        return proc.stdout
+
+    def enabled(self, kind: str) -> list[str]:
+        out = self._run(["systemctl", "--user", "list-unit-files",
+                         f"--type={kind}", "--state=enabled", "--no-legend"])
+        return [line.split()[0] for line in out.splitlines() if line.strip()]
+
+    def show(self, unit: str, props: tuple[str, ...]) -> dict[str, str]:
+        """``show -p``; an empty ``unit`` asks the manager itself. A property
+        printed once per trigger (TimersCalendar, TimersMonotonic) is joined."""
+        args = ["systemctl", "--user", "show", "-p", ",".join(props)]
+        if unit:
+            args.append(unit)
+        out: dict[str, str] = {}
+        for line in self._run(args).splitlines():
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            out[key] = f"{out[key]} {value}" if key in out else value
+        return out
+
+    def calendar(self, expr: str, n: int) -> list[datetime]:
+        out = self._run(["systemd-analyze", "calendar", f"--iterations={n}", expr])
+        return [d for d in (parse_systemd_ts(m.group(2)) for m in _ELAPSE_RE.finditer(out))
+                if d is not None]
+
+
+def parse_systemd_ts(value: str | None) -> datetime | None:
+    """A ``LC_ALL=C TZ=UTC`` systemd timestamp, or None for never.
+
+    Raises ValueError on a non-empty value in another shape, so a format drift
+    is reported rather than read as "never fired".
+    """
+    value = (value or "").strip()
+    if not value or value == "n/a":
+        return None
+    return datetime.strptime(value, _SYSTEMD_TS_FMT).replace(tzinfo=timezone.utc)
+
+
+def parse_span(text: str) -> float:
+    """A systemd time span (``2min``, ``1d 12h``) in seconds.
+
+    Raises ValueError carrying the token when a unit is not known.
+    """
+    total = 0.0
+    tokens = text.split()
+    if not tokens:
+        raise ValueError(text)
+    for token in tokens:
+        m = _SPAN_TOKEN_RE.match(token)
+        if not m or m.group(2) not in _SPAN_UNITS:
+            raise ValueError(token)
+        total += float(m.group(1)) * _SPAN_UNITS[m.group(2)]
+    return total
+
+
+def parse_timer_triggers(cal: str, mono: str) -> tuple[list[str], list[tuple[str, str]]]:
+    """The ``OnCalendar`` expressions and the ``(kind, span)`` monotonic pairs."""
+    return (_CAL_GROUP_RE.findall(cal or ""), _MONO_GROUP_RE.findall(mono or ""))
+
+
+def timer_period(calendars: dict[str, list[datetime] | str], cal_exprs: list[str],
+                 mono: list[tuple[str, str]]) -> tuple[float | None, str]:
+    """The smallest recurring trigger period, or ``(None, why)`` when none.
+
+    ``calendars`` maps an expression to its elapses, or to an error string
+    when ``systemd-analyze calendar`` failed for it. A calendar period is the
+    largest gap between consecutive elapses, so a weekly timer reads 7 d and
+    a weekdays-only one its weekend gap.
+    """
+    periods: list[tuple[float, str]] = []
+    for expr in cal_exprs:
+        elapses = calendars.get(expr)
+        if isinstance(elapses, str):
+            return None, f"calendar {expr!r}: {elapses}"
+        if not elapses or len(elapses) < 2:
+            continue
+        gap = max((b - a).total_seconds() for a, b in zip(elapses, elapses[1:], strict=False))
+        periods.append((gap, "OnCalendar"))
+    for kind, span in mono:
+        if kind not in _RECURRING_MONO:
+            continue
+        try:
+            periods.append((parse_span(span), kind))
+        except ValueError as exc:
+            return None, f"{kind}: unknown span token {exc}"
+    if not periods:
+        return None, "no recurring trigger"
+    period, kind = min(periods)
+    return period, f"period {format_age(period)} ({kind})"
+
+
+def _ignored_units(cfg: dict) -> set[str]:
+    try:
+        raw = cfg.get("daemon", {}).get("watchdog", {}).get("ignore_units")
+    except AttributeError as exc:
+        logger.warning("watchdog: daemon.watchdog is malformed (%s); no unit ignored", exc)
+        return set()
+    if not isinstance(raw, list):
+        return set()
+    names = {str(x).strip() for x in raw if isinstance(x, str) and x.strip()}
+    return names | {f"{n}.service" for n in names if "." not in n}
+
+
+def _read_systemd(reader: SystemdReader, cfg: dict) -> dict:
+    """Every systemd read of one pass, before any classification.
+
+    Raises SystemdUnreadable on the first failed systemctl call; a failed
+    ``systemd-analyze calendar`` is kept as that expression's error instead.
+    """
+    ignored = _ignored_units(cfg)
+    manager = reader.show("", ("UserspaceTimestamp",))
+    services = {}
+    for unit in reader.enabled("service"):
+        if "@." in unit or unit in ignored:
+            continue  # a template has no runtime state; an ignored unit is the operator's word
+        props = reader.show(unit, _SERVICE_PROPS)
+        if props.get("Type") == "oneshot":
+            continue
+        services[unit] = props
+    timers = {}
+    calendars: dict[str, list[datetime] | str] = {}
+    for unit in reader.enabled("timer"):
+        if "@." in unit:
+            continue
+        props = reader.show(unit, _TIMER_PROPS)
+        timers[unit] = props
+        for expr in parse_timer_triggers(props.get("TimersCalendar", ""), "")[0]:
+            if expr in calendars:
+                continue
+            try:
+                calendars[expr] = reader.calendar(expr, CALENDAR_ITERATIONS)
+            except SystemdUnreadable as exc:
+                calendars[expr] = exc.error
+    return {"manager": manager, "services": services, "timers": timers,
+            "calendars": calendars}
+
+
+class _Counters:
+    def __init__(self) -> None:
+        self.fired = 0
+        self.undelivered = 0
+
+
+def _dedup(state: dict, key: str, bad: bool, summary: str, detail: str,
+           recovery: str, now: datetime, realert_window: timedelta,
+           alert_fn, counters: _Counters) -> bool:
+    """The heartbeat path's dedup model for one state key; True when an alert fired."""
+    prev = state.get(key) if isinstance(state.get(key), dict) else {}
+    if bad:
+        last_alert = parse_iso(prev.get("last_alert_ts"))
+        if (prev.get("state") != "down" or last_alert is None
+                or (now - last_alert) >= realert_window):
+            delivered = _delivered(alert_fn("critical", summary, detail, source="watchdog"))
+            counters.fired += 1
+            if not delivered:
+                counters.undelivered += 1
+            state[key] = {"state": "down", "last_alert_ts": now.isoformat()}
+            return True
+        state[key] = {"state": "down", "last_alert_ts": prev.get("last_alert_ts")}
+        return False
+    fired = False
+    if prev.get("state") == "down":
+        # `info` goes to the log only, by design; not counted as undelivered.
+        alert_fn("info", recovery, f"recovered at {now.isoformat()}", source="watchdog")
+        counters.fired += 1
+        fired = True
+    state[key] = {"state": "ok"}
+    return fired
+
+
+def _classify_services(read: dict, state: dict, now: datetime, in_boot_grace: bool,
+                       realert_window: timedelta, alert_fn, counters: _Counters) -> list[dict]:
+    rows = []
+    for unit, props in sorted(read["services"].items()):
+        active, sub = props.get("ActiveState", ""), props.get("SubState", "")
+        try:
+            restarts: int | None = int(props.get("NRestarts", ""))
+        except ValueError:
+            restarts = None
+        detail = f"{active or '?'}/{sub or '?'}"
+        if props.get("LoadState") not in (None, "loaded"):
+            detail = f"{detail}, load {props.get('LoadState')}"
+        down = not (active == "active" and sub == "running")
+        key = f"service:{unit}"
+        fired = False
+        if down and in_boot_grace:
+            status = "grace"
+            state.setdefault(key, {"state": "grace"})  # listed if systemd turns unreadable
+        else:
+            status = "down" if down else "ok"
+            fired = _dedup(state, key, down, f"service {unit} down ({detail})",
+                           f"restarts {restarts}; watchdog at {now.isoformat()}",
+                           f"service {unit} running again", now, realert_window,
+                           alert_fn, counters)
+        rows.append({"unit": unit, "status": status, "restarts": restarts,
+                     "detail": detail, "fired": fired})
+    return rows
+
+
+def _classify_timers(read: dict, state: dict, now: datetime, in_grace: bool,
+                     realert_window: timedelta, alert_fn, counters: _Counters) -> list[dict]:
+    rows = []
+    for unit, props in sorted(read["timers"].items()):
+        row = {"unit": unit, "status": "not-checked", "last_trigger": None,
+               "age_s": None, "threshold_s": None, "detail": "", "fired": False}
+        rows.append(row)
+        key = f"timer:{unit}"
+        # Every timer keeps a key, so an unreadable pass still lists it.
+        state.setdefault(key, {"state": "ok"})
+        if props.get("LoadState") not in (None, "loaded"):
+            row["detail"] = f"load {props.get('LoadState')}"
+            continue
+        cal_exprs, mono = parse_timer_triggers(props.get("TimersCalendar", ""),
+                                               props.get("TimersMonotonic", ""))
+        period, why = timer_period(read["calendars"], cal_exprs, mono)
+        row["detail"] = why
+        if period is None:
+            continue
+        threshold = int(2 * period + TIMER_SLACK_S)
+        row["threshold_s"] = threshold
+        try:
+            last = parse_systemd_ts(props.get("LastTriggerUSec"))
+            since = last or parse_systemd_ts(props.get("ActiveEnterTimestamp"))
+        except ValueError as exc:
+            row["detail"] = f"{why}; unparseable timestamp: {exc}"
+            continue
+        row["last_trigger"] = last.isoformat() if last else None
+        if since is None:
+            # Enabled, never fired and never activated: it is not running.
+            stale, age = True, None
+            row["detail"] = f"{why}; never fired, never activated"
+        else:
+            age = (now - since).total_seconds()
+            stale = age > threshold
+            row["age_s"] = int(age)
+            if last is None:
+                row["detail"] = f"{why}; never fired, measured from activation"
+        if stale and in_grace:
+            row["status"] = "grace"
+            continue
+        row["status"] = "stale" if stale else "ok"
+        when = f"last fired {format_age(age)} ago" if last and age is not None else "never fired"
+        row["fired"] = _dedup(state, key, stale, f"timer {unit} stale, {when}",
+                              f"threshold {threshold}s; watchdog at {now.isoformat()}",
+                              f"timer {unit} firing again", now, realert_window,
+                              alert_fn, counters)
+    return rows
+
+
+def _resume_since(meta: dict, now: datetime) -> datetime | None:
+    """The resume-grace start after this pass, or None outside a resume grace.
+
+    A pass more than RESUME_GAP_S after the previous one means the machine
+    slept; timers then get RESUME_GRACE_S to catch up. A first pass (no meta)
+    sets none.
+    """
+    last_pass = parse_iso(meta.get("last_pass_ts"))
+    since = parse_iso(meta.get("resume_since"))
+    if last_pass is not None and (now - last_pass).total_seconds() > RESUME_GAP_S:
+        since = now
+    if since is not None and (now - since).total_seconds() >= RESUME_GRACE_S:
+        since = None
+    return since
+
+
+def _check_systemd(reader: SystemdReader, cfg: dict, state: dict, now: datetime,
+                   in_resume: bool, realert_window: timedelta, alert_fn,
+                   counters: _Counters) -> tuple[list[dict], list[dict]]:
+    """Services and timers for one pass: ``(service_rows, timer_rows)``."""
+    try:
+        read = _read_systemd(reader, cfg)
+    except SystemdUnreadable as exc:
+        prev_keys = sorted(k for k in state if k.startswith(("service:", "timer:")))
+        _dedup(state, "systemd:read", True,
+               f"watchdog cannot read systemd: {exc.command} {exc.error}",
+               f"watchdog at {now.isoformat()}", "watchdog reads systemd again",
+               now, realert_window, alert_fn, counters)
+        services, timers = [], []
+        for k in prev_keys:
+            kind, unit = k.split(":", 1)
+            if kind == "service":
+                services.append({"unit": unit, "status": "unknown", "restarts": None,
+                                 "detail": "systemd unreadable", "fired": False})
+            else:
+                timers.append({"unit": unit, "status": "unknown", "last_trigger": None,
+                               "age_s": None, "threshold_s": None,
+                               "detail": "systemd unreadable", "fired": False})
+        if not prev_keys:
+            services.append({"unit": "systemd", "status": "unknown", "restarts": None,
+                             "detail": f"{exc.command}: {exc.error}", "fired": False})
+        return services, timers
+    _dedup(state, "systemd:read", False, "", "", "watchdog reads systemd again",
+           now, realert_window, alert_fn, counters)
+    try:
+        boot = parse_systemd_ts(read["manager"].get("UserspaceTimestamp"))
+    except ValueError as exc:
+        logger.warning("watchdog: UserspaceTimestamp unparseable (%s); no boot grace", exc)
+        boot = None
+    in_boot = boot is not None and (now - boot).total_seconds() < BOOT_GRACE_S
+    services = _classify_services(read, state, now, in_boot, realert_window,
+                                  alert_fn, counters)
+    timers = _classify_timers(read, state, now, in_boot or in_resume, realert_window,
+                              alert_fn, counters)
+    # Dedup memory of a unit no longer enabled would read `unknown` on the
+    # next unreadable pass; it is this module's own cache, not a record.
+    current = ({f"service:{u}" for u in read["services"]}
+               | {f"timer:{u}" for u in read["timers"]})
+    for k in [k for k in state if k.startswith(("service:", "timer:")) and k not in current]:
+        del state[k]
+    return services, timers
+
+
+# ============================================================
 # One pass
 # ============================================================
 
@@ -365,6 +752,7 @@ def check_once(
     cadence: dict[str, tuple[int, int]] | None = None,
     realert_min: int | None = None,
     threshold_override: float | None = None,
+    systemd: SystemdReader | None = None,
 ) -> dict:
     """Run one watchdog pass: classify each configured daemon, fire deduped
     alerts on a missed beat, persist dedup state, and return a report.
@@ -374,8 +762,14 @@ def check_once(
     - while down, it re-alerts only after ``realert_min`` minutes;
     - a daemon going down -> ok fires one ``info`` "resumed" alert.
 
+    Then every enabled user service that is not oneshot (``down`` unless
+    active/running) and every enabled user timer (``stale`` past twice its
+    period plus 30 min), with a boot grace and, for timers, a resume grace
+    (HOS-397). ``threshold_override`` applies to heartbeat rows only.
+
     Args are injectable so tests drive the clock, the alert sink, the state
-    file, and the cadence without touching the live workspace or Telegram.
+    file, the cadence and the systemd reader (``systemd``; None reads the live
+    user manager) without touching the live workspace or Telegram.
     """
     now = now or _now()
     if alert_fn is None:
@@ -390,8 +784,9 @@ def check_once(
             logger.warning("watchdog: no dedup state on this tree (%s); every "
                            "pass alerts afresh", exc)
             state_path = None
-    # One config read per pass, shared by the helpers below.
-    cfg = _read_config(workspace_root) if cadence is None or realert_min is None else {}
+    # One config read per pass, shared by the helpers below, unconditional so
+    # `ignore_units` applies when a caller injects the cadence (HOS-397).
+    cfg = _read_config(workspace_root)
     if cadence is None:
         cadence = load_cadence(workspace_root, cfg)
     if realert_min is None:
@@ -504,6 +899,25 @@ def check_once(
             "fired": fired,
         })
 
+    # Services and timers (HOS-397). The meta is read before this pass writes it.
+    meta = state.get("_meta") if isinstance(state.get("_meta"), dict) else {}
+    resume_since = _resume_since(meta, now)
+    services: list[dict] = []
+    timers: list[dict] = []
+    systemd_note = None
+    if systemd is None and not sys.platform.startswith("linux"):
+        systemd_note = f"services and timers: not checked on {sys.platform}"
+    else:
+        counters = _Counters()
+        services, timers = _check_systemd(
+            systemd or SystemdReader(), cfg, state, now, resume_since is not None,
+            realert_window, alert_fn, counters)
+        alerts_fired += counters.fired
+        alerts_undelivered += counters.undelivered
+    state["_meta"] = {"last_pass_ts": now.isoformat()}
+    if resume_since is not None:
+        state["_meta"]["resume_since"] = resume_since.isoformat()
+
     if not _save_state(state_path, state):
         # HOS-339: `starting` rests on the saved state; a failed save would
         # restart its clock every pass, so each such daemon alerts as missing.
@@ -519,11 +933,18 @@ def check_once(
             alerts_fired += 1
             if not delivered:
                 alerts_undelivered += 1
-    verdict = "down" if any(d["status"] not in ("ok", "starting") for d in daemons) else "ok"
-    return {
+    healthy = ("ok", "starting", "grace", "not-checked")
+    rows = daemons + services + timers
+    verdict = "down" if any(r["status"] not in healthy for r in rows) else "ok"
+    report = {
         "verdict": verdict,
         "checked_at": now.isoformat(),
         "alerts_fired": alerts_fired,
         "alerts_undelivered": alerts_undelivered,
         "daemons": daemons,
+        "services": services,
+        "timers": timers,
     }
+    if systemd_note:
+        report["systemd_note"] = systemd_note
+    return report

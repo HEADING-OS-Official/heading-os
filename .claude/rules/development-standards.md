@@ -267,6 +267,8 @@ A test that is written verifies **behaviour through the public interface, not im
 
 Greppable for good (`git log --grep 'Fix-Note:'`), and it costs a sentence rather than four hundred lines of pytest. Operator decision 2026-09-21: **"Knowledge is not lost!"** *Held by `scripts/check-fix-note.py` at the `commit-msg` stage, which fires on a `fix:` or `emergency:` subject touching `scripts/` or `.claude/hooks/` with no test function added. It reads the subject line, so a fix labelled `chore:` is not asked for a note; that limit is stated in the script's own docstring rather than left to be discovered.*
 
+**One exception path, and only one.** A test the operator named is briefed as `Tests: exception HOS-N, <file>`, and `scripts/herdr-brief.py` accepts it only when that exact pair is listed in `config/test-exceptions.yaml`, its only source, where only the operator adds an entry; an unlisted one is refused. *No gate holds who adds an entry; HELM reviews the diff of config/test-exceptions.yaml at merge.*
+
 **And the ceiling, because an inverted default alone holds only until the first night somebody decides their case is special.** `config/test-budget.json` carries three numbers, on test files, test functions and lines of test code. Each may only fall, automatically and for free; a RAISE is refused unless the commit message declares it. *Held by `scripts/check-test-budget.py` (pre-commit) and `scripts/check-test-budget-raise.py` (commit-msg).* Three dimensions and not one, because a files-only cap turns new files into new functions and a files-and-functions cap turns them into functions that grow.
 
 ### Phase 6 -- Cleanup and post-mortem

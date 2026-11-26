@@ -1,0 +1,13 @@
+# The tests the operator named as exceptions to rule M050, which otherwise
+# admits a test only for failure A or failure B.
+#
+# Read by scripts/herdr-brief.py: a brief whose line reads
+# `Tests: exception HOS-N, <file>` is sent only when that exact (issue, file)
+# pair is listed here. Each entry names one test file. Only the operator adds an
+# entry; no gate holds that, and HELM reviews the diff of this file at merge.
+exceptions:
+  - issue: HOS-414
+    file: tests/test_lot_map_station_rules_agree.py
+    decided: 2026-11-23
+    by: operator
+    why: "The operator approved option (a) for HOS-414 item 2, a commit gate checking that scripts/lot-map.py and the lot-map mod agree on station rules, plus one test of that gate; his words: \"let's do what you recommend.\""

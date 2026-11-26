@@ -152,7 +152,11 @@ def call(model: str, prompt: str, *, max_tokens: int, timeout: float) -> str:
         return call_model(model, prompt, temperature=0.0, max_tokens=max_tokens, timeout=timeout)
     from scripts.utils.data_path import data_write_dir
 
-    env = {k: v for k, v in os.environ.items() if k not in CHILD_ENV_DROP}
+    from scripts.utils.claude_child import claude_child_env
+
+    # `--setting-sources project` keeps user settings, and the no-telemetry
+    # switches in them, away from the child: the helper sets them (HOS-410).
+    env = claude_child_env(drop=CHILD_ENV_DROP)
     argv = ["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", "1",
             "--tools", "", "--strict-mcp-config", "--setting-sources", "project", "--effort", CLAUDE_EFFORT,
             "--settings", json.dumps({"disableAllHooks": True})]

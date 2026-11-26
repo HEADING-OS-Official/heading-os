@@ -298,6 +298,12 @@ def _resolve_brand_assets(workspace_root: Path) -> dict:
         "LOGO_BLUE": logo("logo_primary"),
         "LOGO_WHITE": logo("logo_on_dark"),
         "LOGO_BLACK": logo("logo_on_light"),
+        # The wordmark images of the one product the brand manifest names under
+        # `wordmark_product` (spelled BASE.SUFFIX), for a design system that
+        # forbids setting that wordmark in type. All three keys are optional.
+        "WORDMARK_WHITE": logo("wordmark_on_dark") if "wordmark_on_dark" in manifest else "",
+        "WORDMARK_BLACK": logo("wordmark_on_light") if "wordmark_on_light" in manifest else "",
+        "WORDMARK_PRODUCT": manifest.get("wordmark_product", ""),
         # TTF (not WOFF2) so Chromium embeds the fonts in PDF as CIDFont Type 2
         # (TrueType subset with hinting) rather than as Type 3 outlines. Type 3
         # rendering thickens small solid glyphs — periods, commas, the middle
@@ -407,6 +413,20 @@ def render_html(doctype: str, data: dict, workspace_root: Path) -> str:
     template = template.replace("{{LOGO_BLUE}}", brand_assets["LOGO_BLUE"])
     template = template.replace("{{LOGO_WHITE}}", brand_assets["LOGO_WHITE"])
     template = template.replace("{{LOGO_BLACK}}", brand_assets["LOGO_BLACK"])
+    template = template.replace("{{WORDMARK_WHITE}}", brand_assets["WORDMARK_WHITE"])
+    template = template.replace("{{WORDMARK_BLACK}}", brand_assets["WORDMARK_BLACK"])
+
+    # The product the brand manifest names under `wordmark_product` takes its
+    # wordmark image, but only when both images resolved: a missing key or file
+    # leaves "" and would render an empty image, so that product keeps the
+    # typed name like any other. A copy, so the caller's dict is never changed.
+    data = dict(data)
+    product = f"{data.get('PRODUCT_BASE', '')}.{data.get('PRODUCT_SUFFIX', '')}"
+    if (brand_assets["WORDMARK_PRODUCT"] and product == brand_assets["WORDMARK_PRODUCT"]
+            and brand_assets["WORDMARK_WHITE"] and brand_assets["WORDMARK_BLACK"]):
+        data["HAS_WORDMARK"] = "1"
+    else:
+        data["NO_WORDMARK"] = "1"
 
     # Expand list/section blocks next (they may contain scalar vars).
     template = _render_sections(template, data)

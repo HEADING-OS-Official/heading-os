@@ -4,7 +4,7 @@
 Thin orchestrator (no LLM, no state write of its own). On each fire it:
   1. runs `ops-radar.py heal` (Tier-A: restart a declared Ollama, otherwise
      report which model server to start and where; rebuild a stale index),
-  2. runs `ops-radar.py --quiet` (exception-only; one line of signal
+  2. runs `ops-radar.py --quiet --refresh` (exception-only; one line of signal
      LABELS and COUNTS, never operational content),
   3. sends that line to the CEO's Telegram alert channel ONLY when non-empty.
 
@@ -85,7 +85,7 @@ def main() -> int:
     #    wire safe, not the word "counts": see the NEVER clause in
     #    `.claude/skills/radar/SKILL.md`.
     try:
-        proc = subprocess.run([str(venv_python()), str(radar), "--quiet"],
+        proc = subprocess.run([str(venv_python()), str(radar), "--quiet", "--refresh"],
                               cwd=str(root), capture_output=True, text=True, timeout=QUIET_TIMEOUT)
     # A check that never finished is not a quiet radar either, and this branch
     # said "exiting 0" one line above the branch below that exists to refuse

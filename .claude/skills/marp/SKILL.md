@@ -53,7 +53,7 @@ Patterns to avoid in every deck, named in that rule's presentation row:
 - Purple-to-blue or purple-to-pink gradient backgrounds.
 - A three-card feature row as the default slide shape.
 - Generic titles such as "Our solution" or "Why us". A title states the slide's claim.
-- Title Case headings. Use sentence case.
+- Title Case headings, except where the brand design system under the registry name `brand-kit` sets slide headlines in Title Case. Other decks use sentence case.
 - Invented testimonials, quotes or attributions.
 - Emoji or Unicode glyphs standing in for icons.
 

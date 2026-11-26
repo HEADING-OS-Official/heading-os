@@ -48,10 +48,23 @@ registry name `drafts`.
 
 ## Procedure
 
+### Step 0a - Can the hook send?
+
+```bash
+.venv/bin/python scripts/checkpoint-paths.py --preflight
+```
+
+It prints one line and writes nothing. On exit 1, tell the operator that line
+in one sentence. Then go on, because the handoff is still worth saving; the
+operator types the command after you save it.
+
 ### Step 0 - Cold read, before the start stamp
 
 Run the cold read now: items 1 to 4 of Step 2 of
-`.claude/skills/handover/SKILL.md`. Write the draft and dispatch the `goldfish`
+`.claude/skills/handover/SKILL.md`. First read `handoff_mode` from
+`.venv/bin/python scripts/checkpoint-paths.py --json`, which writes nothing. In
+`assembled` mode the draft is the short part, and the records file goes in as
+context, as that step says. Write the draft and dispatch the `goldfish`
 agent. Then triage its reply and apply every FIX to the draft. The agent runs
 in the background, and its reply arrives only after a turn ends. So this step
 may take a turn of its own.
@@ -89,13 +102,23 @@ the first:
   steps`, because `/clear` loses the task list.
 - `## Resume`: two or three lines in the operator's language, shown on screen
   after `/clear` before he types anything. When he writes Russian, open with
-  "Продолжаю с того места, где остановились: ...". No paths, no pinned items.
+  "Продолжаю с того места, где остановились: ...". No paths and no pinned
+  items here: the hook adds the working file's two paths itself, from
+  `## Working file`.
+- `## Working file`: one line with the full Linux path, nothing else. Add it
+  when the operator acts on a main file next (drafts, a deliverable, a report).
+  After `/clear` the hook shows it and its Windows path after the
+  line that says where the work stopped. Leave the section out when there is no such file.
 
 <!-- Russian on purpose: the Russian resume lines the operator reads after /clear. -->
 ```bash
 .venv/bin/python scripts/checkpoint-paths.py --write --kind second-wind <<'HANDOFF'
 # Handoff - second-wind
 ...the sections from the template, Safe resume included...
+
+## Working file
+
+<the full Linux path of the file the operator acts on next; leave this section out when there is none>
 
 ## Resume
 
@@ -113,13 +136,13 @@ stderr line saying "the Stop hook will refuse to reset" names what the
 
 Reply with ONE line: the full path of the archive. Then stop. The Stop hook
 runs when this turn ends, checks the files and the background, sends `/clear`
-or `/compact`, and says which and why. If it says `NOT sent`, it names what is
-missing or what changed, and nothing was lost. If it says "now type /clear" or
-"now type /compact", this session is not reachable through HERDR and the
-operator types it.
+or `/compact`, and prints one sentence. It says sent, not sent yet (it is
+tried again at the next pause), or not sent (type the command yourself). Nothing is lost in
+any of the three.
 
-When the only reason it says `NOT sent` is that the operator typed, the hook
-tries again at the next quiet pause (HOS-315). It sends while the handoff is
+When it says "not sent yet", the hook tries again at the next quiet pause.
+That covers three causes: the operator typed, no terminal was found, or herdr
+did not answer (HOS-315, HOS-386). It sends while the handoff is
 still fresh. A stale handoff (3 events or 60 minutes of work) is rewritten
 first: Steps 1 and 2, without the cold read. After three such
 refusals in a row it stops and says so.

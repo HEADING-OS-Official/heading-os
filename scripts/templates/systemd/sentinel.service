@@ -1,6 +1,7 @@
 [Unit]
 Description=Sentinel - unified comms monitor (Exchange + Telegram)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=simple

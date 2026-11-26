@@ -340,6 +340,8 @@ def waiting_row(waiting, now: float) -> list[tuple[str, str]]:
         items = [("", head)]
         if w.get("reason") == "escalated":
             items.append((SEP, f"{C_YELLOW}escalated: your decision{C_RESET}"))
+        elif w.get("reason") == "answer":
+            items.append((SEP, f"{C_YELLOW}waits for HELM's answer{C_RESET}"))
         else:
             items.append((SEP, f"{C_YELLOW}waits for your input{C_RESET}"))
         minutes = _since_minutes(w.get("since"), now)
@@ -352,7 +354,8 @@ def waiting_row(waiting, now: float) -> list[tuple[str, str]]:
         text = f"{C_YELLOW_B}⚑ {_clean(str(w['workspace']))}{C_RESET}"
         if w.get("issue"):
             text += f" {_clean(str(w['issue']))}"
-        reason = "escalated" if w.get("reason") == "escalated" else "waits for input"
+        reason = {"escalated": "escalated",
+                  "answer": "waits for HELM's answer"}.get(w.get("reason"), "waits for input")
         text += f" {C_YELLOW}{reason}{C_RESET}"
         minutes = _since_minutes(w.get("since"), now)
         if minutes is not None:
@@ -620,7 +623,7 @@ def write_bar_pointer(payload: dict) -> None:
     if not _BAR_SESSION.match(sid):
         return
     pointer = Path.home() / ".claude" / "context-bar" / f"{sid}.json"
-    body = json.dumps({"session": sid, "dir": str(data_path("runtime:hook-state/cache"))})
+    body = json.dumps({"session": sid, "dir": str(data_path("runtime:hook-state/cache")), "columns": row_width()})
     if pointer.is_file() and pointer.read_text(encoding="utf-8") == body:
         return
     CP.write_text_atomic(pointer, body)
@@ -659,6 +662,15 @@ def context_bar_rows(payload: dict, width: int | None) -> list[str]:
         lines.append(f"{C_RESET}{line}" if _USE_ANSI else line)
     lines.append(f"{C_DIM}{_BAR_SEPARATOR * (80 if width is None else width)}{C_RESET}")
     return lines
+
+
+def held_segment(held) -> str:
+    """`menu held: <first blocker> +N`, or "" when the threshold menu is not held (HOS-387)."""
+    if not isinstance(held, list) or not held:
+        return ""
+    names = [str(name) for name in held]
+    more = f" +{len(names) - 1}" if len(names) > 1 else ""
+    return f"{C_YELLOW}menu held: {_clean(names[0])}{more}{C_RESET}"
 
 
 def build_status_line(
@@ -721,6 +733,7 @@ def build_status_line(
             items.append(repo_segment("data", repos.get("data")))
     model = (payload.get("model") or {}).get("display_name") or "Claude"
     items.append(f"{C_DIM}{model}{C_RESET}")
+    items.append(held_segment(render.get("held")))
 
     width = row_width() if width is None else width
     first = [item for item in items if item]
@@ -831,6 +844,8 @@ def apply_render(
         "handoff": handoff_segment(state.get("handoff_freshness"), CP.utc_now().timestamp()),
         "cache": cache,
         "refresh": refresh,
+        # The menu waiting for a pause (HOS-387), set by checkpoint-offer.py.
+        "held": state.get("offer_held_by"),
     }
 
 

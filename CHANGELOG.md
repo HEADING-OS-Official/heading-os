@@ -4,6 +4,44 @@ All notable changes to HEADING OS Official are recorded in this file, newest fir
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From 3.1.0 on, releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and the tag, the version in `pyproject.toml` and the one the README shows under "Status" are the same number. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`, and those tags stay as they are. The same history, written for users with what to do about each change, is [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
 
+## [3.4.0] - 2026-11-25
+
+A two-way Telegram bridge to every session, telemetry refused by code instead of by habit, a system that watches its own services and timers, the lot-map mod, and support for both versions of Herdr. The full explanation, with what to do about each change, is in [docs/WHATS-NEW.md](docs/WHATS-NEW.md).
+
+### Added
+
+- `scripts/telegram-bridge.py` and `scripts/utils/telegram_bridge.py`, installed with `scripts/install-daemon-service.sh telegram-bridge`: each session (the main clone and every yard, under the Herdr TUI and herdr-core) gets one topic in your private chat with your notification bot. A session waiting for you posts its last answer there; a menu or permission prompt is posted with buttons that press the option's key once, only while the screen is unchanged. Your text in a topic is typed into that session. Messages from anyone else, outside the private chat, forwarded, edited or older than 15 minutes are ignored; a message for a busy session is queued. A removed yard's topic is renamed "· removed" and then deleted.
+- `scripts/claude-mods/lot-map`, a user-level mod in the engine's own marketplace (`heading-os-mods`), and `scripts/lot-map.py`: a map of where Claude's work goes, over ten stations (you, model, memory, files, shell, network, browser, agents, skills, hooks). `/lot-map on|off|toggle` opens and closes its pane; nothing opens at session start. Under herdr-core the map is a picture at the terminal's resolution, elsewhere braille. `scripts/lot-map.py` applies the same rules to a past transcript (board, route, rows, braille map, `--follow`, `--json`). `scripts/check-lot-map-rules.py`, a pre-commit hook, runs 61 shared cases through both copies of the rules. The idea comes from github.com/alexeyw/lot-map, rebuilt from its README alone; none of its code was used.
+- `scripts/utils/claude_child.py`: `claude_child_env()` forces `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `DISABLE_BUG_COMMAND` to 1 for every Claude Code process the engine starts. `scripts/check-claude-child-env.py`, a pre-commit hook, refuses a launch that does not use it.
+- A `telemetry:` entry for every component in `config/update-registry.yaml` (`none` with evidence, `switch` with a read-only probe, or `unknown`). `update-manager apply` refuses a component whose telemetry is not verified off (`refused-telemetry`), `status` shows a telemetry column, and ops-radar raises `update_telemetry`. Verified switches for Chromium and the Hindsight server and console.
+- `scripts/unit-failure-alert.py` and the `unit-failure-alert@.service` template: `OnFailure=` on 38 service templates sends one alert to your own Telegram with the unit's result and its last five journal lines, redacted. At most once an hour for a daemon, again after a successful run for a oneshot, and "still failing since" after 24 hours.
+- The daemon watchdog checks every enabled user service (not oneshot) is running and every enabled user timer fired within twice its shortest period plus 30 minutes, with grace after boot and after resume.
+- Seven ops-radar signals: `disk_space`, `cert_expiry`, `security_updates`, `deps_audit`, `disabled_timers`, `mcp_liveness` and `toolchain_pins`. The last one, also a `doctor` row, lists absolute tool paths in units, hooks and MCP commands that are missing or point into a non-default Node version.
+- `scripts/yard.py create|remove <branch>`: one command for yards under the Herdr TUI and herdr-core. Under herdr-core a yard is named `w<N>-<slug>` and shows as its own space in the window.
+- `.claude/hooks/yard-marker-wall.py`, registered first in the three platform templates: a session in a yard without `HEADING_OS_YARD=1` is refused every tool.
+- `config/test-exceptions.yaml`: `scripts/herdr-brief.py` accepts `Tests: exception HOS-N, <file>` only for a pair the operator listed there.
+- `scripts/utils/handoff_facts.py` and `CLAUDE_HANDOFF_ASSEMBLED`: the handoff's records (issues, yards, briefs, operator messages, files written, git status) assembled by script. Off by default.
+
+### Changed
+
+- `scripts/utils/herdr_agent.py` serves the Herdr TUI and herdr-core through one seam, chosen by the pane id's form. Under the TUI every function runs as before. `/compact`, `/clear` and relayed words are typed as keys under herdr-core.
+- `transcribe-media.py` transcribes through the local Lemonade server by default (`--engine lemonade`, Whisper-Large-v3) and falls back to the local engine with one line when the server does not answer.
+- A removed yard's scratch folder is moved to the `yard-scratch-archive` registry name, merged or not; nothing in that step deletes.
+- Every engine dependency is on its current release, among them anthropic 2.12.0, openai 3.57.0, fastapi 0.165.0, pyyaml 6.0.4 and Telethon 1.46.0.
+
+### Fixed
+
+- Security: a relay journal entry could authorise a replayed identical transcript record. Each entry now authorises exactly one record, checked over the whole consumed-entry store under a lock, not over the last 256 KiB.
+- Security: the MCP liveness probe follows no redirect, so a server's configured headers never reach another address.
+- A yard that never committed counted as merged on removal and its scratch was deleted.
+- After `/clear`, an unattended session stopped at its resume banner; it now continues, and the resume lines carry both paths of the file the work is on.
+- `/second-wind` checks the terminal before the handoff, retries a send that did not go out, and ends with one outcome line. Handoff freshness shows on the status line only, never as a Stop-hook message.
+- `hindsight-sync` ends a pass with one line and a deliberate exit code when the server does not answer, instead of a traceback.
+- The memory-server health window compares times, not strings, and is bounded at both ends.
+- `check-unit-drift.py` no longer reports the service layer's first-line marker or a drop-in supply as drift.
+- A herdr-core pane holding only background shells reads as idle; herdr-core yard agents get the caller's PATH and outlive the bootstrap that started them.
+- The recall-inject hook gets 20 seconds instead of 12.
+
 ## [3.3.0] - 2026-11-17
 
 A daily morning dashboard on Telegram, the context bar moved under the prompt, a checked spec block in every saved prompt, and one rule for which Python every child process and service runs. The full explanation, with what to do about each change, is in [docs/WHATS-NEW.md](docs/WHATS-NEW.md).

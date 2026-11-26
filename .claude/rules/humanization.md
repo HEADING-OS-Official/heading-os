@@ -27,7 +27,7 @@ From-scratch prose has no baseline: apply the fundamentals, then test before del
 1. **Specificity density: the dominant signal.** Every paragraph carries at least one named, dated or numbered specific, roughly one per 30-50 words: "The 1997 Camry", not "an older sedan". Ask for a fact you lack; a fabricated specific is worse than a missing one.
 2. **Committed stance.** Take a position, refuse to balance every claim, close asymmetrically.
 3. **Burstiness on purpose, FROM-SCRATCH ONLY.** Never re-rhythm existing prose; fragmenting and smoothing both worsen the score.
-4. **Kill the AI vocabulary and phrase fingerprints**, never by deletion alone. **The vacuum trap:** scrubbing without replacing produces vapid prose; replace with specific, committed content. "Not only X but also Y" and "it's not X, it's Y" are tells ONLY when Y is vacuous; Title Case For Headings is always banned.
+4. **Kill the AI vocabulary and phrase fingerprints**, never by deletion alone. **The vacuum trap:** scrubbing without replacing produces vapid prose; replace with specific, committed content. "Not only X but also Y" and "it's not X, it's Y" are tells ONLY when Y is vacuous; Title Case For Headings is always banned. Exception: where the brand design system under the registry name `brand-kit` sets slide headlines, one-pager headlines or document headings in Title Case, those follow it. All other prose keeps sentence case.
 5. **Geometry over vocabulary.** Once per paragraph, take the second-most-natural continuation.
 
 ## Fundamental 6: two-pass voice editing (enforcement)

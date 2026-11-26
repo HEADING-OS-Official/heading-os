@@ -11,6 +11,11 @@ Usage:
     python scripts/update-manager.py self-test       # docs watch + apply scenarios, no network
 
 Registry: config/update-registry.yaml. State: the `update-state` registry name.
+
+Each `check` also records every component's telemetry verdict (off, on or
+unverified) from its registry entry, `status` names each one not off, and
+`apply` refuses it, under the operator's rule M056: telemetry always off,
+update checks allowed (HOS-412).
 """
 from __future__ import annotations
 
@@ -26,7 +31,8 @@ from datetime import datetime, timezone  # noqa: E402
 from scripts.utils.update_registry import Component, RegistryError, load_registry  # noqa: E402
 from scripts.utils.update_common import (  # noqa: E402
     CELL_NEVER_CHECKED, CELL_NOT_ANSWERED, UNDATED,
-    classify, reading_freshness, resolve_current, versions_differ, write_state,
+    classify, reading_freshness, resolve_current, telemetry_verdict, versions_differ,
+    write_state,
 )
 from scripts.utils import update_sources  # noqa: E402
 from scripts.utils import update_docwatch  # noqa: E402
@@ -80,10 +86,12 @@ def build_state(components: list[Component], prior: dict | None = None) -> dict:
         if latest and prior_e.get("latest") and prior_e.get("latest") != latest:
             fail_count = 0
         status, fail_count = classify(comp, current, latest, fail_count)
+        verdict, reason = telemetry_verdict(comp)
         entries[comp.name] = {
             "display": comp.display, "tier": comp.tier,
             "current": current, "latest": latest,
             "delta": delta, "status": status, "fail_count": fail_count,
+            "telemetry": {"verdict": verdict, "reason": reason},
         }
     return {"generated": None, "components": entries}
 
@@ -218,6 +226,18 @@ def _not_answered_reason(comp: Component | None, field: str) -> str:
     return f"latest: the {via} source did not answer"
 
 
+def _telemetry_cell(entry: dict) -> tuple[str, str]:
+    """`(verdict, reason)` recorded for one state entry.
+
+    An entry with no `telemetry` record (a state written before HOS-412, or a
+    stale one) is `unverified`: nothing measured it, so it is not off.
+    """
+    rec = entry.get("telemetry")
+    if not isinstance(rec, dict) or not rec.get("verdict"):
+        return "unverified", "no telemetry recorded"
+    return str(rec["verdict"]), str(rec.get("reason", ""))
+
+
 def cmd_status(_args) -> int:
     # `_read_state()`, not a second raw `json.loads`. The copy this replaces
     # crashed `status` with a JSONDecodeError traceback on a truncated state
@@ -254,9 +274,10 @@ def cmd_status(_args) -> int:
         # the time printed above, over a registry that tracks nothing.
         print("no components to track: the check above ran against an empty registry")
         return 0
-    print(f"{'component':22} {'current':14} {'latest':14} {'tier':9} status")
+    print(f"{'component':22} {'current':14} {'latest':14} {'tier':9} {'status':13} telemetry")
     unanswered: list[str] = []
     never: list[str] = []
+    not_off: list[str] = []
     for name in order:
         e = entries.get(name)
         comp = (registry or {}).get(name)
@@ -264,18 +285,25 @@ def cmd_status(_args) -> int:
             never.append(name)
             tier = comp.tier if comp else "?"
             print(f"{name:22} {CELL_NEVER_CHECKED:14} {CELL_NEVER_CHECKED:14} "
-                  f"{tier:9} {CELL_NEVER_CHECKED}")
+                  f"{tier:9} {CELL_NEVER_CHECKED:13} {CELL_NEVER_CHECKED}")
             continue
         current, latest = e.get("current", ""), e.get("latest", "")
         for field, value in (("current", current), ("latest", latest)):
             if not value:
                 unanswered.append(f"{name:22} {_not_answered_reason(comp, field)}")
+        verdict, reason = _telemetry_cell(e)
+        if verdict != "off":
+            not_off.append(f"{name:22} {verdict}: {reason}")
         print(f"{name:22} {_cell(current):14} {_cell(latest):14} "
-              f"{e.get('tier', '?'):9} {e.get('status', '?')}")
+              f"{e.get('tier', '?'):9} {e.get('status', '?'):13} {verdict}")
     if unanswered:
         print(f"\n{CELL_NOT_ANSWERED}: the probe ran when the reading above was "
               f"taken, and returned nothing:")
         for line in unanswered:
+            print(f"  {line}")
+    if not_off:
+        print("\ntelemetry not verified off (rule M056); `apply` refuses these:")
+        for line in not_off:
             print(f"  {line}")
     if never:
         print(f"\n{CELL_NEVER_CHECKED}: listed in {registry_path().name} and "

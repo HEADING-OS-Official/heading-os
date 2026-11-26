@@ -23,11 +23,23 @@ Hindsight operations waiting while none has completed for 30 minutes; LLM 401/40
 in the last hour (the first sign of an account problem); any Hindsight async
 operation in status failed, as one line with the total and, per operation type, the
 count and the newest failure's time (read only: nothing here retries, cancels or
-deletes an operation); server backup status not ok; the server's weekly backup verify failed; any field the server could not read.
+deletes an operation); a mental model whose automatic refresh Hindsight paused after a failure, for as long as it stays paused; server backup status not ok; the server's weekly backup verify failed; any field the server could not read.
 
 A message goes out only when the set of problems CHANGES, including the all-clear,
 so an offline laptop or a known fault does not repeat every hour. Proxy events are
-reported once each. Settings from the gitignored `.env`: `HINDSIGHT_HEALTH_HOST`
+reported once each.
+
+Extraction failures (HOS-400): Hindsight's retain, reflect and consolidation roles call the
+proxy alias gpt-6-hs-extract, served by gpt-6.1-sol and, when that fails, gpt-6-luna.
+Only requests left without an answer are reported (HOS-417): the snapshot's
+`extraction_unrecovered` counts the requests gpt-6.1-sol failed that did not end with status
+200, or whose result could not be matched, since the previous run (see extraction_notice).
+A failover that ended 200 sends nothing. One line in the same message when such requests
+appear after a window with none, and one when a window with none follows one with them. No
+line claims which model answered, because nothing on the server records it. The state file
+keeps only whether the last window had such requests, under
+`extraction_unrecovered_failing`; keys it no longer uses (an older `extraction_failing` or
+`extraction_route`) are ignored. Settings from the gitignored `.env`: `HINDSIGHT_HEALTH_HOST`
 (ssh alias of the monitor user), `HINDSIGHT_HEALTH_UI_NAME` (the FQDN served
 through the tunnel), `HINDSIGHT_HEALTH_API_URL` (default http://127.0.0.1:8888),
 `HINDSIGHT_BACKUP_DIR` (shared with backup-pull.py).
@@ -54,6 +66,7 @@ from scripts.utils.telegram_notify import notify, own_targets  # noqa: E402
 
 STATE = Path.home() / ".local" / "state" / "hindsight-health.json"
 SSH_TIMEOUT_S = 60
+EXTRACT_PRIMARY = "gpt-6.1-sol"
 
 
 def _setting(name: str, default: str | None = None) -> str:
@@ -82,8 +95,8 @@ def _load_status_module():
 server_problems = _load_status_module().problems
 
 
-def _snapshot(host: str, since: str) -> dict:
-    proc = subprocess.run(["ssh", host, "--", "--since", since], capture_output=True, text=True,
+def _snapshot(host: str, since: str, until: str) -> dict:
+    proc = subprocess.run(["ssh", host, "--", "--since", since, "--until", until], capture_output=True, text=True,
                           timeout=SSH_TIMEOUT_S, check=False)
     if proc.returncode != 0:
         raise OSError(f"ssh {host} exit {proc.returncode}: {proc.stderr.strip()[-300:]}")
@@ -104,7 +117,51 @@ def _ui_ok(name: str) -> str | None:
         return f"web UI not reachable over TLS: {exc}"
 
 
-def evaluate(now: datetime, state: dict) -> tuple[list[str], list[dict]]:
+def _utc(stamp: str) -> str:
+    """A window boundary or failure time for a notice line, to the second: a coarser time
+    could name a moment before a failure it claims came after."""
+    return datetime.fromisoformat(stamp).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def unrecovered_from(snap: dict) -> dict | None:
+    """{"count", "first", "last", "recovered"} of the unrecovered extraction requests in a
+    snapshot (pure), or None when the snapshot does not carry the count (an older status
+    script) or carries null (the journal could not be read): unknown, never zero."""
+    if snap.get("extraction_unrecovered") is None:
+        return None
+    return {"count": snap["extraction_unrecovered"], "first": snap.get("extraction_unrecovered_first"),
+            "last": snap.get("extraction_unrecovered_last"), "recovered": snap.get("extraction_recovered")}
+
+
+def extraction_notice(failing_before: bool | None, unrecovered: dict | None,
+                      since: str) -> tuple[bool | None, str | None]:
+    """(failing now, notice line or None) for one window (pure). `unrecovered` is
+    unrecovered_from(snapshot), None when unknown, which leaves the state as it was and
+    says nothing. `since` is where the window starts. A line when unrecovered requests
+    appear after a window with none (a first run with them included), and when a window
+    with none follows one with them; a first run with none is silent, and so is a window
+    whose failures all recovered. Every line states only what the journal lines show."""
+    if unrecovered is None or unrecovered.get("count") is None:
+        return failing_before, None
+    count = unrecovered["count"]
+    if count > 0:
+        if failing_before:
+            return True, None
+        noun = "request" if count == 1 else "requests"
+        return True, (f"- {count} extraction {noun} failed without an answer between "
+                      f"{_utc(unrecovered['first'])} and {_utc(unrecovered['last'])} "
+                      f"({EXTRACT_PRIMARY} failed and the request did not end with status 200, "
+                      f"or its result could not be matched)")
+    if failing_before:
+        return False, f"- no extraction request failed without an answer since {_utc(since)}"
+    return False, None
+
+
+def evaluate(now: datetime, state: dict) -> tuple[list[str], list[dict], dict | None, bool]:
+    """(problems, proxy events, unrecovered extraction requests, snapshot read). The third
+    is None when the server's snapshot does not carry it (an older status script, or a
+    read that failed, which then raises its own problem). The last is False when the
+    snapshot could not be read at all, so the caller keeps the window open."""
     problems: list[str] = []
     api = _setting("HINDSIGHT_HEALTH_API_URL", "http://127.0.0.1:8888")
     if not api.startswith(("http://", "https://")):
@@ -129,13 +186,20 @@ def evaluate(now: datetime, state: dict) -> tuple[list[str], list[dict]]:
         if age_h > max_h:
             problems.append(f"newest verified backup copy here is {age_h:.0f} h old")
     events: list[dict] = []
+    failures: dict | None = None
+    read = False
     try:
-        snap = _snapshot(_setting("HINDSIGHT_HEALTH_HOST"), state.get("last_run", "1970-01-01T00:00:00+00:00"))
+        # The window ends at `now`, the instant cmd_check saves as the next window's start,
+        # so a line logged while the read runs falls in exactly one window (HOS-417 review r1).
+        snap = _snapshot(_setting("HINDSIGHT_HEALTH_HOST"), state.get("last_run", "1970-01-01T00:00:00+00:00"),
+                         now.isoformat(timespec="seconds"))
+        read = True
         problems += server_problems(snap, now)
         events = snap.get("proxy_events", [])
+        failures = unrecovered_from(snap)
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         problems.append(f"server unreachable for the health check: {exc}")
-    return problems, events
+    return problems, events, failures, read
 
 
 def _send(text: str) -> None:
@@ -148,22 +212,34 @@ def _send(text: str) -> None:
 def cmd_check(args) -> int:
     now = _now()
     state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
-    problems, events = evaluate(now, state)
+    since = state.get("last_run", "1970-01-01T00:00:00+00:00")
+    problems, events, failures, read = evaluate(now, state)
+    failing, notice = extraction_notice(state.get("extraction_unrecovered_failing"), failures, since)
     for p in problems:
         print(f"PROBLEM {p}")
     for ev in events:
         print(f"EVENT {json.dumps(ev, ensure_ascii=False)}")
+    print(f"EXTRACTION failing={'unknown' if failing is None else failing} {failures}"
+          + (f" {notice}" if notice else ""))
     if not args.dry:
         before = set(state.get("problems", []))
         lines = []
         if set(problems) != before:
             lines += [f"- {p}" for p in problems] if problems else ["all clear again"]
         lines += [f"- proxy {ev.get('event')}: {ev.get('tag', '')} {ev.get('reason', '')}".rstrip() for ev in events]
+        if notice:
+            lines.append(notice)
         if lines:
             _send("HEADING OS memory server:\n" + "\n".join(lines))
         STATE.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE.with_name(STATE.name + ".tmp")
-        tmp.write_text(json.dumps({"problems": problems, "last_run": now.isoformat(timespec="seconds")}), encoding="utf-8")
+        # An unread snapshot keeps the previous window start, so what happened on the server
+        # meanwhile is reported by the next run that reaches it (HOS-417).
+        new_state = {"problems": problems, "extraction_unrecovered_failing": failing}
+        last_run = now.isoformat(timespec="seconds") if read else state.get("last_run")
+        if last_run is not None:
+            new_state["last_run"] = last_run
+        tmp.write_text(json.dumps(new_state), encoding="utf-8")
         os.replace(tmp, STATE)
     if not problems:
         print("healthy")
@@ -175,6 +251,13 @@ def cmd_self_test(_args) -> int:
     good = {"services": {"a": "active"}, "halt": None, "cert_not_after": "2026-12-28T14:06:55+00:00",
             "disk_pct": 4.0, "queue_waiting": 0, "queue_oldest_min": 0.0, "queue_last_done_min": 3.0,
             "llm_auth_errors": 0, "backup_status": "ok", "verify_result": "success", "errors": []}
+    since = "2026-11-20T19:00:00+04:00"
+    f0 = {"count": 0, "first": None, "last": None}
+    f3 = {"count": 3, "first": "2026-11-20T15:01:10+00:00", "last": "2026-11-20T15:20:59+00:00"}
+    recovered_only = unrecovered_from({"extraction_unrecovered": 0, "extraction_unrecovered_first": None,
+                                       "extraction_unrecovered_last": None, "extraction_recovered": 4})
+    one = unrecovered_from({"extraction_unrecovered": 1, "extraction_unrecovered_first": "2026-11-20T15:01:10+00:00",
+                            "extraction_unrecovered_last": "2026-11-20T15:01:10+00:00", "extraction_recovered": 2})
     cases = [
         ("healthy snapshot raises nothing", server_problems(good, now) == []),
         ("inactive service raised", len(server_problems({**good, "services": {"a": "failed"}}, now)) == 1),
@@ -193,6 +276,31 @@ def cmd_self_test(_args) -> int:
         ("LLM 401/403 raised", len(server_problems({**good, "llm_auth_errors": 2}, now)) == 1),
         ("unreadable field raised", len(server_problems({**good, "errors": ["cert: x"]}, now)) == 1),
         ("backup status not ok raised", len(server_problems({**good, "backup_status": "error"}, now)) == 1),
+        ("paused mental model raised", len(server_problems({**good, "mm_paused": [
+            {"bank": "main", "id": "a1", "name": "Alpha notes", "failed_at": "2026-09-30T20:00:00+00:00",
+             "last_refreshed_at": None}]}, now)) == 1),
+        ("unrecovered requests after a quiet window noticed with the count and both times",
+         extraction_notice(False, f3, since)
+         == (True, "- 3 extraction requests failed without an answer between 2026-11-20 15:01:10 UTC and "
+                   "2026-11-20 15:20:59 UTC (gpt-6.1-sol failed and the request did not end with status 200, "
+                   "or its result could not be matched)")),
+        ("one unrecovered request uses the singular",
+         extraction_notice(False, one, since)[1].startswith("- 1 extraction request failed without an answer between")),
+        ("a window whose failures all recovered sends nothing",
+         extraction_notice(False, recovered_only, since) == (False, None)),
+        ("a clean window after unrecovered requests sends the all-clear with the window start",
+         extraction_notice(True, recovered_only, since)
+         == (False, "- no extraction request failed without an answer since 2026-11-20 15:00:00 UTC")),
+        ("unrecovered again after unrecovered is silent", extraction_notice(True, f3, since) == (True, None)),
+        ("a snapshot without the key is unknown", unrecovered_from({"extraction_failures": 3}) is None),
+        ("a snapshot with a null count is unknown", unrecovered_from({"extraction_unrecovered": None}) is None),
+        ("an unknown snapshot leaves the state and says nothing",
+         extraction_notice(True, unrecovered_from({}), since) == (True, None)),
+        ("a quiet window after a quiet one is silent", extraction_notice(False, f0, since) == (False, None)),
+        ("first run with no state and no failures is silent", extraction_notice(None, f0, since) == (False, None)),
+        ("first run with no state and failures is noticed", extraction_notice(None, f3, since)[1] is not None),
+        ("an unreadable count leaves the state and says nothing", extraction_notice(True, None, since) == (True, None)),
+        ("a count of None leaves the state", extraction_notice(False, {"count": None}, since) == (False, None)),
     ]
     failures = 0
     for label, ok in cases:

@@ -1,26 +1,52 @@
 #!/usr/bin/env python3
-"""Transcribe speech in a local audio or video file to text, entirely on-machine.
+"""Transcribe speech in a local audio or video file to text, without it leaving the machine.
 
-Backed by faster-whisper (CTranslate2), so nothing is uploaded anywhere - the
-audio, the model, and the transcript all stay on this laptop. Container decoding
-goes through PyAV, so .mp4/.mkv/.mov/.webm are read directly with no ffmpeg step.
+Two engines. The `lemonade` engine (the default) decodes the input with PyAV to
+16 kHz mono WAV and sends it, with a bearer key, to the OpenAI-compatible
+transcription endpoint of the configured Lemonade host (`generate:` in
+config/inference-hosts.yaml, or HEADING_OS_INFERENCE_GENERATE_HOST). On this
+machine that host is the Windows side of the same laptop, reached over the WSL
+NAT gateway, where Whisper runs on the GPU. Nothing leaves the machine, and
+this is not an outbound send. The `local` engine runs faster-whisper
+(CTranslate2) on the CPU inside WSL; its model is downloaded once into the
+HuggingFace cache (~/.cache/huggingface) and reused offline afterwards.
 
-The model is downloaded once into the HuggingFace cache (~/.cache/huggingface)
-on first use and reused offline afterwards.
+When Lemonade cannot be reached and --engine was not given, the script says so
+in one stderr line and falls back to the local engine; under an explicit
+--engine lemonade it exits 1 instead. It never falls back silently.
+
+MEASURED 2026-11-18 on a 5:54 Hebrew recording (16 kHz mono WAV) through
+Lemonade: Whisper-Large-v3 on the NPU 366 s, looping on one phrase from 240 s to
+the end; on the GPU (vulkan) 199 s, with -fa 148 s and the same text;
+Whisper-Large-v3-Turbo on the GPU with -fa 64 s and on the NPU 122 s, both
+looping near the end; Whisper-Large-v3 on the GPU with "-fa -mc 0" 79 s and no
+loop anywhere, the chosen setting; Whisper-Large-v3-Turbo with "-fa -mc 0" 52 s
+and no loop, but it garbles the passage around 280 s. The Lemonade-side
+settings (backend vulkan, args "-fa -mc 0") are stored in Lemonade for
+Whisper-Large-v3, not in this script.
+
+Container decoding goes through PyAV, so .mp4/.mkv/.mov/.webm are read directly
+with no ffmpeg step.
 
 Usage:
     python scripts/transcribe-media.py clip.mp4
     python scripts/transcribe-media.py clip.mp4 --format srt --out clip.srt
     python scripts/transcribe-media.py call.m4a --language ru --timestamps
-    python scripts/transcribe-media.py talk.mp4 --model small --format json
+    python scripts/transcribe-media.py talk.mp4 --engine local --model small --format json
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -66,6 +92,27 @@ SEQUENTIAL_UNDER_SECONDS = 600
 PROMPT_ECHO_WARNING = (
     "a prompt can be echoed back in place of real speech; check the transcript covers the whole recording"
 )
+
+ENGINES = ("lemonade", "local")
+DEFAULT_ENGINE = "lemonade"
+# The Lemonade model, chosen by measurement (module docstring). Its backend and
+# args ("-fa -mc 0") are stored in Lemonade, so a plain request uses them.
+LEMONADE_MODEL = "Whisper-Large-v3"
+LEMONADE_TRANSCRIBE_PATH = "/api/v1/audio/transcriptions"
+LEMONADE_SAMPLE_RATE = 16000
+# Floor for the POST timeout; above it the timeout is the audio length, since
+# MEASURED 2026-11-18 354 s of audio took 79 s on the GPU.
+LEMONADE_MIN_TIMEOUT = 120
+# Local-engine flags that mean nothing to Lemonade, by argparse dest.
+LOCAL_ONLY_FLAGS = {
+    "compute_type": "--compute-type",
+    "threads": "--threads",
+    "batch_size": "--batch-size",
+    "batched": "--batched/--sequential",
+    "no_vad": "--no-vad",
+    "prompt": "--prompt",
+    "word_timestamps": "--word-timestamps",
+}
 
 
 # ============================================================
@@ -277,15 +324,185 @@ def transcribe(
 
 
 # ============================================================
+# Lemonade engine
+# ============================================================
+
+class LemonadeUnavailable(Exception):
+    """Lemonade could not produce a transcript. The message is the reason."""
+
+
+def _reason(exc: BaseException) -> str:
+    """Exception class name and message; never a header or a key."""
+    return f"{type(exc).__name__}: {exc}"
+
+
+def decode_wav(media: Path) -> tuple[bytes, float]:
+    """Decode `media` to an in-memory 16 kHz mono s16le WAV. Returns (bytes, seconds)."""
+    from scripts.utils.optdeps import require
+
+    require("av", extra="media")
+    import av
+
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=LEMONADE_SAMPLE_RATE)
+    chunks: list[bytes] = []
+    with av.open(str(media)) as container:
+        stream = container.streams.audio[0]
+        for frame in container.decode(stream):
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().tobytes())
+    for out in resampler.resample(None):
+        chunks.append(out.to_ndarray().tobytes())
+    pcm = b"".join(chunks)
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(LEMONADE_SAMPLE_RATE)
+        wav.writeframes(pcm)
+    return buffer.getvalue(), len(pcm) / 2 / LEMONADE_SAMPLE_RATE
+
+
+def build_multipart(parts: list[tuple[str, str | bytes, str | None, str | None]]) -> tuple[bytes, str]:
+    """multipart/form-data body from (name, value, filename, content_type) parts, in order."""
+    boundary = uuid.uuid4().hex
+    body = bytearray()
+    for name, value, filename, content_type in parts:
+        body += f"--{boundary}\r\n".encode()
+        disposition = f'Content-Disposition: form-data; name="{name}"'
+        if filename:
+            disposition += f'; filename="{filename}"'
+        body += f"{disposition}\r\n".encode()
+        if content_type:
+            body += f"Content-Type: {content_type}\r\n".encode()
+        body += b"\r\n"
+        body += value if isinstance(value, bytes) else value.encode("utf-8")
+        body += b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+def transcribe_lemonade(
+    media: Path, model: str, language: str | None, quiet: bool, ignored: list[str] | None = None
+) -> tuple[list[dict], dict]:
+    """Transcribe through the configured Lemonade host.
+
+    `ignored` names the local-only flags the user passed; they are reported
+    once the host has resolved, so a run that falls back is not told its
+    flags were ignored.
+
+    Raises:
+        LemonadeUnavailable: the host does not resolve, the request fails, or
+            the answer carries no segment list.
+    """
+    from scripts.utils.inference_host import (
+        InferenceHostUnavailable,
+        generation_auth_headers,
+        generation_host,
+    )
+    from scripts.utils.user_agent import user_agent
+
+    try:
+        host = generation_host(probe_timeout=3.0)
+        headers = generation_auth_headers()
+    except (InferenceHostUnavailable, ValueError) as exc:
+        raise LemonadeUnavailable(_reason(exc)) from exc
+    if ignored and not quiet:
+        print(f"{RED}[WARN]{RESET} ignored on the lemonade engine: {', '.join(ignored)}", file=sys.stderr)
+
+    audio, duration = decode_wav(media)
+    parts: list[tuple[str, str | bytes, str | None, str | None]] = [
+        ("model", model, None, None),
+        ("file", audio, "audio.wav", "audio/wav"),
+    ]
+    if language:
+        parts.append(("language", language, None, None))
+    parts.append(("response_format", "verbose_json", None, None))
+    body, content_type = build_multipart(parts)
+
+    request = urllib.request.Request(  # noqa: S310 - http(s) scheme checked in inference_host
+        host.rstrip("/") + LEMONADE_TRANSCRIBE_PATH,
+        data=body,
+        method="POST",
+        headers={**headers, "Content-Type": content_type, "User-Agent": user_agent()},
+    )
+    if not quiet:
+        print(f"{CYAN}Engine:{RESET} {BOLD}lemonade{RESET} ({model})", file=sys.stderr)
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - http(s) scheme checked in inference_host
+            request, timeout=max(LEMONADE_MIN_TIMEOUT, duration)
+        ) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raise LemonadeUnavailable(_reason(exc)) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise LemonadeUnavailable(_reason(exc)) from exc
+    elapsed = time.monotonic() - started
+
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise LemonadeUnavailable(_reason(exc)) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+        raise LemonadeUnavailable("ValueError: the response carries no 'segments' list")
+    if not quiet:
+        print(f"{GRAY}Lemonade answered in {elapsed:.1f} s{RESET}", file=sys.stderr)
+
+    segments: list[dict] = []
+    for seg in payload["segments"]:
+        entry = {
+            "start": round(float(seg["start"]), 3),
+            "end": round(float(seg["end"]), 3),
+            "text": str(seg.get("text", "")).strip(),
+        }
+        if seg.get("words"):
+            entry["words"] = seg["words"]
+        segments.append(entry)
+
+    meta = {
+        "source": media.name,
+        "language": payload.get("language") or language,
+        "language_probability": None,
+        "duration_seconds": round(duration, 2),
+        "engine": "lemonade",
+        "model": model,
+    }
+    return segments, meta
+
+
+def ignored_local_flags(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
+    """The local-only flags the user actually passed (values differing from the defaults)."""
+    return [
+        flag for dest, flag in LOCAL_ONLY_FLAGS.items()
+        if getattr(args, dest) != parser.get_default(dest)
+    ]
+
+
+# ============================================================
 # CLI
 # ============================================================
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Transcribe a local audio/video file to text, fully on-machine.",
+        description=(
+            "Transcribe a local audio/video file to text without it leaving the machine: "
+            "by default through the configured Lemonade host (the Windows side of this "
+            "laptop, GPU), or with --engine local through faster-whisper on the CPU."
+        ),
     )
     parser.add_argument("media", type=Path, help="path to the audio or video file")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"whisper model (default: {DEFAULT_MODEL})")
+    parser.add_argument(
+        "--engine", choices=ENGINES, default=None,
+        help=(
+            f"transcription engine (default: {DEFAULT_ENGINE}; an unreachable Lemonade "
+            "falls back to local, unless --engine lemonade is given explicitly)"
+        ),
+    )
+    parser.add_argument(
+        "--model", default=None,
+        help=f"whisper model (default: {LEMONADE_MODEL} on lemonade, {DEFAULT_MODEL} on local)",
+    )
     parser.add_argument("--language", default=None, help="force a language code (default: auto-detect)")
     parser.add_argument("--format", dest="fmt", choices=FORMATS, default="txt", help="output format (default: txt)")
     parser.add_argument("--out", type=Path, default=None, help="write to this path (default: stdout)")
@@ -318,21 +535,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
-
-    media = args.media.expanduser().resolve()
-    if not media.is_file():
-        print(f"{RED}[ERROR]{RESET} not a file: {media}", file=sys.stderr)
-        return 1
-
+def run_local(args: argparse.Namespace, media: Path, model_name: str) -> tuple[list[dict], dict]:
+    """The faster-whisper CPU engine; behaviour unchanged from before --engine existed."""
     threads = args.threads if args.threads > 0 else (os.cpu_count() or 4)
     batched = resolve_batching(args.fmt, args.batched, probe_duration(media))
 
     if not args.quiet:
         mode = f"batched x{args.batch_size}" if batched else "sequential"
         print(
-            f"{CYAN}Model:{RESET} {BOLD}{args.model}{RESET} "
+            f"{CYAN}Model:{RESET} {BOLD}{model_name}{RESET} "
             f"({args.compute_type}, {threads} threads, {mode}){GRAY} - first run downloads it{RESET}",
             file=sys.stderr,
         )
@@ -347,11 +558,11 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    warning = punctuation_warning(args.model, batched)
+    warning = punctuation_warning(model_name, batched)
     if warning and not args.quiet:
         print(f"{RED}[WARN]{RESET} {warning}", file=sys.stderr)
 
-    model = load_model(args.model, args.compute_type, threads, batched=batched)
+    model = load_model(model_name, args.compute_type, threads, batched=batched)
     segments, meta = transcribe(
         model,
         media,
@@ -364,8 +575,39 @@ def main() -> int:
     )
     if args.prompt and not args.quiet:
         print(f"{RED}[WARN]{RESET} {PROMPT_ECHO_WARNING}", file=sys.stderr)
-    meta["model"] = args.model
+    meta["engine"] = "local"
+    meta["model"] = model_name
     meta["batched"] = batched
+    return segments, meta
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    media = args.media.expanduser().resolve()
+    if not media.is_file():
+        print(f"{RED}[ERROR]{RESET} not a file: {media}", file=sys.stderr)
+        return 1
+
+    engine = args.engine or DEFAULT_ENGINE
+    if engine == "lemonade":
+        try:
+            segments, meta = transcribe_lemonade(
+                media, args.model or LEMONADE_MODEL, args.language, args.quiet,
+                ignored=ignored_local_flags(args, parser),
+            )
+        except LemonadeUnavailable as exc:
+            if args.engine == "lemonade":
+                print(f"{RED}[ERROR]{RESET} lemonade unavailable ({exc})", file=sys.stderr)
+                return 1
+            print(
+                f"{RED}[WARN]{RESET} lemonade unavailable ({exc}); falling back to the local engine",
+                file=sys.stderr,
+            )
+            segments, meta = run_local(args, media, args.model or DEFAULT_MODEL)
+    else:
+        segments, meta = run_local(args, media, args.model or DEFAULT_MODEL)
 
     output = render(segments, meta, args.fmt, timestamps=args.timestamps)
 

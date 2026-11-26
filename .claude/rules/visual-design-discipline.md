@@ -138,12 +138,12 @@ Catalog of patterns the rule names for redirection. Full per-tell expansion live
 | Components | The shadcn card composition (Avatar + Title + Description + optional Action), Lucide outline icons at 24px / 1.5px stroke / rounded caps as default, Heroicons outline as the Tailwind-house alternative, pricing toggle + three-tier cards with "Recommended" outline |
 | Motion | Framer Motion `type: "spring"` with default `bounce`, stagger-reveal on page load, hover-scale-1.02 on cards, universal 200-300ms ease-out transitions |
 | Assets | AI-generated decorative illustrations tonally matched to the palette (the Gamma giveaway), the isometric 3D illustration return, default Unsplash stock with shallow DOF and cool grading |
-| Copy register | "Build the future" / "AI-powered" / "Reimagine X" taglines, "Ship X. Build Y." imperative pairs, generic CTAs ("Get started", "Learn more"), em-dash overuse in feature copy, Title Case For Every Heading |
+| Copy register | "Build the future" / "AI-powered" / "Reimagine X" taglines, "Ship X. Build Y." imperative pairs, generic CTAs ("Get started", "Learn more"), em-dash overuse in feature copy, Title Case For Every Heading (except on surfaces the brand design system governs, see the exception below the table) |
 | Dashboard composite | shadcn sidebar + 4-stat-card row with Lucide icons and "vs last month" deltas + Recharts area chart card + data table with avatar+name+badge+amount rows + `+ New` button in top-right primary accent (v0 "Dashboard 01" template) |
-| Presentation composite | Vertical card layout (Gamma's signature), purple-to-blue background, Inter alone on every slide, three-card feature row, generic titles ("Our solution", "Why us"), hallucinated testimonials ("Sarah M., Marketing Director"), Title Case headings, brand voice not carrying through visually |
+| Presentation composite | Vertical card layout (Gamma's signature), purple-to-blue background, Inter alone on every slide, three-card feature row, generic titles ("Our solution", "Why us"), hallucinated testimonials ("Sarah M., Marketing Director"), Title Case headings (except on surfaces the brand design system governs, see the exception below the table), brand voice not carrying through visually |
 | Enterprise refusal | Site behind Akamai bot detection (Salesforce, SAP, ServiceNow refuse headless visitors). A vendor that mimics this defensive funnel posture inherits the defensive register |
 
-The single structural pattern that is always banned: **Title Case For All Headings**. Use sentence case. Title Case is print-magazine convention that RLHF picked up from training data.
+The single structural pattern that is always banned: **Title Case For All Headings**. Use sentence case. Title Case is print-magazine convention that RLHF picked up from training data. Exception: where the brand design system under the registry name `brand-kit` sets slide headlines, one-pager headlines or document headings in Title Case, those follow it. All other prose keeps sentence case.
 
 ### Three reflexes no detector catches
 
@@ -200,13 +200,13 @@ In this repo and its data repository:
 
 In the private data overlay, so a public clone will not have them:
 
-- The registry name `brand-presentations` - holds the newest deck, the brand authority for visual identity. Its filename carries the revision date and is private, so it is not spelled here.
+- The registry name `brand-kit`, in its design-system folder - the brand design system, the authority for visual identity; the registry name `brand-presentations` keeps the decks as history. Their filenames are private, so they are not spelled here.
 - The auto-memory record on the deck design system: palette, GT Standard L/M assignment, orange corner tab, footer, layout archetypes.
 - The auto-memory record on Pencil deck fonts and the master template: where the fonts, logos and the master deck template live, and how family names resolve.
 
 For multi-page branded PDF layout, `scripts/render-doctype.py` and the locked templates are the pipeline.
 
-When in doubt about visual register specifics (which orange? which font weight?), consult the brand authority deck. When in doubt about whether an artifact reads as designed or generated, apply this rule.
+When in doubt about visual register specifics (which orange? which font weight?), consult the brand design system. When in doubt about whether an artifact reads as designed or generated, apply this rule.
 
 ## Validation requirement
 

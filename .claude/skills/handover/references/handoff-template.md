@@ -11,7 +11,7 @@ name refuses rather than resolving to a plausible directory, and a path written
 out here goes stale the day the directory moves.
 
 <!-- Russian on purpose: the Russian offer literal the handoff collects. -->
-Last Updated: 2026-10-14 (the unanswered «Запомнить?» offers, HOS-244)
+Last Updated: 2026-11-19 (assembled mode, HOS-387)
 
 ---
 
@@ -85,12 +85,12 @@ Commands that should be re-run on resume (tests, validators, manual checks). Bul
 
 Known problems, blockers, or questions awaiting answers. Bullet list.
 
-## Unanswered «Запомнить?» offers
+## Unanswered "Remember?" offers
 
-Every «Запомнить: ...?» offer made in this session that the operator has not
+Every "Remember: ...?" offer made in this session that the operator has not
 answered, oldest first, one line each, the offer copied word for word:
 
-- «Запомнить: {the memory in one sentence}?» (offered after: {what the answer settled})
+- "Remember: {the memory in one sentence}?" (offered after: {what the answer settled})
 
 ## Next steps
 
@@ -126,6 +126,82 @@ misspelled (operator decision 2026-09-27):
   this session's pair and for the shared pair `/next` reads.
 
 A section you write under one of those headings is replaced, not duplicated.
+
+## Assembled mode
+
+Used when the paths output of Step 1 says `handoff_mode` is `assembled`, which
+`CLAUDE_HANDOFF_ASSEMBLED` turns on (HOS-387, off by default). In `full` mode,
+the default, nothing in this section applies.
+
+`--write` then adds, on top of the list above, the header lines `Generated:`,
+`Session:` and `Trigger:`, and the section
+`## Session records (assembled by the script)`: Lific issues with status,
+yards, briefs of this session, branch reviews, background, operator messages
+numbered, files written and git status. Never write those yourself. You write
+only this:
+
+<!-- Russian on purpose: the Russian offer literal in the template below is what /handover collects. -->
+```markdown
+# Handoff - manual checkpoint
+
+Trust: Objective, Constraints and Decisions are trusted. The session records are as the script read them at the stated time: verify them against the tree before acting.
+
+## Objective
+
+One paragraph.
+
+## Constraints
+
+Bullet list: boundaries, walls and approvals in force.
+
+## Decisions
+
+- {decision} ({who decided: the operator, HELM, this session}) because {why}
+- {was} → {became} → {why}
+
+## Open operator requests
+
+- {n}. [open|in progress] {what remains}
+
+## Current state
+
+At most three lines: what the records cannot show, such as work held in your head or an unsaved draft.
+
+## Safe resume
+
+Next action: {the one next step}
+Awaiting approval: {what waits for the operator's word, or none}
+Already done (do not repeat): {side effects already made: sends, commits, writes outside the tree, or none}
+
+## Open issues
+
+## Unanswered "Remember?" offers
+
+## Next steps
+
+## User note
+
+$ARGUMENTS
+```
+
+`{n}` is the message's number in the records' `### Operator messages` list.
+List only the messages that are not done; write
+`All operator messages are done.` when none is left. The "Remember?"
+self-check and the trust rule below apply unchanged. `## Safe resume` is the
+same three lines, and the Stop hook still refuses a reset without it.
+
+### Cold read in assembled mode
+
+Audience: "a new Claude session that resumes this work with no memory of this
+conversation, and has the records file, which a program assembled and which is
+not under review". Standard: mode `reader` of the goldfish standards, plus three
+checks:
+
+1. Every decision names who made it.
+2. `## Safe resume` names one next action.
+3. Nothing in the draft contradicts the records file.
+
+A finding about the records file itself is answered CONTEST.
 
 ## The operator-message registry, and its self-check
 

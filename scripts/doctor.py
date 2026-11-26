@@ -574,6 +574,51 @@ def _index_roundtrip(p: Probes) -> Row:
                "start the embedding server, then " + build)
 
 
+def herdr_row(p: Probes) -> Row:
+    """One row for both Herdr versions (HOS-307; herdr-core added 2026-11-18).
+
+    The Herdr TUI: on PATH, it answers, and the yard plugin is linked from this
+    engine; a TUI with no linked plugin is RED whether or not herdr-core is
+    installed. herdr-core alone (`hc`) is GREEN when it answers `--version`: the
+    yard plugin is a TUI plugin. Neither is RED. The detail names the hc version
+    and which version this session runs under, from its environment.
+    """
+    root = p.engine_root
+    hc = p.which("hc")
+    hc_rc, hc_out = p.run([hc, "--version"], timeout=15) if hc else (127, "")
+    if not hc:
+        hc_part = "hc not installed"
+    elif hc_rc != 0:
+        hc_part = f"hc --version exited {hc_rc}"
+    else:
+        hc_part = (hc_out.splitlines() or ["hc ?"])[0][:40]
+        hc_part = hc_part if hc_part.startswith("hc ") else f"hc {hc_part}"
+    session = ("tui" if os.environ.get("HERDR_PANE_ID", "").strip() else
+               "core" if os.environ.get("HC_TERMINAL_ID", "").strip() else "none")
+    suffix = f"; {hc_part}; this session: {session}"
+    herdr = p.which("herdr")
+    if not herdr:
+        if hc and hc_rc == 0:
+            return Row("herdr", "binary + yard plugin", OK,
+                       "yard plugin: not used under herdr-core" + suffix)
+        return Row("herdr", "binary + yard plugin", RED, "herdr is not on PATH" + suffix,
+                   _remedy(root, "install Herdr (docs: Herdr setup)"))
+    rc, out = p.run([herdr, "--version"], timeout=15)
+    plugin = root / "scripts" / "herdr" / "heading-os-yard"
+    prc, pout = p.run([herdr, "plugin", "list", "--plugin", "heading-os.yard", "--json"], timeout=15)
+    try:
+        roots = [x.get("plugin_root") for x in json.loads(pout)["result"]["plugins"]
+                 if isinstance(x, dict) and x.get("enabled") is True] if prc == 0 else []
+    except (ValueError, KeyError, TypeError):
+        roots = []
+    good = rc == 0 and str(plugin) in roots
+    return Row("herdr", "binary + yard plugin", OK if good else RED,
+               ((out.splitlines() or ["?"])[0][:60] + ", plugin linked" if good else
+                f"herdr --version exited {rc}" if rc != 0 else f"yard plugin not linked from {plugin}")
+               + suffix,
+               "" if good else _remedy(root, f"herdr plugin link {plugin}"))
+
+
 def check_modules(p: Probes, env: dict[str, str] | None) -> list[Row]:
     root = p.engine_root
     rows = []
@@ -690,25 +735,7 @@ def check_modules(p: Probes, env: dict[str, str] | None) -> list[Row]:
                         f"{len(claude)} Claude models" if claude else "the catalog lists no claude- model",
                         "" if claude else _remedy(root, "cli-proxy-api -config <its config.yaml> -claude-login")))
 
-    # Herdr: on PATH, it answers, and the yard plugin is linked from this engine (HOS-307).
-    herdr = p.which("herdr")
-    if not herdr:
-        rows.append(Row("herdr", "binary + yard plugin", RED, "herdr is not on PATH",
-                        _remedy(root, "install Herdr (docs: Herdr setup)")))
-    else:
-        rc, out = p.run([herdr, "--version"], timeout=15)
-        plugin = root / "scripts" / "herdr" / "heading-os-yard"
-        prc, pout = p.run([herdr, "plugin", "list", "--plugin", "heading-os.yard", "--json"], timeout=15)
-        try:
-            roots = [x.get("plugin_root") for x in json.loads(pout)["result"]["plugins"]
-                     if isinstance(x, dict) and x.get("enabled") is True] if prc == 0 else []
-        except (ValueError, KeyError, TypeError):
-            roots = []
-        good = rc == 0 and str(plugin) in roots
-        rows.append(Row("herdr", "binary + yard plugin", OK if good else RED,
-                        (out.splitlines() or ["?"])[0][:60] + ", plugin linked" if good else
-                        f"herdr --version exited {rc}" if rc != 0 else f"yard plugin not linked from {plugin}",
-                        "" if good else _remedy(root, f"herdr plugin link {plugin}")))
+    rows.append(herdr_row(p))
 
     # AgentsView's binary, at the versioned path the installer puts it and the unit
     # runs; never on PATH, so `which` cannot find it. Its server has its own row.
@@ -786,6 +813,28 @@ def check_home_tools(p: Probes) -> list[Row]:
             for line in found]
 
 
+TOOLCHAIN_PIN_REMEDY = "re-run the unit's installer, or edit the hook to the current nvm default"
+
+
+def check_toolchain_pins(p: Probes) -> list[Row]:
+    """Every absolute toolchain path in a unit, hook or MCP command exists and sits in the nvm default (HOS-395)."""
+    from scripts.utils.install_commands import default_toolchain_pin_args, toolchain_pin_line, toolchain_pins
+
+    home = Path.home()
+    try:
+        found = toolchain_pins(**default_toolchain_pin_args(p.engine_root))
+    except Exception as exc:  # noqa: BLE001 - any failure is a row, never a crash of doctor
+        return [Row("install", "toolchain pins", WARN,
+                    f"not checked: {type(exc).__name__}: {exc}".replace(str(home), "~")[:160],
+                    "run the check by hand and read the traceback")]
+    if not found:
+        return [Row("install", "toolchain pins", OK, "every pinned path exists and is current")]
+    return [Row("install", "toolchain pins",
+                RED if f["kind"] == "MISSING" and f["what"] == "executable" else WARN,
+                toolchain_pin_line(f, home)[:160], TOOLCHAIN_PIN_REMEDY)
+            for f in found]
+
+
 def check_fleet(p: Probes) -> list[Row]:
     rows = []
     try:
@@ -841,6 +890,7 @@ def run_checks(p: Probes) -> list[Row]:
     env = _settings(p.engine_root)
     rows = check_engine(p) + check_data(p) + check_hooks(p) + check_secrets(p, env)
     rows += check_modules(p, env) + check_google(p, env) + check_units(p, env) + check_plugins(p) + check_home_tools(p)
+    rows += check_toolchain_pins(p)
     rows += check_fleet(p) + check_admin_console(p)
     return rows
 

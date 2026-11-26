@@ -219,6 +219,22 @@ fi
 # Unit timezone: HEADING_OS_TZ, else the workspace resolver, else UTC.
 TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
 
+# Uninstall path: disable + remove the units, then reload.
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
+    systemctl --user disable --now "$UNIT_NAME.timer" 2>/dev/null || true
+    rm -f "$DEST_DIR/$UNIT_NAME.service" "$DEST_DIR/$UNIT_NAME.timer"
+    systemctl --user daemon-reload 2>/dev/null || true
+    echo "  [ok] $UNIT_NAME.timer uninstalled."
+    exit 0
+fi
+
+for unit in "$UNIT_NAME.service" "$UNIT_NAME.timer"; do
+    if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
+        echo "Template not found: $TEMPLATE_DIR/$unit" >&2
+        exit 3
+    fi
+done
+
 # The PATH the night runs under, taken from the shell that installs it.
 #
 # A systemd user service does NOT inherit the installing shell's environment; it
@@ -242,37 +258,13 @@ TZ_VALUE="$(resolve_unit_tz "$WORKSPACE" "$PYTHON")"
 # skip ceiling in config/nightly-skip-baseline.json is what makes that loud
 # instead of silent, which is why the ceiling is the control and this line is
 # the convenience. Override with TOOL_PATH=... for a deliberate value.
-TOOL_PATH="${TOOL_PATH:-$PATH}"
-
-# Uninstall path: disable + remove the units, then reload.
-if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
-    systemctl --user disable --now "$UNIT_NAME.timer" 2>/dev/null || true
-    rm -f "$DEST_DIR/$UNIT_NAME.service" "$DEST_DIR/$UNIT_NAME.timer"
-    systemctl --user daemon-reload 2>/dev/null || true
-    echo "  [ok] $UNIT_NAME.timer uninstalled."
-    exit 0
-fi
-
-for unit in "$UNIT_NAME.service" "$UNIT_NAME.timer"; do
-    if [[ ! -f "$TEMPLATE_DIR/$unit" ]]; then
-        echo "Template not found: $TEMPLATE_DIR/$unit" >&2
-        exit 3
-    fi
-done
-
+#
 # TOOL_PATH lands inside `Environment="PATH=..."` (HOS-283). There a double
 # quote or a backslash is a systemd escape and `%` is a specifier (systemd.syntax
 # § QUOTING, systemd.unit § SPECIFIERS); before that, `|`, `&` and `\` break the
 # sed substitution itself, and a newline or carriage return breaks both. None
 # occurs in a real PATH, so refuse rather than escape.
-case "$TOOL_PATH" in
-    *[\"\\%\|\&]* | *$'\n'* | *$'\r'*)
-        echo "TOOL_PATH contains a character the unit cannot carry (\" \\ % | & or a line break):" >&2
-        echo "  $TOOL_PATH" >&2
-        echo "Set TOOL_PATH=... to a value without them and re-run." >&2
-        exit 7
-        ;;
-esac
+tool_path_or_refuse
 
 mkdir -p "$DEST_DIR"
 

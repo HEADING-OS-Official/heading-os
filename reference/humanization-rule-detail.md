@@ -84,7 +84,7 @@ voice pass: `reference/humanization-banned-vocabulary.md`.** Two operative rules
   without changing the substantive claim → rewrite). When Y carries information X
   does not, it is legitimate rhetoric — leave it.
 - **Title Case For All Headings is always banned.** Use sentence case; Title Case
-  is print-magazine register RLHF picked up.
+  is print-magazine register RLHF picked up. Exception: where the brand design system under the registry name `brand-kit` sets slide headlines, one-pager headlines or document headings in Title Case, those follow it. All other prose keeps sentence case.
 <!-- audit-skip-end -->
 
 **The vacuum trap (CRITICAL):** scrubbing fingerprints without replacing them

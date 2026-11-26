@@ -2,6 +2,10 @@
 """Apply pipeline for the update manager: snapshot -> apply -> health-gate ->
 auto-rollback. The apply invariant: an auto update never leaves a component
 broken -- health passes on the new version, or the old version is restored.
+
+Before any of that, a component whose telemetry is not verified off is refused
+(`refused-telemetry`), so nothing is installed or updated against rule M056
+(HOS-412). A refusal touches no state and trips no breaker.
 """
 from __future__ import annotations
 
@@ -14,7 +18,9 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from scripts.utils.update_registry import Component  # noqa: E402
-from scripts.utils.update_common import classify, resolve_current, versions_differ, write_state  # noqa: E402
+from scripts.utils.update_common import (  # noqa: E402
+    classify, resolve_current, telemetry_verdict, versions_differ, write_state,
+)
 from scripts.utils.venv_guard import child_python  # noqa: E402
 
 
@@ -171,6 +177,13 @@ def cmd_apply(args, components: list[Component], state_path: Path) -> int:
         # Isolate each component: one unexpected error must not abort the batch or
         # skip _mark_state (which would hide the failure from the fail_count breaker).
         try:
+            # Read fresh on every apply, never from the last `check`: a switch
+            # turned on since then must stop this apply.
+            verdict, why = telemetry_verdict(comp)
+            if verdict != "off":
+                results[comp.name] = REFUSED_TELEMETRY
+                print(f"{comp.name}: {REFUSED_TELEMETRY} ({verdict}: {why})")
+                continue
             prev = resolve_current(comp)            # captured before the swap
             rollback = _build_rollback(comp, prev)
             # apply_one owns both failure paths: an apply-command failure/timeout
@@ -198,8 +211,18 @@ def cmd_apply(args, components: list[Component], state_path: Path) -> int:
             result = "error"
             print(f"{comp.name}: error ({type(exc).__name__}: {exc})")
         results[comp.name] = result
-    _mark_state(state_path, results, after)
-    return 1 if any(r in FAILED_RESULTS for r in results.values()) else 0
+    # A refusal leaves the component's entry exactly as it was: no status
+    # failed, no breaker count. It is not in FAILED_RESULTS for that reason.
+    _mark_state(state_path, {n: r for n, r in results.items() if r != REFUSED_TELEMETRY},
+                after)
+    if any(r in FAILED_RESULTS for r in results.values()):
+        return 1
+    # A named apply that was refused says so in its exit code. `--auto` does
+    # not: the nightly `check && apply --auto` would otherwise fail every night
+    # while one component stays unverified; ops-radar carries that signal.
+    if not args.auto and REFUSED_TELEMETRY in results.values():
+        return 3
+    return 0
 
 
 # Every outcome that must set status=failed and raise the exit code. Named once
@@ -207,6 +230,7 @@ def cmd_apply(args, components: list[Component], state_path: Path) -> int:
 # the state file and the exit code, which is what a bare
 # `result == "rolled-back"` in two places invites.
 FAILED_RESULTS = frozenset({"rolled-back", "rollback-failed", "error"})
+REFUSED_TELEMETRY = "refused-telemetry"
 
 
 def _mark_state(state_path: Path, results: dict[str, str],
@@ -272,9 +296,10 @@ def bare_commands(components: list[Component]) -> list[str]:
     found: list[str] = []
     for comp in components:
         blocks = {"current": comp.current, "latest": comp.latest,
-                  "health": comp.health or {}, "apply": comp.apply or {}}
+                  "health": comp.health or {}, "apply": comp.apply or {},
+                  "telemetry": comp.telemetry or {}}
         for field, blk in blocks.items():
-            for key in ("cmd", "rollback_cmd"):
+            for key in ("cmd", "rollback_cmd", "probe"):
                 cmd = blk.get(key)
                 if not isinstance(cmd, str):
                     continue
@@ -313,6 +338,7 @@ def self_test() -> int:
                 name=name, tier="auto", display=name,
                 current={"via": "shell", "cmd": probe or f"cat {ver}"},
                 latest={"via": "pypi", "package": "example-invented"},
+                telemetry={"kind": "none", "evidence": "invented test component"},
                 apply={"cmd": apply_cmd.replace("{f}", ver),
                        "rollback_cmd": f"echo {{prev}} > {ver}"},
                 health={"cmd": health})
@@ -349,6 +375,7 @@ def self_test() -> int:
     invented = [Component(name="example", tier="auto", display="example",
                           current={"via": "shell", "cmd": "example-tool --version"},
                           latest={"via": "pypi", "package": "example"},
+                          telemetry={"kind": "none", "evidence": "invented test component"},
                           apply={"cmd": "$HOME/.local/bin/uv tool upgrade example",
                                  "rollback_cmd": "uv tool install example"})]
     cases.append(("a bare command name the timer's PATH cannot find is named",

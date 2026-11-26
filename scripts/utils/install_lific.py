@@ -59,6 +59,7 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
+from scripts.utils.claude_child import claude_child_env  # noqa: E402 - stdlib only
 from scripts.utils.install_runner import changed_since_start, runner_env, runner_problem, service_pid
 
 VERSION = "2.11.1"
@@ -690,9 +691,9 @@ def run_mcp(ctx) -> None:
     if registered_command(home) is not None:
         # Someone else's `lific` entry at user scope; replaced by ours, never by `lific connect`.
         subprocess.run([claude, "mcp", "remove", "--scope", "user", "lific"], capture_output=True,
-                       env=_env(ctx), cwd=str(home))
+                       env=claude_child_env(_env(ctx)), cwd=str(home))
     proc = subprocess.run([claude, "mcp", "add", "--scope", "user", "--transport", "stdio", "lific", "--",
                            str(launcher)], capture_output=True, text=True, errors="replace",
-                          env=_env(ctx), cwd=str(home))
+                          env=claude_child_env(_env(ctx)), cwd=str(home))
     if proc.returncode != 0:
         raise LificError(f"`claude mcp add` failed: {_why(proc)}")

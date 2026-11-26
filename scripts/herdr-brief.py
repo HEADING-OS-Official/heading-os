@@ -9,7 +9,9 @@ Usage:
     python scripts/herdr-brief.py w37:p1 "$(cat brief.md)" --issue HOS-30 --no-goldfish "<why>"
 
 The only sanctioned way HELM sends a brief to a YARD. It prepends the release
-gate's `_BRIEF_MARKER` line and delegates to `herdr agent prompt <PANE> <TEXT>`.
+gate's `_BRIEF_MARKER` line and delegates to `herdr_agent.send_text`, which runs
+`herdr agent prompt <PANE> <TEXT>` for a Herdr TUI pane (`w37:p1`) and
+`hc send <TERMINAL> <TEXT>` for a herdr-core terminal (`t4`).
 HELM ONLY: `require_main_clone` refuses elsewhere, except for `--help` and
 `--check`, which validate the text without contacting herdr or the tracker.
 
@@ -31,8 +33,12 @@ history of this file):
   script checks and never sets the status, so nothing is attributed to the
   operator that he did not do.
 * `Tests:` line (rule M050, Phase 5 of `.claude/rules/development-standards.md`):
-  exactly one of `Tests: none (Fix-Note)` or `Tests: failure A|B, <file>`; with
-  `none`, a text that still asks for a test is refused. No bypass flag.
+  exactly one of `Tests: none (Fix-Note)`, `Tests: failure A|B, <file>` or
+  `Tests: exception HOS-N, <file>`; with `none`, a text that still asks for a
+  test is refused. The exception form passes only when that exact (issue, file)
+  pair is listed in `config/test-exceptions.yaml`, where only the operator adds
+  an entry, and, when sending, the issue is one the brief allocates. No bypass
+  flag.
 * `Master instruction:` line: warned on stderr when missing, never refused
   (a convention since 2026-10-12, not a gate).
 * `/goldfish ready` review (HOS-267): a brief is refused unless a report under
@@ -48,8 +54,9 @@ history of this file):
   under the registry name `brief-archive` with the same header and one
   `[dossier]` record of event `brief` goes to each issue.
 
-It does not live in `scripts/utils/herdr_agent.py`, whose fixed `/compact`
-literal must never become a parameter.
+The send itself lives in `scripts/utils/herdr_agent.py` as `send_text`, beside
+the allowlisted `submit_command` the hooks use; the text checks, the HELM guard
+and the delivery check stay here.
 """
 from __future__ import annotations
 
@@ -57,6 +64,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -65,20 +73,21 @@ import time
 import uuid
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils import checkpoint_paths as CP  # noqa: E402
 from scripts.utils import dossier  # noqa: E402
+from scripts.utils import herdr_agent as HA  # noqa: E402
 from scripts.utils.checkpoint_paths import transcript_dir  # noqa: E402
 from scripts.utils.data_path import data_path  # noqa: E402
 from scripts.utils.clone_guard import require_main_clone  # noqa: E402
 from scripts.utils.colors import CYAN, GRAY, GREEN, RED, RESET, YELLOW  # noqa: E402
 from scripts.utils.proc_cwd import processes_in  # noqa: E402
 
-HERDR_BIN = "herdr"
-
-# `herdr agent prompt` is a single socket call. Ten seconds is the budget
-# `scripts/utils/herdr_agent.py` measured for the same subcommand.
+# The budget for one `lific issue get`. The Herdr calls use the timeouts of
+# `scripts/utils/herdr_agent.py`.
 PROMPT_TIMEOUT = 10
 
 # How long the delivered text may take to reach the receiving session's
@@ -91,6 +100,7 @@ DELIVERY_POLL = 1.0
 
 ROOT = Path(__file__).resolve().parent.parent
 GATE = ROOT / ".claude" / "hooks" / "_dispatch.py"
+EXCEPTIONS_PATH = ROOT / "config" / "test-exceptions.yaml"
 
 BRIEF_ID_PREFIX = "X-HEADING-BRIEF-ID: "
 
@@ -185,6 +195,7 @@ def check_marker(marker: str, text: str) -> int:
 TESTS_LINE = re.compile(r"^[ \t]*Tests:(.*)$", re.MULTILINE)
 TESTS_NONE = re.compile(r"none \(Fix-Note\)")
 TESTS_FAILURE = re.compile(r"failure (A|B), (\S.*)")
+TESTS_EXCEPTION = re.compile(r"exception (HOS-\d+), (\S.*)")
 
 #: What a brief saying `Tests: none` must not ask for. The one place the list
 #: lives; keep it small. Word boundaries, because a bare "red on" is inside
@@ -205,17 +216,51 @@ TESTS_HELP = (
     "      Tests: none (Fix-Note)\n"
     "      Tests: failure A, <file that holds the guarantee>\n"
     "      Tests: failure B, <file that holds the guarantee>\n"
+    "      Tests: exception HOS-N, <file listed for HOS-N in "
+    "config/test-exceptions.yaml>\n"
     "  A test is written only for failure A (a private byte reaches the "
     "public engine) or failure B (the repositories merge, or a yard acts on "
-    "something live); every other fix ships with a `Fix-Note:` line. Rule "
+    "something live); every other fix ships with a `Fix-Note:` line. The "
+    "one other test is one the operator named, listed in "
+    "config/test-exceptions.yaml, where only the operator adds an entry. Rule "
     "M050, and Phase 5 of `.claude/rules/development-standards.md`.")
 
 
-def check_tests_line(text: str) -> int:
+def load_exceptions(path: Path) -> set[tuple[str, str]] | None:
+    """The (issue, file) pairs `config/test-exceptions.yaml` lists, or None.
+
+    None, which refuses every exception, for a missing file, a parse error or
+    any shape other than a mapping whose `exceptions` value is a list of
+    mappings each holding a string `issue` and a string `file`: fail closed.
+    Whether the named test file exists does not matter here.
+    """
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # ValueError and TypeError too: PyYAML raises a bare ValueError while
+    # building an impossible date such as `decided: 2026-13-23`.
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError, TypeError) as exc:
+        print(f"{RED}herdr-brief: cannot read {path}: {exc}{RESET}",
+              file=sys.stderr)
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("exceptions"), list):
+        return None
+    pairs = set()
+    for entry in data["exceptions"]:
+        if not (isinstance(entry, dict) and isinstance(entry.get("issue"), str)
+                and isinstance(entry.get("file"), str)):
+            return None
+        pairs.add((entry["issue"], entry["file"]))
+    return pairs
+
+
+def check_tests_line(text: str, issues: list[str] | None = None,
+                     exceptions_path: Path = EXCEPTIONS_PATH) -> int:
     """Refuse a brief whose `Tests:` line is missing, malformed, or contradicted.
 
-    0 when the brief states one of the two accepted forms and, for `none`,
-    asks for no test anywhere in its text. 7 otherwise, nothing sent.
+    0 when the brief states one of the three accepted forms and, for `none`,
+    asks for no test anywhere in its text; for `exception HOS-N, <file>`, when
+    that exact pair is listed in `exceptions_path` and, unless `issues` is None
+    (`--check`), HOS-N is one of `issues`. 7 otherwise, nothing sent.
     """
     lines = [m.group(1).strip() for m in TESTS_LINE.finditer(text)]
     if len(lines) != 1:
@@ -228,9 +273,28 @@ def check_tests_line(text: str) -> int:
     if TESTS_FAILURE.fullmatch(value):
         print(f"{GREEN}Tests: {value}{RESET}")
         return 0
+    exception = TESTS_EXCEPTION.fullmatch(value)
+    if exception:
+        pair = (exception.group(1), exception.group(2).strip())
+        listed = load_exceptions(exceptions_path)
+        if listed is None:
+            why = f"{exceptions_path} is missing or not in the expected shape"
+        elif pair not in listed:
+            why = (f"the pair ({pair[0]}, {pair[1]}) is not listed in "
+                   f"config/test-exceptions.yaml")
+        elif issues is not None and pair[0] not in issues:
+            why = (f"{pair[0]} is not an issue this brief allocates "
+                   f"(--issue {' '.join(issues) or 'none'})")
+        else:
+            print(f"{GREEN}Tests: {value}{RESET}")
+            return 0
+        print(f"{RED}herdr-brief: REFUSED. `Tests: {value}`: {why}. An entry "
+              f"in config/test-exceptions.yaml is added only by the operator. "
+              f"Nothing was sent.{RESET}\n{TESTS_HELP}", file=sys.stderr)
+        return 7
     if not TESTS_NONE.fullmatch(value):
         print(f"{RED}herdr-brief: REFUSED. `Tests: {value}` is not one of the "
-              f"two accepted forms. Nothing was sent.{RESET}\n{TESTS_HELP}",
+              f"three accepted forms. Nothing was sent.{RESET}\n{TESTS_HELP}",
               file=sys.stderr)
         return 7
     asks = []
@@ -307,76 +371,18 @@ def target_dir(checkout: Path, projects_root: Path | None) -> Path | None:
 
 
 def checkout_for_pane(pane: str, workspaces: list) -> Path | None:
-    """The checkout path of the workspace owning `pane`, from herdr's own list.
-
-    Reading the list is not the same as trusting the SEND. The list is the only
-    place the pane-to-checkout mapping exists; what it cannot tell us, and what
-    this script therefore reads from the transcripts instead, is where a prompt
-    actually went.
-    """
-    workspace_id = pane.split(":", 1)[0]
-    for entry in workspaces:
-        if entry.get("workspace_id") != workspace_id:
-            continue
-        worktree = entry.get("worktree") or {}
-        path = worktree.get("checkout_path")
-        if path:
-            return Path(path)
-        return agent_cwd(pane)
-    return None
+    """The checkout `pane` works in; `herdr_agent.pane_checkout` decides, per Herdr version."""
+    return HA.pane_checkout(pane, workspaces)
 
 
 def agent_cwd(pane: str) -> Path | None:
-    """The working directory of the agent in `pane`, asked of herdr.
-
-    The fallback for a workspace with no `worktree` block. MEASURED 2026-09-06:
-    a yard whose herdr workspace had died was re-attached with
-    `herdr workspace create --cwd <checkout>`, which produces a workspace herdr
-    reports WITHOUT a worktree block. `checkout_path` was then None and this
-    script refused, so a yard with real uncommitted work in it could not be
-    briefed at all -- while `git worktree remove` refused to delete it, which is
-    correct, leaving the checkout reachable by nothing.
-
-    The agent's own cwd is not a weaker answer than the worktree block; it is a
-    better one. `transcript_dir()` derives the slug from a PATH, and the path
-    that decides where this agent writes is the path it is running in.
-
-    Trusting herdr for the cwd does not reopen what this script exists to close.
-    A wrong cwd here sends the delivery check looking in the wrong transcript
-    directory, the brief id is not found, and the run exits 4 naming where it
-    did land. The failure mode is a loud false alarm, never a silent success.
-    """
-    try:
-        result = subprocess.run([HERDR_BIN, "agent", "get", pane],
-                                capture_output=True, text=True,
-                                timeout=PROMPT_TIMEOUT, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        agent = (json.loads(result.stdout).get("result") or {}).get("agent")
-    except ValueError:
-        return None
-    cwd = (agent or {}).get("cwd")
-    return Path(cwd) if cwd else None
+    """The working directory of the agent in a TUI `pane`; `herdr_agent.agent_cwd`."""
+    return HA.agent_cwd(pane)
 
 
 def herdr_workspaces() -> list:
-    """`herdr workspace list`, parsed. Empty list on any failure."""
-    try:
-        result = subprocess.run([HERDR_BIN, "workspace", "list"],
-                                capture_output=True, text=True,
-                                timeout=PROMPT_TIMEOUT, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        return (json.loads(result.stdout).get("result") or {}).get(
-            "workspaces") or []
-    except (ValueError, AttributeError):
-        return []
+    """`herdr workspace list`, parsed, empty on any failure; `herdr_agent.workspaces`."""
+    return HA.workspaces()
 
 
 def transcripts(project_dir: Path) -> list[Path]:
@@ -587,30 +593,39 @@ def check_allocated(identifiers: list[str]) -> int:
 
 
 def send(pane: str, payload: str) -> int:
-    """Hand the composed brief to HERDR. List argv, never `shell=True`."""
-    if shutil.which(HERDR_BIN) is None:
-        print(f"{RED}herdr-brief: `{HERDR_BIN}` is not on PATH.{RESET}",
-              file=sys.stderr)
-        return 3
-    argv = [HERDR_BIN, "agent", "prompt", pane, payload]
+    """Hand the composed brief to Herdr through `herdr_agent.send_text`. No retry."""
     try:
-        result = subprocess.run(argv, capture_output=True, text=True,
-                                timeout=PROMPT_TIMEOUT, check=False)
-    except subprocess.TimeoutExpired:
-        print(f"{RED}herdr-brief: `{HERDR_BIN} agent prompt` did not answer "
-              f"within {PROMPT_TIMEOUT}s. Nothing is confirmed sent.{RESET}",
+        result = HA.send_text(pane, payload)
+    except HA.HerdrUnavailable as exc:
+        print(f"{RED}herdr-brief: {exc}. Nothing is confirmed sent.{RESET}",
               file=sys.stderr)
         return 3
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.returncode != 0:
-        print(f"{RED}herdr-brief: herdr exited {result.returncode}.{RESET}",
-              file=sys.stderr)
-        if result.stderr:
-            print(result.stderr.rstrip(), file=sys.stderr)
-        return 3
+    if result:
+        print(json.dumps(result))
     print(f"{GREEN}Sent to {pane}.{RESET}")
     return 0
+
+
+#: The parent that already holds the pane's input lock names the pane here, so
+#: its child send does not try to take the same lock (HOS-408).
+LOCK_HELD_ENV = "HEADING_OS_INPUT_LOCK_HELD"
+LOCK_WAIT_S = 30
+
+
+def send_locked(pane: str, payload: str) -> int:
+    """`send` under the pane's shared input lock (HOS-408); 6 when another typist kept it 30 s."""
+    if os.environ.get(LOCK_HELD_ENV, "") == pane:
+        return send(pane, payload)
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        with HA.input_lock(pane) as held:
+            if held:
+                return send(pane, payload)
+        if time.monotonic() >= deadline:
+            print(f"{RED}herdr-brief: another typist held {pane}'s input lock for "
+                  f"{LOCK_WAIT_S}s. Nothing sent.{RESET}", file=sys.stderr)
+            return 6
+        time.sleep(1)
 
 
 def main() -> int:
@@ -622,7 +637,8 @@ def main() -> int:
                 "prompt trustworthy: no field in a transcript record tells the "
                 "operator's typing apart from another session's."),
     )
-    parser.add_argument("pane", help="HERDR pane id, e.g. w37:p1")
+    parser.add_argument("pane", help=("Herdr TUI pane id (e.g. w37:p1) or herdr-core "
+                                      "terminal (e.g. t4)"))
     parser.add_argument("text", help="the brief, verbatim")
     parser.add_argument(
         "--issue", action="append", default=[], metavar="HOS-N",
@@ -653,7 +669,7 @@ def main() -> int:
 
     # The text checks come first and need nothing live, so `--check` stops
     # after them, BEFORE the HELM guard: it is a read, like `--help`.
-    status = check_marker(marker, args.text) or check_tests_line(args.text)
+    status = check_marker(marker, args.text) or check_tests_line(args.text, None if args.check else args.issue)
     if status != 0:
         return status
     warn_master_line(args.text)
@@ -794,7 +810,7 @@ def main() -> int:
     print(payload)
     print(f"{GRAY}{'-' * 72}{RESET}")
 
-    status = send(args.pane, payload)
+    status = send_locked(args.pane, payload)
     if status != 0:
         return status
 

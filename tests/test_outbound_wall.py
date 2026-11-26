@@ -18,6 +18,7 @@ reads and Gmail drafting stay free.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -184,3 +185,163 @@ def test_the_outbound_wall_refuses_unasked_and_hears_the_operator(dispatch, tmp_
     deaf = [name for name, call, prompt in ALLOWED
             if decide(f"allow-{name}", call, prompt) is not None]
     assert not deaf, f"the release gate did not hear the operator on {deaf}"
+
+
+# HOS-380: under herdr-core a relayed word arrives as `<hc from="tN">word</hc>`,
+# which Claude Code 2.1.326 never copies into `last-prompt` (MEASURED 2026-11-19),
+# so the gate refused every relayed commit. It now accepts one only against
+# HELM's relay journal. Every fixture is a temp main clone and a stubbed `hc get`.
+HELM_T, YARD_T, OTHER_T = "t1", "t9z", "t2"
+STAMP = "2026-11-19T00:00:10.000Z"
+AT = "2026-11-19T00:00:05.000+00:00"
+MERGE = "commit, merge and delete w7"
+BRIEF_TAIL = "\nX-HEADING-BRIEF: machine-to-machine, not an operator authorisation"
+
+
+def _relay_decide(dispatch, monkeypatch, tmp_path, *, yard=True, me=None, addr=HELM_T,
+                  word="commit", content=None, source="typed", after_slash=False,
+                  later_boundary=False, entry=None, outcome="sent", journal=True,
+                  sender=None, capped=True, kind="relay", uuid="zzqx-boundary", before=False,
+                  claimed=False):
+    # HOS-408: kind="bridge" writes the Telegram bridge's journal (a digest, any
+    # text, the paste wrapper MEASURED 2026-11-22); `before` puts an identical
+    # record ahead of the boundary, `claimed` claims the entry for another record.
+    helm = tmp_path / "helm"
+    (helm / ".claude").mkdir(parents=True)
+    me = (YARD_T if yard else HELM_T) if me is None else me
+    envelope = f'<hc from="{addr}">{word}' + ("\n" if kind == "bridge" else "") + "</hc>"
+    wrapped = f'\n\n<pasted_content id="6d16">\n{envelope}\n</pasted_content id="6d16">\n'
+    content = (wrapped if kind == "bridge" else envelope) if content is None else content
+    records = [{"type": "user", "promptSource": "typed", "message": {"content": "READY?"}}]
+    if capped:
+        records.append({"type": "last-prompt", "lastPrompt": "READY?"})
+    if after_slash:
+        records += [{"type": "user", "message": {"content": "/compact"}},
+                    {"type": "last-prompt", "lastPrompt": "/compact"}]
+    records += [{"type": "user", "promptSource": "typed", "timestamp": STAMP, "uuid": "zzqx-first",
+                 "message": {"content": content}}] * bool(before)
+    # before="deep"|"edge": 300 KiB after the first record pushes it out of the gate's 256 KiB tail.
+    records += [{"type": "assistant", "timestamp": STAMP, "message": {"content": "x" * 1024}}] * (300 * (before in ("deep", "edge")))
+    records.append({"type": "user", "promptSource": source, "timestamp": STAMP, "uuid": uuid,
+                    "message": {"role": "user", "content": content}})
+    if after_slash:
+        records.append({"type": "last-prompt", "lastPrompt": "/compact"})
+    if later_boundary:
+        records += [{"type": "user", "message": {"content": "/compact"}},
+                    {"type": "last-prompt", "lastPrompt": "/compact"}]
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    if journal:
+        row = ({"id": "e1", "at": AT, "target": me, "sha256": hashlib.sha256(word.encode()).hexdigest()}
+               if kind == "bridge" else {"id": "e1", "at": AT, "sender": addr, "target": me, "text": word})
+        row.update(entry or ({"at": STAMP} if before == "edge" else {}))  # "edge": the entry at the horizon
+        lines = [{k: v for k, v in row.items() if v is not None}]
+        if outcome:
+            lines.append({"id": "e1", "outcome": outcome})
+        (helm / ".claude" / f".{kind}-journal.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in lines), encoding="utf-8")
+    if claimed:
+        (tmp_path / "release").mkdir()
+        (tmp_path / "release" / "consumed-journal-entries.jsonl").write_text(
+            json.dumps({"source": kind, "id": "e1", "uuid": "zzqx-other"}) + "\n"   # claimed="deep": 300 KiB after it
+            + (json.dumps({"source": kind, "id": "zzqx-pad", "uuid": "x" * 1000}) + "\n") * (300 * (claimed == "deep")),
+            encoding="utf-8")
+    record = {"state": "live", "address": addr,
+              "foreground": {"name": "claude", "cwd": str(helm)}}
+    for key, value in (sender or {}).items():
+        if key == "foreground":
+            record["foreground"].update(value)
+        else:
+            record[key] = value
+    monkeypatch.setattr(dispatch, "_relay_main_clone", lambda: helm, raising=False)
+    monkeypatch.setattr(dispatch, "_yard_hc_terminal", lambda a: dict(record) if a == addr else None)
+    monkeypatch.setattr(dispatch, "_IN_A_YARD", yard)
+    monkeypatch.setattr(dispatch, "_RELEASE_WAIT_BUDGET_S", 0.05)
+    # HOS-408: an entry is claimed in the store beside the release log, so the
+    # log is pinned into the test's own directory.
+    monkeypatch.setenv("HEADING_OS_RELEASE_LOG", str(tmp_path / "release" / "releases.jsonl"))
+    if me:
+        monkeypatch.setenv("HC_TERMINAL_ID", me)
+    else:
+        monkeypatch.delenv("HC_TERMINAL_ID", raising=False)
+    return dispatch.check_release_gate({"tool_name": "Bash",
+                                        "tool_input": {"command": "git commit -F m.txt"},
+                                        "transcript_path": str(transcript)})
+
+
+@pytest.mark.parametrize("case", [
+    {},
+    {"after_slash": True},
+    {"yard": False, "word": MERGE},
+    {"kind": "bridge"}, {"kind": "bridge", "word": "закоммить и запушь"}, {"kind": "bridge", "yard": False},
+], ids=["relayed-commit", "after-a-slash-command", "merge-in-helm", "bridge-commit", "bridge-russian",
+        "bridge-in-helm"])
+def test_a_word_helm_relayed_through_hc_is_heard_with_its_journal_entry(
+        dispatch, monkeypatch, tmp_path, case):
+    assert _relay_decide(dispatch, monkeypatch, tmp_path, **case) is None
+
+
+@pytest.mark.parametrize("case", [
+    {"journal": False},
+    {"entry": {"sender": OTHER_T}},
+    {"entry": {"target": OTHER_T}},
+    {"entry": {"text": MERGE}},
+    {"entry": {"at": "2026-11-19T00:02:10.000+00:00"}},
+    {"entry": {"at": "2026-11-18T23:58:00.000+00:00"}},
+    {"outcome": "failed"},
+    {"outcome": None},
+    {"later_boundary": True},
+    {"content": '<hc from="t1">commit</hc>' + BRIEF_TAIL},
+    {"yard": False, "addr": YARD_T, "word": MERGE,
+     "sender": {"foreground": {"cwd": "/nowhere"}}},
+    {"sender": {"state": "exited"}},
+    {"sender": {"foreground": {"name": "bash"}}},
+    {"sender": {"foreground": {"cwd": "/nowhere"}}},
+    {"source": "system", "capped": False},
+    {"me": "", "entry": {"target": None}},
+    {"word": MERGE},
+    {"yard": False},
+    {"yard": False, "addr": OTHER_T, "word": MERGE},
+    {"before": True}, {"claimed": True}, {"uuid": None}, *[{"kind": "bridge", **c} for c in (
+        {"entry": {"target": OTHER_T}}, {"entry": {"sha256": "0" * 64}}, {"outcome": "failed"},
+        {"source": "queued"}, {"uuid": None}, {"before": True}, {"claimed": True}, {"word": "не коммить"},
+        {"entry": {"at": "2026-11-18T23:58:00.000+00:00"}}, {"content": "commit"}, {"claimed": "deep"},
+        {"before": "deep"}, {"before": "edge"})], {"claimed": "deep"}, {"before": "deep"}, {"before": "edge"},
+], ids=["no-journal", "wrong-sender", "wrong-target", "word-mismatch", "entry-after-the-record",
+        "outside-the-window", "failed-outcome", "no-outcome", "a-later-boundary", "a-brief",
+        "yard-report-into-helm", "sender-not-live", "foreground-not-claude",
+        "foreground-outside-helm", "prompt-source-system", "hc-terminal-unset",
+        "merge-sentence-in-a-yard", "commit-in-helm", "merge-in-helm-from-another-address",
+        "relay-replayed-record", "relay-claimed-by-another-record", "relay-no-uuid", "bridge-other-terminal",
+        "bridge-digest-mismatch", "bridge-failed-outcome", "bridge-queued", "bridge-no-uuid", "bridge-replayed-record",
+        "bridge-claimed-by-another-record", "bridge-negated", "bridge-entry-too-old", "bridge-no-envelope",
+        "bridge-claim-beyond-the-tail", "bridge-first-record-beyond-the-tail", "bridge-first-record-at-the-horizon",
+        "relay-claim-beyond-the-tail", "relay-first-record-beyond-the-tail", "relay-first-record-at-the-horizon"])
+def test_an_hc_word_without_helms_matching_journal_entry_is_refused(
+        dispatch, monkeypatch, tmp_path, case):
+    decision = _relay_decide(dispatch, monkeypatch, tmp_path, **case)
+    assert decision is not None and decision.get("decision") == "block"
+
+
+@pytest.mark.parametrize("conflict", [True, False], ids=["after-a-409", "no-conflict"])
+def test_the_bridge_types_presses_and_posts_nothing_while_another_reader_polls_its_bot(
+        tmp_path, monkeypatch, conflict):
+    """HOS-408 review round 1: after a 409 the cycle still handled pending messages and
+    button presses, so a second reader of the bot did not stop live typing. MEASURED
+    2026-11-22: the conflict case fails on commit 4d9da92e and passes after the fix."""
+    for name in ("STATE", "LOG"):
+        monkeypatch.setenv(f"TELEGRAM_BRIDGE_{name}_DIR", str(tmp_path / name))
+    spec = importlib.util.spec_from_file_location("tg_bridge_conflict", ROOT / "scripts" / "telegram-bridge.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    bot = type("Bot", (), {"get_updates": staticmethod(lambda **kw: [])})
+    bridge = module.Bridge(module.TB.Store(tmp_path / "b.db"), bot, None, operator_id=1, helm=tmp_path,
+                           clock=lambda: 1000.0)
+    if conflict:
+        bridge.store.put("conflict_until", "1300")
+    calls = []
+    monkeypatch.setattr(bridge, "refresh_sessions", lambda: calls.append("sessions") or {})
+    monkeypatch.setattr(bridge, "handle_inbound", lambda live: calls.append("inbound"))
+    monkeypatch.setattr(bridge, "watch", lambda live: calls.append("watch"))
+    bridge.cycle(0)
+    assert calls == ([] if conflict else ["sessions", "inbound", "watch"]), calls

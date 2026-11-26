@@ -1,6 +1,7 @@
 [Unit]
 Description=Memory hygiene scan (objective-defect detector over auto-memory + Odin brain)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

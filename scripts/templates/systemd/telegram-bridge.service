@@ -1,0 +1,30 @@
+[Unit]
+Description=Telegram bridge: the operator's private chat with the bot, two ways, into Claude Code sessions (HEADING OS)
+After=network.target
+# No start limit: a burst of failures never makes systemd give up on the daemon.
+StartLimitIntervalSec=0
+OnFailure=unit-failure-alert@%n.service
+
+[Service]
+# READY=1 and WATCHDOG=1 come from the daemon (scripts/utils/systemd_notify.py); the
+# watchdog is fed once per cycle, so a hang is killed and restarted.
+Type=notify
+NotifyAccess=main
+WorkingDirectory={{WORKSPACE}}
+ExecStart={{PYTHON}} scripts/telegram-bridge.py daemon --long-poll
+Restart=always
+RestartSec=10
+WatchdogSec=300
+# Exit 3: another instance holds the start lock; exit 4: not configured (token,
+# operator id, own sink, topic mode, registry row). Restarting would loop on both.
+RestartPreventExitStatus=3 4
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+# A user unit inherits the systemd user manager's PATH, which has no ~/.local/bin,
+# where herdr and hc live (HOS-282).
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment=TZ={{TZ}}
+
+[Install]
+WantedBy=default.target

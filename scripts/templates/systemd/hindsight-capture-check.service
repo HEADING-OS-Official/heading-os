@@ -1,6 +1,7 @@
 [Unit]
 Description=Check that every interactive Claude Code session reached Hindsight (hindsight-sync.py capture-check)
 After=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

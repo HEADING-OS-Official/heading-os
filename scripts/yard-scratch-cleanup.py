@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove a deleted YARD's scratch directory, but only once its branch is merged.
+"""Archive a deleted YARD's scratch directory; never delete it.
 
 Runs on Herdr's `worktree.removed` event, through `yard-teardown.sh` in the
 plugin directory. Also runnable by hand, which is how it is verified:
@@ -14,31 +14,38 @@ and `data_path`, never by running in the yard, which is gone by now, and never
 through `checkout_scratch_dir`, which would CREATE the directory it is asked
 about.
 
-Three refusals, each a reason to keep rather than to guess:
+The directory is MOVED, whole, into the archive named `yard-scratch-archive` as
+`<checkout name>-<UTC stamp YYYYmmddTHHMMSSZ>`, merged branch or not. Until
+HOS-413 (2026-11-22) a merged yard's scratch was deleted, and a yard with no
+commit counts as merged (its tip is `main`), so the probe scripts and evidence
+of yards that never committed were lost (rule M003: never delete a record).
+Nothing here deletes: a move that fails leaves the folder where it is.
+
+Three refusals, each a reason to keep the folder where it is rather than guess:
 
   * the worktree is not one of this engine's yards. Herdr lays a worktree out as
     `<worktrees.directory>/<repo>/<branch-slug>`, so a yard's parent directory
     carries the engine clone's own name; the plugin is global and fires for
     every repository Herdr manages.
-  * the branch tip is not an ancestor of `main` in the engine repository, or the
-    branch cannot be resolved there. An unmerged yard keeps its scratch, because
-    the prepared commit message and the raw measurements in it may be the only
-    copy of work that never reached `main`.
-  * the computed path is not a direct child of the `checkout-scratch` root, or
-    is that root itself. Nothing but exactly that one directory is ever removed.
+  * the computed path is not a direct child of the `checkout-scratch` root, is
+    that root itself, is a symlink, or is not a directory. Nothing but exactly
+    that one directory is ever moved.
+  * the archive has no address, or the archive entry already exists.
 
-Exit 0 when the scratch was removed, was already absent, or was kept for a
-stated reason; 2 on a refusal of the input itself. Every outcome prints one
-`[YARD]` line on stderr, where the plugin log keeps it.
+Whether the branch is merged into `main` is only reported, in the log line.
+
+Exit 0 when the scratch was archived, was already absent or empty, or the
+worktree is not this engine's yard; 2 on a refusal or a failed move. Every
+outcome prints one `[YARD]` line on stderr, where the plugin log keeps it.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ENGINE_ROOT = Path(__file__).resolve().parent.parent
@@ -61,12 +68,17 @@ def _from_event() -> tuple[str, str]:
     try:
         event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}")
     except ValueError as exc:
-        log(f"the removal event is not JSON ({exc}); nothing removed")
+        log(f"the removal event is not JSON ({exc}); nothing taken from it")
         return "", ""
-    worktree = (event.get("data") or {}).get("worktree") if isinstance(event, dict) else None
+    data = event.get("data") if isinstance(event, dict) else None
+    worktree = data.get("worktree") if isinstance(data, dict) else None
     if not isinstance(worktree, dict):
+        if event:
+            log("the removal event has no data.worktree object; nothing taken from it")
         return "", ""
-    return worktree.get("path") or "", worktree.get("branch") or ""
+    path, branch = worktree.get("path"), worktree.get("branch")
+    return (path if isinstance(path, str) else "",
+            branch if isinstance(branch, str) else "")
 
 
 def is_merged(engine_repo: Path, branch: str) -> tuple[bool, str]:
@@ -84,24 +96,41 @@ def is_merged(engine_repo: Path, branch: str) -> tuple[bool, str]:
                    f"({proc.stderr.strip() or f'git exit {proc.returncode}'})")
 
 
-def remove_scratch(scratch: Path, root: Path) -> bool:
-    """Remove `scratch` only if it is exactly one directory directly under `root`."""
+def archive_scratch(scratch: Path, root: Path, archive: Path, stamp: str) -> bool:
+    """Move `scratch` into `archive`, only if it is one directory directly under `root`."""
     if scratch.is_symlink():
-        log(f"REFUSED: {scratch} is a symlink; nothing removed")
+        log(f"REFUSED: {scratch} is a symlink; kept in place")
         return False
     scratch_r, root_r = scratch.resolve(), root.resolve()
     if scratch_r == root_r or scratch_r.parent != root_r:
         log(f"REFUSED: {scratch} is not a directory directly under the "
-            f"checkout-scratch root {root}; nothing removed")
+            f"checkout-scratch root {root}; kept in place")
         return False
     if not scratch_r.exists():
-        log(f"no scratch to remove at {scratch}")
+        log(f"no scratch at {scratch}; nothing to archive")
         return True
     if not scratch_r.is_dir():
-        log(f"REFUSED: {scratch} is not a directory; nothing removed")
+        log(f"REFUSED: {scratch} is not a directory; kept in place")
         return False
-    shutil.rmtree(scratch_r)
-    log(f"removed scratch {scratch}")
+    try:
+        empty = not any(scratch_r.iterdir())
+    except OSError as exc:
+        log(f"REFUSED: {scratch} cannot be read ({exc}); kept in place")
+        return False
+    if empty:
+        log(f"scratch {scratch} is empty; nothing to archive, kept in place")
+        return True
+    target = archive / f"{scratch_r.name}-{stamp}"
+    if target.exists() or target.is_symlink():
+        log(f"REFUSED: archive entry {target} already exists; kept {scratch} in place")
+        return False
+    try:
+        archive.mkdir(parents=True, exist_ok=True)
+        os.replace(scratch_r, target)
+    except OSError as exc:
+        log(f"could not archive {scratch} to {target} ({exc}); kept in place")
+        return False
+    log(f"archived scratch {scratch} to {target}")
     return True
 
 
@@ -116,16 +145,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="the data repository (default: this machine's)")
     args = parser.parse_args(argv)
 
-    event_path, event_branch = _from_event()
+    # The event is read only for what the arguments did not give, so a bad
+    # event never blocks an explicit --worktree and --branch.
+    event_path, event_branch = (("", "") if args.worktree and args.branch
+                                else _from_event())
     worktree = args.worktree or event_path
     branch = args.branch or event_branch
     if not worktree:
-        log("the removal event did not say which worktree; nothing removed")
+        log("the removal event did not say which worktree; nothing archived")
         return 2
 
     engine_repo = args.engine_repo.resolve()
     if Path(worktree).resolve().parent.name != engine_repo.name:
-        log(f"{worktree} is not a yard of {engine_repo}; nothing removed")
+        log(f"{worktree} is not a yard of {engine_repo}; nothing archived")
         return 0
 
     try:
@@ -135,19 +167,18 @@ def main(argv: list[str] | None = None) -> int:
         # registry that ever nests or moves the per-checkout address is refused
         # below rather than trusted.
         root = data_path("runtime:checkout-scratch/tmp", data_root=args.data_root)
+        archive = data_path("yard-scratch-archive", data_root=args.data_root)
     except DataPathError as exc:
-        log(f"REFUSED: no scratch address for {worktree} ({exc}); nothing removed")
+        log(f"REFUSED: no scratch or archive address for {worktree} ({exc}); kept in place")
         return 2
 
-    if not branch:
-        log(f"kept scratch {scratch}: the event named no branch, so whether it "
-            f"is merged cannot be checked")
-        return 0
-    merged, why = is_merged(engine_repo, branch)
-    if not merged:
-        log(f"kept scratch {scratch}: {why}")
-        return 0
-    return 0 if remove_scratch(scratch, root) else 2
+    if branch:
+        merged, why = is_merged(engine_repo, branch)
+        log(f"branch {branch} is merged into main" if merged else why)
+    else:
+        log("the event named no branch; whether it is merged was not checked")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return 0 if archive_scratch(scratch, root, archive, stamp) else 2
 
 
 if __name__ == "__main__":

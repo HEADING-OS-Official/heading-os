@@ -1,0 +1,9 @@
+{
+  "name": "lot-map",
+  "version": "0.5.1",
+  "description": "A pane beside the chat (/lot-map on, off, toggle) mapping where this session's work goes: ten stations, the route, what runs now, and the last calls with their time and context growth.",
+  "author": {
+    "name": "Misha Hanin"
+  },
+  "types": "./types/index.d.ts"
+}

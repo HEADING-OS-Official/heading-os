@@ -112,6 +112,12 @@ order, and the self-check: every operator message of this session has one line
 under `## Operator messages`, with its status. Then pass the whole text on stdin
 through a quoted heredoc, so no backtick in it is executed.
 
+Check `handoff_mode` in the paths output of Step 1. When it is `assembled`, use
+the template's "Assembled mode" section instead. You write the short part.
+`--write` adds `## Session records (assembled by the script)` and the
+`Generated:`, `Session:` and `Trigger:` lines. When it is `full`, or absent,
+write the full template as before.
+
 ```bash
 .venv/bin/python scripts/checkpoint-paths.py --write <<'HANDOFF'
 # Handoff - manual checkpoint
@@ -140,6 +146,12 @@ inherit this step.
 2. Dispatch the `goldfish` agent in mode `reader`, per Phase 1 of
    `.claude/skills/goldfish/SKILL.md`. Use this audience: "a new Claude session
    that resumes this work with no memory of this conversation".
+
+   In `assembled` mode, the draft holds your short part only. Run
+   `.venv/bin/python scripts/checkpoint-paths.py --facts`, which writes nothing,
+   and save its output beside the draft as `<stamp>-handoff-records.md`. Pass
+   that file as `--context`, and use the audience and the three extra checks of
+   § Cold read in assembled mode of `references/handoff-template.md`.
 3. Triage the findings per `.claude/skills/goldfish/references/triage.md`.
    Apply every FIX to the draft. Put every ESCALATE item under
    `## Open issues`.
@@ -191,10 +203,7 @@ moved, prompts it archived, and messages the operator typed. Background-task
 reports, briefs and relayed words are not his. At 3 events or 60 minutes of work, whichever comes
 first, the handoff is stale. A silence counts as at most 5 minutes of work.
 
-- Unattended: the continuation asks for a light `/handover`: Steps 1 and 2
-  without the cold read, kind `manual`, no `/clear`, no `/compact`. At most
-  twice per handoff.
-- Attended: one line, "Handoff is N event(s) / M min old", once per handoff.
+- Neither mode prints a message or blocks a Stop over freshness (HOS-384, 2026-11-19); the age shows on the status line only.
 - The status line shows the age: `handoff 42m/3ev`, yellow once stale.
 - Never in a yard (`HEADING_OS_YARD=1`): handoffs there are not HELM's.
 

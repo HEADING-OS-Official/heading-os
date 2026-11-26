@@ -4,6 +4,7 @@
 [Unit]
 Description=Lific issue tracker
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 ExecStart={{LIFIC_BIN}} start --config {{LIFIC_CONFIG}}

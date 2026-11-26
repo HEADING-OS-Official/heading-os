@@ -53,6 +53,7 @@ from pathlib import Path
 
 ENGINE_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ENGINE_ROOT))
+from scripts.utils.claude_child import claude_child_env  # noqa: E402 - stdlib only
 from scripts.utils.install_runner import runner_env, runner_problem  # noqa: E402 - stdlib only
 
 MARKETPLACE = "heading-os-mods"
@@ -176,7 +177,7 @@ def _claude_run(ctx, *args: str, timeout: int = TIMEOUT_S) -> subprocess.Complet
     if not claude:
         raise AgentViewError("Claude Code (`claude`) is not on PATH, so no plugin can be installed")
     return subprocess.run([claude, *args], capture_output=True, text=True, errors="replace",
-                          env=_env(ctx), cwd=str(_home(ctx)), timeout=timeout)
+                          env=claude_child_env(_env(ctx)), cwd=str(_home(ctx)), timeout=timeout)
 
 
 def _claude_json(claude: str | None, home: Path, env: dict[str, str], *args: str):
@@ -185,7 +186,7 @@ def _claude_json(claude: str | None, home: Path, env: dict[str, str], *args: str
         return None
     try:
         proc = subprocess.run([claude, *args, "--json"], capture_output=True, text=True, errors="replace",
-                              env=env, cwd=str(home), timeout=120)
+                              env=claude_child_env(env), cwd=str(home), timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:

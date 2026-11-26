@@ -1,6 +1,7 @@
 [Unit]
 Description=Odin reflect-propose (weekly headless draft -> Telegram DM)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

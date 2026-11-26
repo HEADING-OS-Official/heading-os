@@ -2,9 +2,69 @@
 
 This page lists what the Official distribution gained since its first release, newest first. Each entry says what changed for you and, where it matters, what you do about it.
 
-The current version is HEADING OS 3.3. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.3.0`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
+The current version is HEADING OS 3.4. From 3.1 on, one number names a release: the tag on the `HEADING-OS-Official/heading-os` repository (`v3.4.0`) and the version the README shows under "Status" are the same, and they follow Semantic Versioning. The first three releases were tagged by date, `v2026.10.1` to `v2026.10.3`; those tags stay as they are.
 
 To move an existing installation to a newer release, follow "Update" in `INSTALL.md`.
+
+## 3.4.0 (2026-11-25)
+
+Tagged `v3.4.0`; `install.sh` installs it. Your sessions can talk to you on Telegram, telemetry is now refused by code, the engine watches its own services and timers, a new mod shows where Claude's work goes, and yards work under both versions of Herdr. Every command from 3.3.0 still works.
+
+What you do:
+
+- Run `uv sync --all-extras --group dev` in the engine folder, for the new library versions.
+- Run `bash scripts/setup-platform.sh` once, so the new yard hook is registered. `bash scripts/setup-platform.sh --check` confirms it.
+- Reinstall your timers and services the way you first installed them, so each unit picks up the failure alert.
+- If you want the Telegram bridge, run `bash scripts/install-daemon-service.sh telegram-bridge`. It is off until you do.
+- If you want the lot-map, install the `lot-map` mod from the engine's mod marketplace, `heading-os-mods`, as you did `context-bar`.
+
+### New: your sessions on Telegram
+
+Each Claude session, the main one and every yard, gets its own topic in your private chat with your notification bot. When a session stops and waits for you, its last answer appears in its topic. When it shows a menu or a permission prompt, the topic gets buttons; a button presses that option once, and only while the screen still shows the same prompt. What you write in a topic is typed into that session, as if you had typed it at the terminal.
+
+Only you can use it. A message from anyone else, from outside your private chat, forwarded, edited or older than 15 minutes is ignored. A message for a session that is busy waits until it is free. When a yard is removed, its topic is renamed and then deleted, so a phone does not keep showing it.
+
+### New: telemetry stays off, and a machine checks it
+
+An update check is fine. Telemetry is not, unless you say so. Three changes hold that rule in code.
+
+Every Claude Code process the engine starts for itself, for tests, reviews or setup, now carries the four no-telemetry switches. Before, a process started with project settings only never read the user settings where those switches live; under the nightly timer it ran with none of them. That is closed. A commit check refuses any new launch that skips the helper.
+
+The update manager now knows, for each component it updates, whether that component sends telemetry and how to prove it is off. It refuses to update a component whose telemetry it cannot verify as off, and the daily radar says so. Chromium and the Hindsight server and console now have verified switches. Each probe only reads.
+
+### New: the engine watches its own services and timers
+
+The watchdog used to look only at heartbeat files. Not enough. It now checks that every enabled service is running and every enabled timer has fired on time, with room after a boot and after the machine wakes. When a timer job, a service or an update fails, you get one message on your own Telegram with what failed and its last five log lines, secrets removed. A crash loop sends at most one message an hour, not one a minute.
+
+The daily radar has seven new checks: disk space, certificate expiry, pending security updates, a weekly dependency audit, timers that should be on and are not, MCP servers that stopped answering, and tool paths still pointing at an old Node.js version after an upgrade. That last one is also a row in `doctor`.
+
+### New: a map of where the work goes
+
+The lot-map mod draws a live map of what Claude is doing. Every tool call, model step, hook and message lights one of ten stations: you, the model, memory, files, shell, network, browser, agents, skills and hooks. Labels show names. Never content. `/lot-map on` opens it and `/lot-map off` closes it; nothing opens by itself. Under herdr-core the map is a picture; in other terminals it is drawn in braille. `scripts/lot-map.py <transcript>` replays the same map for a past session, including a yard that no longer exists.
+
+### Changed: yards under both versions of Herdr
+
+Herdr now comes in two versions, the classic TUI and herdr-core. Both work. HEADING OS picks the right one from the session's own environment. `scripts/yard.py create <name>` and `scripts/yard.py remove <name>` build and tear down a yard under either. Under herdr-core each yard gets a short code, `w<N>-<name>`, and appears as its own space in the window.
+
+A session started in a yard without its yard marker is now refused every tool. Before, it got a warning and could carry on regardless of what the warning said. If you start yards through `scripts/yard.py` or `herdr worktree create`, the marker is set for you.
+
+### Changed: transcription stays on your machine
+
+Audio and video transcription now goes through your local Lemonade server by default, with Whisper Large v3. When the server does not answer, it falls back to the local engine and says so in one line. Nothing leaves the machine. `--engine local` keeps the old behaviour.
+
+### Changed: libraries brought up to date
+
+Every engine dependency is on its current release. Among them: anthropic 2.12.0, openai 3.57.0 and fastapi 0.165.0. `uv sync --all-extras --group dev` brings them in.
+
+### Fixed
+
+- Security: one relayed instruction could authorise a second, identical action. Each one now authorises exactly one.
+- Security: the MCP check follows no redirect, so the headers you configured for a server never travel to another address.
+- Removing a yard that had never committed deleted its scratch folder, with any notes and evidence in it. Scratch is now archived, never deleted.
+- After `/clear`, a session in unattended mode stopped at its resume banner. It now carries on, and names both paths of the file it is working on.
+- `/second-wind` checks the terminal before saving the handoff and retries a reset that did not go through.
+- When the Hindsight server does not answer, the memory sync ends with one plain line instead of an error trace.
+- Under herdr-core, a pane with only background shells reads as idle, and yard agents find the same programs you do.
 
 ## 3.3.0 (2026-11-17)
 

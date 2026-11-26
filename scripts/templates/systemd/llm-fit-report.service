@@ -2,6 +2,7 @@
 Description=HEADING OS weekly LLM-fit downgrade-audit report (Langfuse traces -> data-overlay report)
 After=network-online.target
 Wants=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

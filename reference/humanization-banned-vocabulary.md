@@ -330,4 +330,4 @@ The empirical anchor: the 10.8% team text uses "You don't choose your tribe for 
 
 #### The one structural pattern that is always banned
 
-- **Title Case For All Headings.** Use sentence case. Title Case is print-magazine register that RLHF picked up. (This survives every datapoint because it's a typographical convention.)
+- **Title Case For All Headings.** Use sentence case. Title Case is print-magazine register that RLHF picked up. (This survives every datapoint because it's a typographical convention.) Exception: where the brand design system under the registry name `brand-kit` sets slide headlines, one-pager headlines or document headings in Title Case, those follow it. All other prose keeps sentence case.

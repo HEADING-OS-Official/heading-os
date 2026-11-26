@@ -114,6 +114,7 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from scripts.utils import claude_models  # noqa: E402
+from scripts.utils.claude_child import claude_child_env  # noqa: E402
 from scripts.utils.data_path import data_write_dir  # noqa: E402
 from scripts.utils.paths import get_data_root, load_env  # noqa: E402
 from scripts.utils.user_agent import user_agent  # noqa: E402
@@ -370,12 +371,10 @@ def write_calls(records: list[dict], copy: Path) -> list[dict]:
 
 
 # Taken before `load_env()` runs for the judge: a key it loads from `.env` would
-# switch every child `claude` from its own login to that key.
+# switch every child `claude` from its own login to that key. Each child gets it
+# through `claude_child_env`, which also forces the no-telemetry switches: the
+# children run with `--setting-sources project`, so user settings never reach them.
 _PARENT_ENV = dict(os.environ)
-
-
-def _child_env() -> dict:
-    return {k: v for k, v in _PARENT_ENV.items() if k not in CHILD_ENV_DROP}
 
 
 def run_session(copy: Path, prompt: str, model: str, settings: dict, mode: str, *,
@@ -399,7 +398,7 @@ def run_session(copy: Path, prompt: str, model: str, settings: dict, mode: str, 
     started = time.monotonic()
     try:
         r = subprocess.run(argv, cwd=copy, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                           timeout=timeout, env=_child_env())
+                           timeout=timeout, env=claude_child_env(_PARENT_ENV, drop=CHILD_ENV_DROP))
         stdout, stderr, code = r.stdout, r.stderr, r.returncode
     except subprocess.TimeoutExpired as exc:
         stdout, stderr, code = "", f"timeout after {timeout}s: {exc}", -1
@@ -429,7 +428,8 @@ def auth_probe(model: str = "sonnet", timeout: int = 60) -> str | None:
         try:
             r = subprocess.run(["claude", "-p", "Reply OK", "--model", model, "--output-format", "json",
                                 "--setting-sources", "project", "--tools", "", "--strict-mcp-config"],
-                               cwd=d, capture_output=True, text=True, timeout=timeout, env=_child_env(),
+                               cwd=d, capture_output=True, text=True, timeout=timeout,
+                               env=claude_child_env(_PARENT_ENV, drop=CHILD_ENV_DROP),
                                stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             return f"auth probe timed out after {timeout}s"
@@ -740,7 +740,7 @@ def cmd_loader(args) -> int:
 def _claude_version() -> str:
     try:
         return subprocess.run(["claude", "--version"], capture_output=True, text=True,
-                              timeout=30).stdout.strip()
+                              timeout=30, env=claude_child_env()).stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"unknown ({exc})"
 

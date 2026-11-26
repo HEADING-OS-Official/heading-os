@@ -171,6 +171,14 @@ BASELINE: dict[str, str] = {
         "stale exemption went red, and the honest tree went green. That "
         "evidence is in the commit, not in a file anything re-runs."
     ),
+    "hook:claude-child-env": (
+        "Holds the operator's no-telemetry instruction for every claude process "
+        "the engine starts (HOS-410, 2026-11-22). Leaving the switches off a "
+        "child is neither failure A nor failure B, so it ships with a Fix-Note. "
+        "Its refusal WAS observed before it was wired: on main it listed 12 "
+        "launches without claude_child_env (exit 1), on the branch 0 (exit 0). "
+        "That evidence is in the commit, not in a file anything re-runs."
+    ),
     "hook:memory-preservation": (
         "Checks that no rule was lost when the conduct rules left the memory "
         "index. It walks a corpus in the private overlay, so it cannot be "

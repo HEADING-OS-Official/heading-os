@@ -1,6 +1,7 @@
 [Unit]
 Description=Odin cadence reminder (collect/reflect nudge -> Telegram)
 After=network.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

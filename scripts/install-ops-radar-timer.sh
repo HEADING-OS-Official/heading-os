@@ -6,7 +6,7 @@
 #   HEADING_OS_TZ=America/New_York scripts/install-ops-radar-timer.sh   # pin a TZ
 #
 # Renders scripts/templates/systemd/ops-radar.{service,timer} (substituting
-# {{WORKSPACE}}, {{PYTHON}}, {{TZ}}) into ~/.config/systemd/user/, then enables the
+# {{WORKSPACE}}, {{PYTHON}}, {{TZ}}, {{TOOLPATH}}) into ~/.config/systemd/user/, then enables the
 # daily timer. The timer fires 08:00 in the configured timezone (HEADING_OS_TZ,
 # default UTC) independent of any Claude Code session and runs
 # scripts/ops-radar-notify.py, which auto-heals Tier-A (restarts the model server
@@ -65,11 +65,17 @@ for unit in ops-radar.service ops-radar.timer; do
     fi
 done
 
+# The PATH the radar runs under, taken from the shell that installs it: the
+# user manager's PATH lacks ~/.local/bin and the nvm node bin, so the MCP
+# probe found no server (HOS-404). Same mechanism as the nightly installer.
+tool_path_or_refuse
+
 mkdir -p "$DEST_DIR"
 
 for unit in ops-radar.service ops-radar.timer; do
     render_unit "$TEMPLATE_DIR/$unit" "$DEST_DIR/$unit" \
-        "$WORKSPACE" "$PYTHON" "$TZ_VALUE"
+        "$WORKSPACE" "$PYTHON" "$TZ_VALUE" \
+        -e "s|{{TOOLPATH}}|${TOOL_PATH}|g"
 done
 
 # Validate the calendar expression before enabling (catches a too-old systemd

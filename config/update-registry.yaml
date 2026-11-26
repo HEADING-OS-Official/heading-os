@@ -26,6 +26,13 @@
 # Paths are spelled out under $HOME because the timer runs under systemd with a
 # minimal PATH, and npm/node probes load nvm themselves for the same reason; a
 # fresh login shell resolves the same default the probe does.
+#
+# Telemetry: every component carries a `telemetry:` entry (kind `none` with the
+# evidence read, `switch` with a read-only `probe` and the `off` regex its output
+# matches, or `unknown` with what was looked at), because of the operator's rule
+# M056 in his private policy: telemetry is always off, update checks are allowed.
+# `apply` refuses a component not verified off, and every new component needs a
+# verified entry; the loader refuses one without it (HOS-412).
 components:
 
   cliproxyapi:
@@ -46,6 +53,20 @@ components:
     # allowed while a bad one puts the working binary back without him.
     tier: auto
     display: CLIProxyAPI
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        from pathlib import Path
+        import yaml
+        with open(Path.home() / "cliproxyapi/config.yaml", encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        if not isinstance(doc, dict):
+            raise SystemExit("config.yaml is not a mapping")
+        print("effective=on: a top-level home key is configured" if "home" in doc else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 8: version lookups and the panel download only, update checks the operator keeps (HOS-412). The binary also carries a Home client that sends latency telemetry to a configured `home:` server (strings 'Home latency telemetry failed', 'Home subscription telemetry PING', read 2026-11-23). The probe parses config.yaml as YAML, so a quoted key counts; off while no top-level home key exists."
     current:
       via: shell
       cmd: "$HOME/cliproxyapi/cli-proxy-api -version 2>&1 | head -5"
@@ -67,6 +88,9 @@ components:
     # the component read `unknown` every morning and was never auto-updated.
     tier: auto
     display: yt-dlp
+    telemetry:
+      kind: none
+      evidence: "Source read 2026-11-23: a grep of the installed yt_dlp package for telemetry, analytics, posthog, sentry and mixpanel finds only extractor URL patterns for sites' own analytics hosts, no reporting code."
     current:
       via: shell
       cmd: "$HOME/.local/bin/yt-dlp --version"
@@ -86,6 +110,44 @@ components:
     # timer's PATH (MEASURED 2026-10-01).
     tier: observed
     display: Claude Code CLI
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json, os, subprocess
+        from pathlib import Path
+        def systemd_env():
+            out = subprocess.run(["/usr/bin/systemctl", "--user", "show-environment"],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout
+            return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        def settings_env(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    env = json.load(fh).get("env")
+            except FileNotFoundError:
+                return {}
+            if env is not None and not isinstance(env, dict):
+                raise SystemExit(f"{path}: env is not a mapping")
+            return env or {}
+        def sources():
+            caller = dict(os.environ)
+            return {"caller": caller, "timer": systemd_env(),
+                    "claude-settings": {**caller, **settings_env(Path.home() / ".claude/settings.json")}}
+        KEYS = ("DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_BUG_COMMAND",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+        session = dict(os.environ)
+        for p in (Path.home() / ".claude/settings.json", Path(".claude/settings.json"),
+                  Path(".claude/settings.local.json"), Path("/etc/claude-code/managed-settings.json")):
+            session.update(settings_env(p))
+        timer = systemd_env()
+        bad = [f"session {k}={session.get(k)!r}" for k in KEYS
+               if str(session.get(k, "")).strip().lower() not in ("1", "true")]
+        bad += [f"timer {k}={timer.get(k)!r}" for k in KEYS
+                if timer.get(k, "").strip().lower() not in ("1", "true")]
+        print("effective=on: " + ", ".join(bad) if bad else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 1: telemetry, error reporting and nonessential traffic stop with the four switches. The probe merges the settings files in Claude Code's order (user, this checkout's project and local settings, managed settings last) over the caller's environment, and reads the systemd user environment the timers inherit; all four must be 1 in both. A session started in another project directory, or from a shell environment other than the caller's, is not covered."
     current:
       via: shell
       cmd: "$HOME/.local/bin/claude --version 2>/dev/null"
@@ -99,6 +161,9 @@ components:
     # update replaces a running daemon's binary, which is HELM's by hand.
     tier: observed
     display: Lific
+    telemetry:
+      kind: none
+      evidence: "Strings of ~/.local/bin/lific read 2026-11-23: the one 'telemetry' match is the LSP protocol method name telemetry/event in its bundled editor code, no reporting endpoint; it listens on 127.0.0.1:3456 only (sweep section 1)."
     current:
       via: shell
       cmd: "$HOME/.local/bin/lific --version"
@@ -113,6 +178,21 @@ components:
     # binary itself reads for its stable channel.
     tier: observed
     display: Herdr
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json
+        from pathlib import Path
+        with open(Path.home() / ".config/herdr-app/settings.json", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict):
+            raise SystemExit("settings.json is not an object")
+        value = doc.get("telemetry")
+        print("effective=off" if value is False else f"effective=on: settings telemetry={value!r}")
+        PY
+      "off": "^effective=off$"
+      evidence: "~/.config/herdr-app/AGENTS.md lines 819-826 (read 2026-11-23): the app sends a daily usage report, on when absent; settings.json \"telemetry\": false stops it; DO_NOT_TRACK=1 or HERDR_TELEMETRY=0 only turn it off for one run, nothing there turns it on. The probe parses the JSON, so a later duplicate key wins as it does for the app. The TUI binary carries no telemetry string (read 2026-11-23); its update check is kept by the operator's word."
     current:
       via: shell
       cmd: "$HOME/.local/bin/herdr --version"
@@ -126,6 +206,43 @@ components:
     # A release binary in ~/bin with no updater of its own here.
     tier: observed
     display: GitHub CLI
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json, os, subprocess
+        from pathlib import Path
+        import yaml
+        def systemd_env():
+            out = subprocess.run(["/usr/bin/systemctl", "--user", "show-environment"],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout
+            return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        def settings_env(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    env = json.load(fh).get("env")
+            except FileNotFoundError:
+                return {}
+            if env is not None and not isinstance(env, dict):
+                raise SystemExit(f"{path}: env is not a mapping")
+            return env or {}
+        def sources():
+            caller = dict(os.environ)
+            return {"caller": caller, "timer": systemd_env(),
+                    "claude-settings": {**caller, **settings_env(Path.home() / ".claude/settings.json")}}
+        with open(Path.home() / ".config/gh/config.yml", encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        if not isinstance(doc, dict):
+            raise SystemExit("config.yml is not a mapping")
+        value = doc.get("telemetry")
+        bad = [] if str(value).strip().lower() == "disabled" else [f"config telemetry={value!r}"]
+        for name, env in sources().items():
+            if "GH_TELEMETRY" in env and env["GH_TELEMETRY"].strip().lower() not in ("disabled", "false", "0", "off"):
+                bad.append(f"{name} GH_TELEMETRY={env['GH_TELEMETRY']!r}")
+        print("effective=on: " + ", ".join(bad) if bad else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "Strings of ~/bin/gh 2.105.0 read 2026-11-23: 'Send telemetry event to GitHub', config key telemetry ('whether telemetry is enabled, disabled, or logging'), GH_TELEMETRY. The probe parses config.yml as YAML and needs telemetry: disabled, and refuses any GH_TELEMETRY in the caller's, the timers' or the Claude settings environment that is not a disabling value. DO_NOT_TRACK=1 is in the environment, but no document read here says gh honours it."
     current:
       via: shell
       cmd: "$HOME/bin/gh --version"
@@ -137,6 +254,9 @@ components:
   git-lfs:
     tier: observed
     display: Git LFS
+    telemetry:
+      kind: none
+      evidence: "Strings of ~/.local/bin/git-lfs read 2026-11-23: no telemetry string and no analytics endpoint."
     current:
       via: shell
       cmd: "$HOME/.local/bin/git-lfs version"
@@ -150,6 +270,9 @@ components:
     # release note carrying a fixed `version:` line, which is what is read.
     tier: observed
     display: FFmpeg (static)
+    telemetry:
+      kind: none
+      evidence: "Strings of ~/.local/bin/ffmpeg (static build) read 2026-11-23: no telemetry string and no analytics endpoint."
     current:
       via: shell
       cmd: "$HOME/.local/bin/ffmpeg -version"
@@ -165,6 +288,9 @@ components:
     # not established, and the rule for a new `auto` entry needs it.
     tier: notify
     display: uv
+    telemetry:
+      kind: none
+      evidence: "Strings of ~/.local/bin/uv read 2026-11-23: no telemetry string; sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 3: it reaches PyPI and GitHub only to resolve or install."
     current:
       via: shell
       cmd: "$HOME/.local/bin/uv --version"
@@ -183,6 +309,9 @@ components:
   notebooklm-mcp-cli:
     tier: notify
     display: notebooklm-mcp-cli
+    telemetry:
+      kind: none
+      evidence: "Source read 2026-11-23: fastmcp/telemetry.py says its OpenTelemetry use is a no-op unless an SDK and exporter are installed, and the tool's venv holds opentelemetry-api only (no SDK, no exporter); no analytics library."
     current:
       via: shell
       cmd: "$HOME/.local/bin/uv tool list"
@@ -199,6 +328,9 @@ components:
   git-filter-repo:
     tier: notify
     display: git-filter-repo
+    telemetry:
+      kind: none
+      evidence: "Source read 2026-11-23: a grep of the installed package for telemetry and analytics finds nothing."
     current:
       via: shell
       cmd: "$HOME/.local/bin/uv tool list"
@@ -215,6 +347,9 @@ components:
   pre-commit:
     tier: notify
     display: pre-commit
+    telemetry:
+      kind: none
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 3: no telemetry; network only to clone hook repositories."
     current:
       via: shell
       cmd: "$HOME/.local/bin/uv tool list"
@@ -231,6 +366,9 @@ components:
   weasyprint:
     tier: notify
     display: WeasyPrint
+    telemetry:
+      kind: none
+      evidence: "Source read 2026-11-23: a grep of the installed packages for telemetry and analytics matches only pyphen hyphenation dictionaries."
     current:
       via: shell
       cmd: "$HOME/.local/bin/uv tool list"
@@ -251,6 +389,9 @@ components:
     # hand.
     tier: observed
     display: Playwright (uv tool)
+    telemetry:
+      kind: none
+      evidence: "Source read 2026-11-23: the one match in the bundled driver is the Firefox preferences that turn its telemetry off; sweep section 6 found no telemetry."
     current:
       via: shell
       cmd: "$HOME/.local/bin/uv tool list"
@@ -264,6 +405,46 @@ components:
   codegraph:
     tier: notify
     display: CodeGraph (npm)
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json, os, subprocess
+        from pathlib import Path
+        def systemd_env():
+            out = subprocess.run(["/usr/bin/systemctl", "--user", "show-environment"],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout
+            return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        def settings_env(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    env = json.load(fh).get("env")
+            except FileNotFoundError:
+                return {}
+            if env is not None and not isinstance(env, dict):
+                raise SystemExit(f"{path}: env is not a mapping")
+            return env or {}
+        def sources():
+            caller = dict(os.environ)
+            return {"caller": caller, "timer": systemd_env(),
+                    "claude-settings": {**caller, **settings_env(Path.home() / ".claude/settings.json")}}
+        with open(Path.home() / ".codegraph/telemetry.json", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        config_off = isinstance(doc, dict) and doc.get("enabled") is False
+        bad = []
+        for name, env in sources().items():
+            if env.get("DO_NOT_TRACK", "").strip().lower() in ("1", "true", "yes"):
+                continue
+            if "CODEGRAPH_TELEMETRY" in env:
+                if env["CODEGRAPH_TELEMETRY"].strip().lower() not in ("0", "false", "off", "no"):
+                    bad.append(f"{name} CODEGRAPH_TELEMETRY={env['CODEGRAPH_TELEMETRY']!r}")
+                continue
+            if not config_off:
+                bad.append(f"{name} telemetry.json not enabled=false")
+        print("effective=on: " + ", ".join(bad) if bad else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 2, and codegraph's dist/telemetry/index.d.ts and README line 789 (read 2026-11-23): usage telemetry to telemetry.getcodegraph.com, decided in the order DO_NOT_TRACK, CODEGRAPH_TELEMETRY, ~/.codegraph/telemetry.json, default. The probe applies that order to the caller's, the timers' and the Claude settings environment. The daily update check is kept by the operator's word."
     current:
       via: shell
       cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @colbymchenry/codegraph'
@@ -282,6 +463,9 @@ components:
     # build, which an npm upgrade does not fetch.
     tier: observed
     display: Playwright MCP (npm)
+    telemetry:
+      kind: none
+      evidence: "Source read 2026-11-23: @playwright/mcp depends only on playwright and playwright-core, and its own files carry no telemetry or analytics string; sweep section 6 found none."
     current:
       via: shell
       cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @playwright/mcp'
@@ -293,6 +477,9 @@ components:
   marp-cli:
     tier: notify
     display: Marp CLI (npm)
+    telemetry:
+      kind: none
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 2: no telemetry dependency or string in @marp-team/marp-cli."
     current:
       via: shell
       cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @marp-team/marp-cli'
@@ -309,6 +496,9 @@ components:
   pen-cli:
     tier: notify
     display: Pencil CLI (npm)
+    telemetry:
+      kind: unknown
+      evidence: "@pen.dev/cli 0.3.17 (author High Agency, Inc., UNLICENSED), obfuscated bundle dist/index.mjs, read by HELM 2026-11-23: it carries an event buffer flushed over RPC ('analytics.flush.error'), a 'get-device-id' call, 'sceneManager.telemetry' calls and the analytics RPCs 'GetUserAnalytics' and 'GetTeamAnalytics' under the 'aiserver.v1' namespace, and it names the host 'api2.cursor.sh'. The only environment variables it reads are PEN_API_BASE, PEN_AGENT_API_KEY and PENCIL_CURSOR_HTTP*; no opt-out variable was found. No workspace code calls pen-cli. Keeping it frozen or uninstalling it is the operator's decision."
     current:
       via: shell
       cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm ls -g --depth=0 --json @pen.dev/cli'
@@ -325,6 +515,55 @@ components:
   npm:
     tier: notify
     display: npm
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json, os, subprocess
+        from pathlib import Path
+        def systemd_env():
+            out = subprocess.run(["/usr/bin/systemctl", "--user", "show-environment"],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout
+            return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        def settings_env(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    env = json.load(fh).get("env")
+            except FileNotFoundError:
+                return {}
+            if env is not None and not isinstance(env, dict):
+                raise SystemExit(f"{path}: env is not a mapping")
+            return env or {}
+        def sources():
+            caller = dict(os.environ)
+            return {"caller": caller, "timer": systemd_env(),
+                    "claude-settings": {**caller, **settings_env(Path.home() / ".claude/settings.json")}}
+        def npmrc_audit(path):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except FileNotFoundError:
+                return None
+            value = None
+            for raw in lines:
+                line = raw.strip()
+                if not line or line.startswith(("#", chr(59))):
+                    continue
+                key, sep, val = line.partition("=")
+                if sep and key.strip().lower() == "audit":
+                    value = val.strip().strip("\"'")
+            return value
+        user = npmrc_audit(Path.home() / ".npmrc")
+        bad = []
+        for name, env in sources().items():
+            overrides = [v for k, v in env.items() if k.lower() == "npm_config_audit"]
+            if overrides:
+                bad += [f"{name} npm_config_audit={v!r}" for v in overrides if v.strip().lower() != "false"]
+            elif (user or "").strip().lower() != "false":
+                bad.append(f"{name} ~/.npmrc audit={user or 'unset, default true'}")
+        print("effective=on: " + ", ".join(bad) if bad else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 2: npm audit posts the dependency tree to the registry on install, on by default; ~/.npmrc (written 2026-11-22 17:53) sets audit=false, read 2026-11-23. The probe takes the last assignment in ~/.npmrc, as npm's ini reader does, and an npm_config_audit environment override wins over it in the caller's, the timers' and the Claude settings environment. Not read: a project .npmrc in the directory npm runs from, and the global npmrc (only reached when ~/.npmrc is silent, which reads on). `npm config get audit` is not used, because running npm can fire its update notifier. The update notifier is an update check the operator keeps."
     current:
       via: shell
       cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && npm --version'
@@ -344,6 +583,9 @@ components:
     # only and installed by hand with nvm.
     tier: observed
     display: Node.js (nvm)
+    telemetry:
+      kind: none
+      evidence: "Strings of the nvm default node binary (v24.22.3) read 2026-11-23: no telemetry string."
     current:
       via: shell
       cmd: '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm use --silent default >/dev/null 2>&1 && node --version'
@@ -357,6 +599,44 @@ components:
     # them itself (`claude plugin update`), so watched only.
     tier: observed
     display: Claude Code plugins
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json, os, subprocess
+        from pathlib import Path
+        def systemd_env():
+            out = subprocess.run(["/usr/bin/systemctl", "--user", "show-environment"],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout
+            return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        def settings_env(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    env = json.load(fh).get("env")
+            except FileNotFoundError:
+                return {}
+            if env is not None and not isinstance(env, dict):
+                raise SystemExit(f"{path}: env is not a mapping")
+            return env or {}
+        def sources():
+            caller = dict(os.environ)
+            return {"caller": caller, "timer": systemd_env(),
+                    "claude-settings": {**caller, **settings_env(Path.home() / ".claude/settings.json")}}
+        KEYS = ("DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_BUG_COMMAND",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+        session = dict(os.environ)
+        for p in (Path.home() / ".claude/settings.json", Path(".claude/settings.json"),
+                  Path(".claude/settings.local.json"), Path("/etc/claude-code/managed-settings.json")):
+            session.update(settings_env(p))
+        timer = systemd_env()
+        bad = [f"session {k}={session.get(k)!r}" for k in KEYS
+               if str(session.get(k, "")).strip().lower() not in ("1", "true")]
+        bad += [f"timer {k}={timer.get(k)!r}" for k in KEYS
+                if timer.get(k, "").strip().lower() not in ("1", "true")]
+        print("effective=on: " + ", ".join(bad) if bad else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 1: telemetry, error reporting and nonessential traffic stop with the four switches. The probe merges the settings files in Claude Code's order (user, this checkout's project and local settings, managed settings last) over the caller's environment, and reads the systemd user environment the timers inherit; all four must be 1 in both. A session started in another project directory, or from a shell environment other than the caller's, is not covered."
     current:
       via: claude_plugins
     latest:
@@ -367,6 +647,45 @@ components:
     # it is only as fresh as the last `apt update`, which needs sudo.
     tier: observed
     display: Brave (apt)
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import glob, json
+        from pathlib import Path
+        MAP = {"BraveP3AEnabled": ("brave", "p3a", "enabled"),
+               "BraveStatsPingEnabled": ("brave", "stats", "reporting_enabled"),
+               "MetricsReportingEnabled": ("user_experience_metrics", "reporting_enabled")}
+        def policies(kind):
+            found = {}
+            for f in sorted(glob.glob(f"/etc/brave/policies/{kind}/*.json")):
+                with open(f, encoding="utf-8") as fh:
+                    doc = json.load(fh)
+                for key in MAP:
+                    if isinstance(doc, dict) and key in doc:
+                        found.setdefault(key, []).append(doc[key])
+            return found
+        managed, recommended = policies("managed"), policies("recommended")
+        with open(Path.home() / ".config/BraveSoftware/Brave-Browser/Local State", encoding="utf-8") as fh:
+            local = json.load(fh)
+        bad = []
+        for key, path in MAP.items():
+            if key in managed:
+                if any(v is not False for v in managed[key]):
+                    bad.append(f"managed policy {key}={managed[key]!r}")
+                continue
+            value = local
+            for part in path:
+                value = value.get(part) if isinstance(value, dict) else None
+            if value is False:
+                continue
+            if value is None and key in recommended and all(v is False for v in recommended[key]):
+                continue
+            bad.append(f"{key}: Local State {value!r}")
+        print("effective=on: " + ", ".join(bad) if bad else "effective=off")
+        PY
+      "off": "^effective=off$"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 6: P3A, the daily usage ping and crash/diagnostic reports, each on by default; HOS-412 turned all three off in the workspace profile's Local State and in the managed policy /etc/brave/policies/managed (read 2026-11-23). The probe applies Chromium's order: a managed policy wins, then the profile's Local State, then a recommended policy, else the default (on)."
     current:
       via: shell
       # `db:Status-Status` too: a package removed but not purged keeps its
@@ -382,6 +701,45 @@ components:
     # snap, tracking latest/stable; `snap info` asks the store, read-only.
     tier: observed
     display: Chromium (snap)
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import json
+        from pathlib import Path
+        def fetch():
+            root = Path.home() / "snap/chromium/common"
+            dirs = sorted(p for p in root.glob("*/") if p.is_dir()) if root.is_dir() else []
+            found = []
+            for d in dirs:
+                state = d / "Local State"
+                doc = None
+                if state.exists():
+                    try:
+                        doc = json.loads(state.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        raise SystemExit(3)
+                crashes = []
+                for sub in ("completed", "pending"):
+                    c = d / "Crash Reports" / sub
+                    if c.is_dir():
+                        crashes += [f"{d.name}/Crash Reports/{sub}/{e.name}" for e in c.iterdir()]
+                found.append((d.name, doc, crashes))
+            return found
+        def verdict(found):
+            for name, doc, crashes in found:
+                metrics = doc.get("user_experience_metrics") if isinstance(doc, dict) else None
+                if isinstance(metrics, dict) and metrics.get("reporting_enabled") is True:
+                    print(f"effective=on: {name} Local State has metrics reporting enabled")
+                    return
+                if crashes:
+                    print(f"effective=on: crash report present in {crashes[0]}")
+                    return
+            print("effective=off")
+        verdict(fetch())
+        PY
+      "off": "^effective=off$"
+      evidence: "snap 158.0.8127.36, read by HELM 2026-11-23: ~/snap/chromium/common/chromium holds only an empty 'Crash Reports' (pending, completed, new, attachments), no browser profile and no 'Local State' exists, and no managed policy directory exists (/etc/chromium/policies/managed, /etc/chromium-browser/policies/managed, /var/snap/chromium/current/policies/managed). The workspace launches the snap only for MARP PDF rendering (scripts/marp_render.py). Metrics reporting is off because it was never enabled, not because a policy pins it off; pinning it needs sudo, which is the operator's step. The probe reads every ~/snap/chromium/common/*/ directory: on when a 'Local State' has user_experience_metrics.reporting_enabled true or a crash report sits in 'Crash Reports/completed' or 'pending'; an unreadable or invalid 'Local State' is unverified."
     current:
       via: shell
       cmd: "snap list chromium"
@@ -398,6 +756,11 @@ components:
     # `uv`, never by this manager.
     tier: notify
     display: engine venv (uv)
+    telemetry:
+      kind: switch
+      probe: "/usr/bin/systemctl --user show-environment | /usr/bin/grep -e '^ORT_DISABLE_TELEMETRY=' -e '^HF_HUB_DISABLE_TELEMETRY=' -e '^LANGFUSE_ENABLED=' -e '^LANGFUSE_TRACING_ENABLED='"
+      "off": "(?s)(?=.*^ORT_DISABLE_TELEMETRY=1$)(?=.*^HF_HUB_DISABLE_TELEMETRY=1$)(?=.*^LANGFUSE_ENABLED=false$)(?=.*^LANGFUSE_TRACING_ENABLED=false$)"
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 7: onnxruntime 1DS telemetry on by default (its Privacy.md), huggingface_hub telemetry, Langfuse Cloud tracing; the switches are read from the systemd user environment the timers inherit. The shell's copy (~/.bashrc) and HELM's .env are not read by this probe."
     current:
       via: outdated_count
       cmd: "$HOME/.local/bin/uv pip list --outdated --format json --python .venv/bin/python"
@@ -429,6 +792,149 @@ components:
     # own health gate.
     tier: observed
     display: Hindsight server
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import os, re, shlex, subprocess
+        from pathlib import Path
+        SEMI = " " + chr(59) + " "
+        UNITS = ("hindsight-api", "hindsight-worker")
+        FILES = ("/etc/hindsight/runtime.env", "/etc/hindsight/secrets.env")
+        KEYS = ("HINDSIGHT_API_OTEL_TRACES_ENABLED", "HINDSIGHT_API_OTEL_EXPORTER_OTLP_ENDPOINT", "HF_HUB_DISABLE_TELEMETRY")
+        NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+        def env_line(line):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                return None
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key[:6] == "export" and key[6:7] in (" ", "\t"):
+                key = key[6:].strip()
+            if not NAME.fullmatch(key):
+                return None
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            return key, value
+        def host():
+            h = os.environ.get("HINDSIGHT_ADMIN_SSH_HOST") or ""
+            if not h:
+                try:
+                    lines = Path(".env").read_text(encoding="utf-8").splitlines()
+                except FileNotFoundError:
+                    lines = []
+                for line in lines:
+                    kv = env_line(line)
+                    if kv and kv[0] == "HINDSIGHT_ADMIN_SSH_HOST":
+                        h = kv[1]
+                        break
+            if not h or h.startswith("-") or any(c.isspace() for c in h):
+                raise SystemExit(2)
+            return h
+        def block(tag, pats, paths):
+            grep = "/usr/bin/grep -h " + " ".join("-e " + shlex.quote(p) for p in pats) + " " + paths
+            return SEMI.join([f"/usr/bin/echo '### {tag}'", grep, '/usr/bin/echo "### rc $?"'])
+        def remote():
+            unit_pats = ("^Environment=", "^EnvironmentFile=")
+            parts = [block(f"unit {u}", unit_pats, f"/etc/systemd/system/{u}.service") for u in UNITS]
+            parts += [block(f"dropin {u}", unit_pats, f"/etc/systemd/system/{u}.service.d/*.conf") for u in UNITS]
+            parts += [block(f"file {f}", tuple(f"^{k}=" for k in KEYS), f) for f in FILES]
+            parts.append("/usr/bin/true")
+            return SEMI.join(parts)
+        def fetch():
+            res = subprocess.run(["/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host(), remote()],
+                                 capture_output=True, text=True, errors="replace", timeout=25, check=False)
+            if res.returncode != 0:
+                raise SystemExit(3)
+            return res.stdout
+        def sections(text):
+            out, cur = [], None
+            for line in text.splitlines():
+                if line.startswith("### rc "):
+                    if cur is None:
+                        raise SystemExit(3)
+                    cur[2] = int(line[7:].strip())
+                    out.append(cur)
+                    cur = None
+                elif line.startswith("### "):
+                    kind, _, name = line[4:].partition(" ")
+                    cur = [kind, name, None, []]
+                elif cur is not None:
+                    cur[3].append(line)
+            return out
+        def unquote(v):
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            return v
+        def verdict(text):
+            secs = sections(text)
+            units = {u: [] for u in UNITS}
+            files = {}
+            seen = set()
+            for kind, name, rc, lines in secs:
+                seen.add((kind, name))
+                if kind in ("unit", "dropin") and name in units:
+                    if rc == 2 and kind == "unit":
+                        raise SystemExit(3)
+                    units[name] += lines if rc == 0 else []
+                elif kind == "file":
+                    files[name] = (rc, lines)
+            for u in UNITS:
+                if ("unit", u) not in seen or ("dropin", u) not in seen:
+                    raise SystemExit(3)
+            for f in FILES:
+                if f not in files:
+                    raise SystemExit(3)
+            plan = {}
+            for u, lines in units.items():
+                env, envfiles = {}, []
+                for line in lines:
+                    key, _, val = line.partition("=")
+                    if key == "Environment":
+                        if not val.strip():
+                            env = {}
+                        for pair in shlex.split(val):
+                            k, eq, v = pair.partition("=")
+                            if eq:
+                                env[k] = v
+                    elif key == "EnvironmentFile":
+                        val = unquote(val)
+                        if not val:
+                            envfiles = []
+                            continue
+                        optional = val.startswith("-")
+                        envfiles.append((val[1:] if optional else val, optional))
+                plan[u] = (env, envfiles)
+            for f in FILES:
+                if files[f][0] == 2 and not all(any(p == f and o for p, o in fl) for _, fl in plan.values()):
+                    raise SystemExit(3)
+            for u, (env, envfiles) in plan.items():
+                for path, optional in envfiles:
+                    if path not in FILES:
+                        print(f"effective=on: unit {u} loads unchecked file {path}")
+                        return
+                    rc, lines = files[path]
+                    if rc == 2:
+                        if not optional:
+                            raise SystemExit(3)
+                        continue
+                    for line in lines:
+                        kv = env_line(line)
+                        if kv:
+                            env[kv[0]] = kv[1]
+                if env.get("HINDSIGHT_API_OTEL_TRACES_ENABLED", "").lower() in ("true", "1", "yes"):
+                    print(f"effective=on: unit {u} HINDSIGHT_API_OTEL_TRACES_ENABLED")
+                    return
+                if env.get("HF_HUB_DISABLE_TELEMETRY") != "1":
+                    print(f"effective=on: unit {u} HF_HUB_DISABLE_TELEMETRY")
+                    return
+            print("effective=off")
+        verdict(fetch())
+        PY
+      "off": "^effective=off$"
+      evidence: "read by HELM 2026-11-23 on the memory host, /opt/hindsight/v1.2.3: hindsight_api has no posthog, sentry or segment client; its only such channel is OpenTelemetry tracing, DEFAULT_OTEL_TRACES_ENABLED = False (hindsight_api/config.py:2432), parsed as .lower() in ('true', '1', 'yes') (config.py:6261-6262), and the tracer does not start without an endpoint (tracing.py:276). Neither HINDSIGHT_API_OTEL_TRACES_ENABLED nor the OTLP endpoint is set in /etc/hindsight/runtime.env or secrets.env; the units set HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1 and HF_HUB_DISABLE_TELEMETRY=1. sentry_sdk is present only as a dependency of litellm and fastapi-cloud-cli and nothing calls sentry_sdk.init; litellm 1.104.0 has no telemetry flag. Live TCP went only to 127.0.0.1:5432 and 127.0.0.1:8317. The probe reads, over the HINDSIGHT_ADMIN_SSH_HOST alias, only the Environment and EnvironmentFile lines of hindsight-api and hindsight-worker and the three keys in the two env files, applies them in systemd's order, and keeps only whether the endpoint is set."
     current:
       via: shell
       cmd: "$HOME/.local/bin/hindsight version -o json"
@@ -457,6 +963,138 @@ components:
     # the unit swap, 182 s after it) and the notification with a margin.
     tier: observed
     display: Hindsight web console
+    telemetry:
+      kind: switch
+      probe: |-
+        /usr/bin/python3 -I - <<'PY'
+        import os, re, shlex, subprocess
+        from pathlib import Path
+        SEMI = " " + chr(59) + " "
+        UNIT = "hindsight-cp"
+        CPENV = "/etc/hindsight/cp.env"
+        NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+        def env_line(line):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                return None
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key[:6] == "export" and key[6:7] in (" ", "\t"):
+                key = key[6:].strip()
+            if not NAME.fullmatch(key):
+                return None
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            return key, value
+        def host():
+            h = os.environ.get("HINDSIGHT_ADMIN_SSH_HOST") or ""
+            if not h:
+                try:
+                    lines = Path(".env").read_text(encoding="utf-8").splitlines()
+                except FileNotFoundError:
+                    lines = []
+                for line in lines:
+                    kv = env_line(line)
+                    if kv and kv[0] == "HINDSIGHT_ADMIN_SSH_HOST":
+                        h = kv[1]
+                        break
+            if not h or h.startswith("-") or any(c.isspace() for c in h):
+                raise SystemExit(2)
+            return h
+        def block(tag, pats, paths):
+            grep = "/usr/bin/grep -h " + " ".join("-e " + shlex.quote(p) for p in pats) + " " + paths
+            return SEMI.join([f"/usr/bin/echo '### {tag}'", grep, '/usr/bin/echo "### rc $?"'])
+        def remote():
+            unit_pats = ("^Environment=", "^EnvironmentFile=")
+            return SEMI.join([block(f"unit {UNIT}", unit_pats, f"/etc/systemd/system/{UNIT}.service"),
+                              block(f"dropin {UNIT}", unit_pats, f"/etc/systemd/system/{UNIT}.service.d/*.conf"),
+                              block(f"file {CPENV}", ("^NEXT_TELEMETRY_DISABLED=",), CPENV),
+                              "/usr/bin/true"])
+        def fetch():
+            res = subprocess.run(["/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host(), remote()],
+                                 capture_output=True, text=True, errors="replace", timeout=25, check=False)
+            if res.returncode != 0:
+                raise SystemExit(3)
+            return res.stdout
+        def sections(text):
+            out, cur = [], None
+            for line in text.splitlines():
+                if line.startswith("### rc "):
+                    if cur is None:
+                        raise SystemExit(3)
+                    cur[2] = int(line[7:].strip())
+                    out.append(cur)
+                    cur = None
+                elif line.startswith("### "):
+                    kind, _, name = line[4:].partition(" ")
+                    cur = [kind, name, None, []]
+                elif cur is not None:
+                    cur[3].append(line)
+            return out
+        def unquote(v):
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            return v
+        def verdict(text):
+            got = {}
+            for kind, name, rc, lines in sections(text):
+                got[(kind, name)] = (rc, lines)
+            for key in (("unit", UNIT), ("dropin", UNIT), ("file", CPENV)):
+                if key not in got:
+                    raise SystemExit(3)
+            rc, lines = got[("unit", UNIT)]
+            if rc == 2:
+                raise SystemExit(3)
+            lines = (lines if rc == 0 else []) + (got[("dropin", UNIT)][1] if got[("dropin", UNIT)][0] == 0 else [])
+            env, envfiles = {}, []
+            for line in lines:
+                key, _, val = line.partition("=")
+                if key == "Environment":
+                    if not val.strip():
+                        env = {}
+                    for pair in shlex.split(val):
+                        k, eq, v = pair.partition("=")
+                        if eq:
+                            env[k] = v
+                elif key == "EnvironmentFile":
+                    val = unquote(val)
+                    if not val:
+                        envfiles = []
+                        continue
+                    optional = val.startswith("-")
+                    envfiles.append((val[1:] if optional else val, optional))
+            listed = [o for p, o in envfiles if p == CPENV]
+            if got[("file", CPENV)][0] == 2 and not (listed and all(listed)):
+                raise SystemExit(3)
+            if not any(path == CPENV for path, _ in envfiles):
+                print("effective=on: cp.env not loaded")
+                return
+            for path, optional in envfiles:
+                if path != CPENV:
+                    print(f"effective=on: unit {UNIT} loads unchecked file {path}")
+                    return
+                frc, flines = got[("file", CPENV)]
+                if frc == 2:
+                    if not optional:
+                        raise SystemExit(3)
+                    continue
+                for line in flines:
+                    kv = env_line(line)
+                    if kv:
+                        env[kv[0]] = kv[1]
+            if "NEXT_TELEMETRY_DISABLED" not in env:
+                print("effective=on: NEXT_TELEMETRY_DISABLED not set")
+                return
+            if unquote(env["NEXT_TELEMETRY_DISABLED"]).lower() not in ("1", "true"):
+                print("effective=on: NEXT_TELEMETRY_DISABLED is not 1 or true")
+                return
+            print("effective=off")
+        verdict(fetch())
+        PY
+      "off": "^effective=off$"
+      evidence: "read by HELM 2026-11-23 on the memory host, unit hindsight-cp, /opt/hindsight-cp/1.2.3/package (Next.js standalone, bin/cli.js): its only telemetry channel is Next.js telemetry (standalone/node_modules/next/dist/telemetry), and /etc/hindsight/cp.env, loaded by the unit's EnvironmentFile line, sets NEXT_TELEMETRY_DISABLED=1. The bundle's 'amplitude' hits are the SVG attribute, not the analytics SDK. Live: no outbound TCP connection. The probe reads, over the HINDSIGHT_ADMIN_SSH_HOST alias, the unit's Environment and EnvironmentFile lines and the one key in cp.env; off only when cp.env is loaded and the effective value is 1 or true."
     current:
       via: script
       script: scripts/updaters/hindsight_console_update.py
@@ -481,6 +1119,9 @@ components:
     # is notified.
     tier: auto
     display: Hindsight CLI
+    telemetry:
+      kind: none
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 4: no vendor or analytics URL among the binary's strings; it talks only to the configured server."
     current:
       via: shell
       cmd: "$HOME/.local/bin/hindsight --version"
@@ -507,6 +1148,9 @@ components:
     # and the operator is notified.
     tier: auto
     display: Hindsight coding-agents plugin
+    telemetry:
+      kind: none
+      evidence: "sweep report 2026-11-22-1720_no-telemetry-sweep (registry name deliverables), sweep-findings.md section 4: no analytics library or string in dist; it talks only to the configured apiUrl, and autoUpdate is false."
     current:
       via: shell
       cmd: "cat $HOME/.hindsight/coding-agents/package.json"

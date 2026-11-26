@@ -54,7 +54,7 @@ repos:
   # Python linting with security rules (S=bandit-equivalent only for pre-commit gate)
   # The full rule set lives in pyproject.toml: ruff check --config pyproject.toml
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.4
+    rev: v0.17.6
     hooks:
       - id: ruff
         args: ['--select', 'S', '--ignore', 'S101,S105,S310,S603,S607']
@@ -299,6 +299,21 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # lot-map station rules agree. The rules choosing a station and a label for a
+  # tool call exist twice, in scripts/lot-map.py and in the lot-map mod's
+  # stations.ts; this runs the shared case corpus through both whenever either
+  # copy, the corpus or the checker changes, and refuses when one copy returns
+  # anything but the case's expect (HOS-414). Needs Node 24 on PATH, and fails
+  # closed without it. Test: tests/test_lot_map_station_rules_agree.py.
+  - repo: local
+    hooks:
+      - id: lot-map-rules-agree
+        name: lot-map.py and the lot-map mod agree on station rules
+        entry: .venv/bin/python scripts/check-lot-map-rules.py
+        language: system
+        pass_filenames: false
+        files: ^(scripts/lot-map\.py|scripts/claude-mods/lot-map/hooks/stations\.ts|scripts/claude-mods/lot-map/station-cases\.json|scripts/check-lot-map-rules\.py)$
+
   # SKILL bash-path audit -- advisory baseline ratchet. Fails only when a SKILL.md
   # gains a NEW bash line passing a bare data-class path to a script (the
   # data-path-redirect hook does not cover Bash). Existing illustrative template
@@ -340,6 +355,22 @@ repos:
       - id: user-agent
         name: HEADING OS one workspace User-Agent (no literal, no site without it)
         entry: .venv/bin/python scripts/check-user-agent.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # No-telemetry wall (HOS-410). Refuses any place in the engine that starts a
+  # `claude` process without scripts/utils/claude_child.py's claude_child_env,
+  # which forces the four switches the operator's user settings carry. A child
+  # run with `--setting-sources project` never reads those settings, and the
+  # 01:30 nightly suite's child fetched feature flags because of it (MEASURED
+  # 2026-11-22). AST over every tracked .py file, about 4 s. No test: see
+  # hook:claude-child-env in scripts/check-gate-integrity.py.
+  - repo: local
+    hooks:
+      - id: claude-child-env
+        name: HEADING OS no-telemetry wall (every claude child gets claude_child_env)
+        entry: .venv/bin/python scripts/check-claude-child-env.py --quiet
         language: system
         pass_filenames: false
         always_run: true

@@ -137,11 +137,12 @@ def _ensure_workspace_importable():
         sys.path.insert(0, root)
 
 
-def run_cmd(cmd: list, cwd: str = None, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
-    """Run a subprocess command."""
+def run_cmd(cmd: list, cwd: str = None, check: bool = True, capture: bool = True,
+            env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run a subprocess command; `env` None inherits this process's environment."""
     return subprocess.run(
         cmd, cwd=cwd, check=check,
-        capture_output=capture, text=True,
+        capture_output=capture, text=True, env=env,
     )
 
 
@@ -274,7 +275,13 @@ def step_check_prerequisites(state: dict) -> bool:
             if resolved is None:
                 continue
             try:
-                result = run_cmd([resolved] + candidate[1:], check=False)
+                env = None
+                if tool == "claude":
+                    # Every `claude` the engine starts carries the no-telemetry switches (HOS-410).
+                    _ensure_workspace_importable()
+                    from scripts.utils.claude_child import claude_child_env
+                    env = claude_child_env()
+                result = run_cmd([resolved] + candidate[1:], check=False, env=env)
                 if result.returncode == 0:
                     version = (result.stdout or result.stderr).strip().split("\n")[0]
                     ok(f"{tool}: {version}")

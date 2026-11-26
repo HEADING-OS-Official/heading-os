@@ -4,7 +4,7 @@
   "_counted_lines": "CODE lines only: blank lines, comment lines and docstrings are not counted, so explanation is never punished.",
   "_direction": "may only fall",
   "_history": "Measurements and every declared raise: registry name engine-config-history in the data repository (test-budget.json), and git history.",
-  "test_files": 23,
-  "test_functions": 174,
-  "test_code_lines": 6121
+  "test_files": 25,
+  "test_functions": 194,
+  "test_code_lines": 6678
 }

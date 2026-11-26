@@ -18,13 +18,13 @@ written by checkpoint-statusline.py, and decides what this pause does:
     and wakes the model to run /second-wind by itself (`_rewake`). Either way
     a bare "1" or "2" as the next prompt picks an option
     (`.claude/hooks/unattended-resume.py`);
-  - a reset refused only because the operator typed: retried at the next quiet
-    Stop while its handoff is still fresh, refreshed first when it went stale
-    (`_retry_reset`, HOS-315);
-  - handoff freshness, a trigger separate from the menu (HOS-315): once the
-    handoff is 3 events or 60 minutes of work old, unattended asks for a light
-    /handover (write only), attended says so in one line (`_freshness`). Never
-    in a yard;
+  - a verified reset that did not go out because the operator typed, no HERDR
+    pane was found or HERDR was unavailable: retried at the next quiet Stop
+    while its handoff is still fresh, refreshed first when it went stale
+    (`_retry_reset`, HOS-315, HOS-386);
+  - handoff freshness (HOS-315, HOS-384): measured at every Stop and shown on
+    the status line only; it never blocks a Stop and never prints a message
+    (operator request, three times, last 2026-11-19). Never in a yard;
   - unattended on, any other pause: `checkpoint_autonomy.unattended_turn` hands
     the turn back at once unless state shows open work (`_open_work`), then
     waits out a grace period and continues unless the operator speaks or the
@@ -159,7 +159,8 @@ def _verify_reset(project: Path, session: str, since: float, kind: str) -> tuple
     return archive, missing
 
 
-# The two refusals that mean only "the operator typed": the one kind retried.
+# The two refusals that mean only "the operator typed": retried, as a missing
+# pane and an unavailable HERDR are (HOS-386).
 STALE_WAITING = "a message from the operator is waiting"
 STALE_TYPED = "the operator typed something after the check"
 
@@ -203,8 +204,12 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
     submits the command through HERDR. /second-wind sends `/clear` only when
     nothing runs in the background and `/compact` otherwise, unknown included;
     /clear-handover always sends `/clear`, but refuses when work is SEEN
-    running. The request is consumed whatever the outcome, so a failed run is
-    reported once and never retried. Nothing here blocks.
+    running. The request is consumed whatever the outcome. A verified handoff
+    that did not go out because the operator typed, no pane was found or HERDR
+    was unavailable is retried at the next quiet Stop (`_retry_reset`), up to
+    RESET_RETRY_MAX attempts in a row and never in a yard (HOS-315, HOS-386);
+    every other outcome is reported once. Each outcome is one plain sentence on
+    screen, its detail on stderr. Nothing here blocks.
     """
     requested = state.get("reset_requested_at") or state.get("clear_handover_requested_at")
     if not requested:
@@ -218,29 +223,30 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
 
     unattended = AU.unattended_mode(state)
 
-    def say(text: str, refusals: int = 0) -> bool:
-        # Any refusal but "the operator typed" ends a retry chain: its count resets.
-        AU.persist(state_path, reset_refused_reason=text, reset_refusals=refusals)
+    def say(text: str, detail: str = "", refusals: int = 0) -> bool:
+        # An outcome with no retry ends a retry chain: its count resets.
+        full = f"{text} ({detail})" if detail else text
+        AU.persist(state_path, reset_refused_reason=full, reset_refusals=refusals)
+        print(f"{label}: {detail}" if detail else text, file=sys.stderr)
         if unattended:
-            # Nobody may be there to read a systemMessage: the refusal goes to
+            # Nobody may be there to read a systemMessage: the outcome goes to
             # the continuation in `main` instead, so the stretch does not end
             # silently (review finding, 2026-10-14).
-            AU.persist(state_path, reset_refusal_note=f"{label}: {text}")
-            print(f"{label}: {text}", file=sys.stderr)
+            AU.persist(state_path, reset_refusal_note=full)
             return False
-        print(json.dumps({"systemMessage": f"{label}: {text}"}, ensure_ascii=False))
+        print(json.dumps({"systemMessage": text}, ensure_ascii=False))
         return True
 
+    unchecked = (f"{label}: not sent; the handoff could not be checked. "
+                 f"Nothing was lost; run {label} again.")
     since = CP.iso_epoch(requested)
     session = CP.session_id(payload)
     if since is None or not CP.session_id_is_known(payload):
-        return say("nothing sent. The start of the run or this session's id could "
-                   "not be read, so the handoff cannot be checked.")
+        return say(unchecked, "the start of the run or this session's id could not be read")
     # One second of slack: mtime and the ISO stamp come from two clocks.
     archive, missing = _verify_reset(project, session, since - 1.0, kind)
     if missing:
-        return say("nothing sent. Missing on disk: " + "; ".join(missing)
-                   + ". Nothing was lost; the context is intact.")
+        return say(unchecked, "missing on disk: " + "; ".join(missing))
 
     transcript = payload.get("transcript_path")
     try:
@@ -254,12 +260,37 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
         # The operator typed /clear-handover himself: refuse only on work SEEN
         # running; an unknown state sends, as /clear-handover always has.
         if status == "running":
-            return say(f"handover verified ({archive.name}), /clear NOT sent: {running} "
-                       "is running and /clear could stop it. Type /clear to proceed "
-                       "anyway, or /second-wind to keep it running.")
+            return say("/clear-handover: not sent, because background work is running; "
+                       "type /clear to stop it anyway, or /second-wind to keep it running.",
+                       f"handover verified ({archive.name}); {running} is running")
         command = HA.CLEAR_COMMAND
     else:
         command = HA.CLEAR_COMMAND if status == "none" else HA.COMPACT_COMMAND
+    not_sent = f"{label}: not sent; type {command} yourself."
+
+    def next_refusal() -> int | None:
+        """The retry count this failure would record, or None when it is not retried."""
+        if AU.in_yard():
+            return None
+        refusals = int(CP.read_json(state_path).get("reset_refusals") or 0) + 1
+        return refusals if refusals < RESET_RETRY_MAX else None
+
+    def record_retry(refusals: int) -> None:
+        AU.persist(state_path, reset_refusals=refusals, reset_retry={
+            "kind": kind, "requested_at": requested, "archive": str(archive),
+            "refused_at": CP.utc_now().isoformat()})
+
+    def retry_or_say(detail: str) -> bool:
+        # Retried at the next quiet Stop (`_retry_reset`), until the
+        # RESET_RETRY_MAX-th failure in a row, which drops it.
+        refusals = next_refusal()
+        if refusals is None:
+            if not AU.in_yard():
+                detail += f"; not sent {RESET_RETRY_MAX} times in a row, so not retried again"
+            return say(not_sent, detail)
+        record_retry(refusals)
+        return say(f"{label}: not sent yet; it is tried again at the next pause.",
+                   detail, refusals=refusals)
 
     try:
         pane, how = HA.resolve_pane_how(session)
@@ -269,39 +300,34 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
           else f"checkpoint-offer: no pane: {how}", file=sys.stderr)
     if pane is None:
         AU.persist(state_path, reset_not_hosted_at=CP.utc_now().isoformat())
+        detail = f"handover verified ({archive.name}); {command} not sent: {how}"
         if kind == "second-wind" and unattended:
             # Not a dead end (spec 3.7, step 6): record it and fall through to
             # the unattended continuation in `main`, which keeps the work going;
-            # Claude Code auto-compacts at 60%.
-            AU.persist(state_path, reset_refused_reason=(
-                f"handover verified ({archive.name}); {how}, nothing sent, work continues"))
+            # Claude Code auto-compacts at 60%. The retry sends it later.
+            refusals = next_refusal()
+            if refusals is None:
+                AU.persist(state_path, reset_refusals=0, reset_refused_reason=(
+                    f"handover verified ({archive.name}); {how}, nothing sent, work continues"))
+            else:
+                record_retry(refusals)
+                AU.persist(state_path, reset_refused_reason=(
+                    f"handover verified ({archive.name}); {how}; not sent yet, "
+                    "it is tried again at the next pause"))
             print(f"{label}: {how}, nothing sent; continuing", file=sys.stderr)
             return False
-        return say(f"handover verified ({archive.name}), now type {command}. The hook "
-                   f"could not send it: {how}.")
+        return retry_or_say(detail)
 
     stale = _stale_since(transcript, offset, session)
+    detail = f"handover verified ({archive.name}); {command} not sent to pane {pane}"
     if stale:
-        if stale in (STALE_WAITING, STALE_TYPED) and not AU.in_yard():
-            # Retried at the next quiet Stop (`_retry_reset`, HOS-315), until the
-            # RESET_RETRY_MAX-th refusal in a row, which drops it.
-            refusals = int(CP.read_json(state_path).get("reset_refusals") or 0) + 1
-            if refusals >= RESET_RETRY_MAX:
-                return say(f"handover verified ({archive.name}), {command} NOT sent: "
-                           f"{stale}. Refused {refusals} times in a row because the "
-                           f"operator typed, so not retried again. Run {label} once "
-                           "more when you want the context freed.")
-            AU.persist(state_path, reset_retry={
-                "kind": kind, "requested_at": requested, "archive": str(archive),
-                "refused_at": CP.utc_now().isoformat()})
-            return say(f"handover verified ({archive.name}), {command} NOT sent: "
-                       f"{stale}. It is tried again at the next quiet pause.",
-                       refusals=refusals)
-        return say(f"handover verified ({archive.name}), {command} NOT sent: {stale}.")
+        if stale in (STALE_WAITING, STALE_TYPED):
+            return retry_or_say(f"{detail}: {stale}")
+        return say(not_sent, f"{detail}: {stale}")
     try:
         HA.submit_command(pane, command)
     except HA.HerdrUnavailable as exc:
-        return say(f"handover verified ({archive.name}), {command} NOT sent: {exc}.")
+        return retry_or_say(f"{detail}: {exc}")
     now = CP.utc_now().isoformat()
     sent = {"reset_sent_at": now, "reset_sent_command": command,
             "reset_sent_pane": pane, "second_wind_attempts": 0, "reset_refusals": 0}
@@ -310,11 +336,13 @@ def _reset(payload: dict, state: dict, state_path: Path, project: Path) -> bool:
     AU.persist(state_path, _mutate=_count_second_wind, **sent)
     if command == HA.CLEAR_COMMAND:
         why = "nothing runs in the background; the next session receives the handoff"
+        text = f"{label}: sent /clear."
     else:
         why = f"{running} keeps running; this session re-reads the handoff"
-    print(json.dumps({"systemMessage": f"{label}: handover verified ({archive.name}). "
-                      f"{command} sent through HERDR (pane {pane}): {why}."},
-                     ensure_ascii=False))
+        text = f"{label}: sent /compact; background work keeps running."
+    print(f"{label}: handover verified ({archive.name}); {command} sent through HERDR "
+          f"(pane {pane}): {why}", file=sys.stderr)
+    print(json.dumps({"systemMessage": text}, ensure_ascii=False))
     return True
 
 
@@ -333,12 +361,13 @@ def _count_second_wind(fresh: dict) -> dict:
     return fresh
 
 
-# The refusal for typing that drops a reset instead of recording a retry: the
-# original refusal and two retries (review finding, HOS-315 round 1).
+# The failed send (typed, no pane, HERDR unavailable) that drops a reset instead
+# of recording a retry: the original failure and two retries, one budget for all
+# three causes (review finding, HOS-315 round 1; HOS-386).
 RESET_RETRY_MAX = 3
 
 RESET_REFRESH = """\
-{label} was refused because the operator typed, and its handoff ({archive}) went \
+{label} was not sent, and its handoff ({archive}) went \
 stale since: {events} event(s) / {minutes} min of work ({detail}). Refresh it, \
 then the reset is retried: run `python scripts/checkpoint-paths.py --kind {kind}`, \
 then pass a fresh handoff, written per .claude/skills/second-wind/SKILL.md Step 2 \
@@ -350,7 +379,7 @@ goldfish cold read. Print ONE line naming the archive, then stop. Do NOT run \
 
 def _retry_reset(payload: dict, state: dict, state_path: Path, project: Path,
                  started: float) -> bool:
-    """Retry a reset refused only because the operator typed (HOS-315 part 2). True when this Stop was one.
+    """Retry a verified reset that was not sent (HOS-315 part 2, HOS-386). True when this Stop was one.
 
     Waits for a quiet Stop: none in the same hook run that refused it, and none
     while a message is still queued. A still-fresh handoff is sent again
@@ -380,18 +409,22 @@ def _retry_reset(payload: dict, state: dict, state_path: Path, project: Path,
     archive = Path(str(retry.get("archive") or ""))
     if not archive.is_file():
         AU.persist(state_path, reset_refusals=0)
+        print(f"{label}: retry dropped, handoff {archive.name or '(unnamed)'} is no "
+              "longer on disk", file=sys.stderr)
         print(json.dumps({"systemMessage": (
-            f"{label}: not retried, its handoff {archive.name or '(unnamed)'} is no "
-            "longer on disk.")}, ensure_ascii=False))
+            f"{label}: not retried; its handoff is no longer on disk. "
+            f"Run {label} again.")}, ensure_ascii=False))
         return True
     fresh = AU.handoff_freshness(payload, project, _ROOT, archive=archive)
     if fresh["due"]:
         reason = RESET_REFRESH.format(
             label=label, archive=archive.name, events=fresh["events"],
             minutes=fresh["minutes"], detail=AU.freshness_detail(fresh), kind=kind)
+        print(f"{label}: handoff {archive.name} stale before the retry: "
+              f"{AU.freshness_detail(fresh)}", file=sys.stderr)
         print(json.dumps({"decision": "block", "reason": reason,
-                          "systemMessage": f"{label}: the handoff went stale while "
-                          "you typed; refreshing it before the reset."},
+                          "systemMessage": f"{label}: the handoff went stale before "
+                          "the retry; refreshing it first."},
                          ensure_ascii=False))
         return True
     rearmed = dict(state)
@@ -405,8 +438,7 @@ def _retry_reset(payload: dict, state: dict, state_path: Path, project: Path,
 def _freshness(payload: dict, state_path: Path, project: Path) -> dict | None:
     """Measure the handoff's age, record it for the status line, return it. None in a yard.
 
-    A source that cannot be read counts as nothing; each is said once per
-    session, on stderr, and in the attended line when one is printed.
+    A source that cannot be read counts as nothing; each is said once per session, on stderr.
     """
     if AU.in_yard():
         return None
@@ -432,36 +464,6 @@ def _freshness(payload: dict, state_path: Path, project: Path) -> dict | None:
         "measured_at": CP.utc_now().isoformat()},
         freshness_unread_said=sorted(set(said) | set(names)))
     return fresh
-
-
-def _freshness_line(fresh: dict | None, state_path: Path) -> int:
-    """Attended: one line when the handoff went stale, once per handoff. Always returns 0."""
-    if not fresh or not fresh["due"]:
-        return 0
-    key = str(fresh["since"])
-    if CP.read_json(state_path).get("freshness_said_for") == key:
-        return 0
-    AU.persist(state_path, freshness_said_for=key)
-    line = AU.FRESH_LINE.format(events=fresh["events"], minutes=fresh["minutes"],
-                                detail=AU.freshness_detail(fresh))
-    if fresh.get("unread_new"):
-        line += " Not counted: " + "; ".join(fresh["unread_new"]) + "."
-    print(json.dumps({"systemMessage": line}, ensure_ascii=False))
-    return 0
-
-
-def _refresh_note(fresh: dict | None, state_path: Path) -> str:
-    """Unattended: the light-refresh instruction, at most FRESH_REFRESH_MAX_ASKS times per handoff."""
-    if not fresh or not fresh["due"]:
-        return ""
-    key = str(fresh["since"])
-    asked = CP.read_json(state_path).get("freshness_refresh_asked") or {}
-    times = int(asked.get("times") or 0) if asked.get("for") == key else 0
-    if times >= AU.FRESH_REFRESH_MAX_ASKS:
-        return ""
-    AU.persist(state_path, freshness_refresh_asked={"for": key, "times": times + 1})
-    return AU.FRESH_REFRESH_NOTE.format(events=fresh["events"], minutes=fresh["minutes"],
-                                        detail=AU.freshness_detail(fresh))
 
 
 # A pending menu mark older than this belongs to an earlier Stop.
@@ -513,6 +515,33 @@ def _rewake(payload: dict) -> int:
     return 2
 
 
+# The menu waits for a pause (HOS-387, `CLAUDE_HANDOFF_HOLD_MENU`, off by default).
+HOLD_KEYS = ("offer_held_since", "offer_held_by")
+
+
+def _hold(payload: dict, state: dict, state_path: Path, used: float) -> bool:
+    """True when the pending menu waits for a pause; the hold is recorded, nothing consumed.
+
+    Not a pause: a running subagent or workflow, a pending send to a yard, a
+    reviewer (`BW.pause_blockers`). The ceiling (`AU.config()["hold_ceiling"]`)
+    shows it anyway. Nothing the status line reads as "offered" is written, so
+    the showing that ends a hold is the threshold's single showing (operator
+    decision 2026-10-14); a soft offer still held at the hard threshold is
+    rewritten as hard by the status line, so only the hard menu shows.
+    """
+    if not AU.hold_menu_enabled():
+        return False
+    if used >= AU.config()["hold_ceiling"]:
+        return False
+    blockers = BW.pause_blockers(payload)
+    if not blockers:
+        return False
+    AU.persist(state_path,
+               offer_held_since=state.get("offer_held_since") or CP.utc_now().isoformat(),
+               offer_held_by=blockers)
+    return True
+
+
 def main() -> int:
     if "--rewake" in sys.argv[1:]:
         return _rewake(CP.read_payload("checkpoint-offer") or {})
@@ -558,13 +587,13 @@ def main() -> int:
         return 0
 
     # Measured at every Stop that gets this far, so the status line shows the
-    # handoff's age; acted on only where nothing else spoke (HOS-315).
-    fresh = _freshness(payload, state_path, project)
+    # handoff's age; shown on the status line only (HOS-384).
+    _freshness(payload, state_path, project)
 
     # Unknown usage stops every path except the unattended continuation.
     used = _used_percentage(state)
     if used is None and not unattended:
-        return _freshness_line(fresh, state_path)
+        return 0
 
     # Something else drives this Stop (`/loop`, a background agent, ralph-loop):
     # it is recorded, the menu still shows (it names what runs), and the plain
@@ -578,10 +607,15 @@ def main() -> int:
         )
 
     level = state.get("offer_level")
-    if used is not None and state.get("needs_compact_offer") and level in ("soft", "hard"):
+    pending = used is not None and state.get("needs_compact_offer") and level in ("soft", "hard")
+    if pending and _hold(payload, state, state_path, used):
+        pending = False
+    if pending:
         # Mark the offer delivered (hysteresis) on the fresh file, not the entry copy.
+        # A hold that ends here ends with the showing (HOS-387).
         AU.persist(
             state_path,
+            _mutate=lambda fresh: {k: v for k, v in fresh.items() if k not in HOLD_KEYS},
             needs_compact_offer=False,
             offer_level=None,
             last_offered_bucket=CP.offer_bucket(state),
@@ -611,14 +645,10 @@ def main() -> int:
     if note:
         AU.persist(state_path, _mutate=lambda fresh: {
             k: v for k, v in fresh.items() if k != "reset_refusal_note"})
-    if unattended:
-        refresh = _refresh_note(fresh, state_path)
-        if refresh:
-            note = f"{note}\n\n{refresh}" if note else refresh
     if unattended and (not claimant or note):
         return AU.unattended_turn(payload, state, state_path, used, turn, note=note)
     if not unattended:
-        return _freshness_line(fresh, state_path)
+        return 0
     return 0
 
 if __name__ == "__main__":

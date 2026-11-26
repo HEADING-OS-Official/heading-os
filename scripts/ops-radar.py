@@ -11,8 +11,12 @@ scripts/utils/ops_signals.py into a two-tier view:
     action queue, ollama acceleration, router accuracy, and two daemon-health
     signals that are surfaced but never healed: a user unit restart-looping, and
     the last successful Exchange sync too old, plus a hostname pinned in
-    /etc/hosts that public DNS no longer answers. These surface an EXCEPTION-ONLY nudge when objectively
+    /etc/hosts that public DNS no longer answers, and six machine checks (HOS-398):
+    disk space, certificate expiry, pending security updates, the dependency
+    audit, expected timers not enabled, and MCP server liveness. These surface an EXCEPTION-ONLY nudge when objectively
     overdue and not suppressed: one line carrying each due signal's summary.
+    The dependency audit and MCP liveness are cached and re-measured only
+    under `--refresh` (the daily timer passes it).
 
 Suppression: an `ack` silences a signal until its TTL expires OR its severity
 band worsens; `crunch on` suppresses everything except the critical floor
@@ -25,6 +29,7 @@ Usage:
     python3 scripts/ops-radar.py                  # detailed due-items view (or "all clear")
     python3 scripts/ops-radar.py --quiet          # due-item summaries on one line; empty when nothing due
     python3 scripts/ops-radar.py --json           # machine-readable
+    python3 scripts/ops-radar.py --quiet --refresh  # also re-run the audit and MCP probe when stale
     python3 scripts/ops-radar.py ack backup [--ttl 24h]
     python3 scripts/ops-radar.py crunch on|off
     python3 scripts/ops-radar.py heal             # Tier-A auto-heal (ollama/index)
@@ -83,7 +88,10 @@ AUTOHEAL_FILE = "autoheal.json"
 KNOWN_KEYS = {
     "backup", "weekly_review", "odin_cadence",
     "queue", "ollama", "ollama_accel", "memory_index", "router_accuracy",
-    "restart_loop", "exchange_sync", "unit_drift", "hosts_pin",
+    "restart_loop", "exchange_sync", "unit_drift", "toolchain_pins", "hosts_pin",
+    "failed_units",
+    "disk_space", "cert_expiry", "security_updates", "deps_audit", "disabled_timers",
+    "mcp_liveness", "update_telemetry",
 } | {f"{target}_autoheal" for target in TIER_A_TARGETS}
 
 
@@ -209,13 +217,22 @@ def parse_ttl(s: str | None, key: str) -> int:
 # Signal gathering
 # ============================================================
 
-def gather_live_signals(engine_root: Path, data_root: Path) -> list[dict]:
+def gather_live_signals(engine_root: Path, data_root: Path, *, refresh: bool = False,
+                        cache_dir: Path | None = None, start_stdio: bool = True) -> list[dict]:
     """Compute every signal from live sources (read-only).
 
     Every data-rooted signal is built from `data_root`, never from a helper that
     resolves the machine's own root, so a caller passing a throwaway root reads
     nothing from the live overlay (HOS-77).
+
+    The dependency audit and MCP liveness read their caches in `cache_dir`
+    (default `runtime:ops-radar/state`) and re-measure only when `refresh` is
+    true and the cache is stale; `start_stdio=False` checks stdio MCP servers on
+    PATH without starting them. `run_autoheal` and `cmd_ack` call this without
+    refresh, so they stay fast.
     """
+    if cache_dir is None:
+        cache_dir = resolve_autoheal_dir()
     return [
         ops.backup_state(engine_root, data_root),
         ops.weekly_review_state(data_root),
@@ -228,7 +245,16 @@ def gather_live_signals(engine_root: Path, data_root: Path) -> list[dict]:
         ops.restart_loop_state(),
         ops.exchange_sync_state(),
         ops.unit_drift_state(engine_root),
+        ops.toolchain_pins_state(engine_root),
+        ops.failed_units_state(),
         ops.hosts_pin_state(data_root),
+        ops.disk_space_state(data_root),
+        ops.cert_expiry_state(),
+        ops.security_updates_state(),
+        ops.deps_audit_state(cache_dir, refresh, engine_root),
+        ops.disabled_timers_state(),
+        ops.mcp_liveness_state(cache_dir, refresh, start_stdio, engine_root),
+        ops.update_telemetry_state(data_root),
     ]
 
 
@@ -299,14 +325,16 @@ def select_candidates(signals: list[dict], autoheal: dict) -> list[dict]:
 
 def assess(engine_root: Path, data_root: Path, state_dir: Path,
            signals: list[dict] | None = None, autoheal: dict | None = None,
-           now: float | None = None, autoheal_dir: Path | None = None) -> dict:
+           now: float | None = None, autoheal_dir: Path | None = None,
+           refresh: bool = False) -> dict:
     """Full read-only assessment. Returns the structured result the renderers and
     the notify entrypoint consume. `signals`/`autoheal`/`now` are injectable for
     tests; live values are read otherwise. `state_dir` holds ack/crunch; the
-    autoheal counters are read from `autoheal_dir` when `autoheal` is not given."""
+    autoheal counters are read from `autoheal_dir` when `autoheal` is not given.
+    `refresh` lets the slow cached signals re-measure when stale."""
     now = time.time() if now is None else now
     if signals is None:
-        signals = gather_live_signals(engine_root, data_root)
+        signals = gather_live_signals(engine_root, data_root, refresh=refresh)
     if autoheal is None:
         if autoheal_dir is None:
             raise ValueError("assess: pass `autoheal` or `autoheal_dir`")
@@ -622,6 +650,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     ap.add_argument("--quiet", action="store_true",
                     help="print the due-item summaries on one line; nothing when nothing is due")
+    ap.add_argument("--refresh", action="store_true",
+                    help="also refresh the dependency audit and MCP liveness caches when stale")
     sub = ap.add_subparsers(dest="cmd")
 
     p_ack = sub.add_parser("ack", help="silence a signal until TTL or worsening")
@@ -653,7 +683,8 @@ def main(argv=None) -> int:
         return cmd_heal(args, autoheal_dir, engine_root, data_root)
 
     # Default: assess + render.
-    result = assess(engine_root, data_root, state_dir, autoheal_dir=autoheal_dir)
+    result = assess(engine_root, data_root, state_dir, autoheal_dir=autoheal_dir,
+                    refresh=args.refresh)
     if args.json:
         print(json.dumps(result, indent=2, default=str))
         return 0

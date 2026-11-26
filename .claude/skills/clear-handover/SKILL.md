@@ -15,8 +15,8 @@ x-heading-capability:
   how: >
     Type /clear-handover [optional note]. The skill hands the handoff text to
     one command, which writes the archive and its pointers. When the turn ends, the Stop hook verifies the files on disk and
-    sends /clear through HERDR. Without HERDR it says "handover verified, now
-    type /clear".
+    sends /clear through HERDR. When it cannot send, it says so in one
+    sentence and the operator types /clear.
   when: >
     Use when the task has changed or the old conversation is no longer needed.
     To save without clearing use /handover; to free context without stopping
@@ -45,10 +45,23 @@ the handoff on disk.
 
 ## Procedure
 
+### Step 0a - Can the hook send?
+
+```bash
+.venv/bin/python scripts/checkpoint-paths.py --preflight
+```
+
+It prints one line and writes nothing. On exit 1, tell the operator that line
+in one sentence. Then go on, because the handoff is still worth saving; the
+operator types the command after you save it.
+
 ### Step 0 - Cold read, before the start stamp
 
 Run the cold read now: items 1 to 4 of Step 2 of
-`.claude/skills/handover/SKILL.md`. Write the draft and dispatch the `goldfish`
+`.claude/skills/handover/SKILL.md`. First read `handoff_mode` from
+`.venv/bin/python scripts/checkpoint-paths.py --json`, which writes nothing. In
+`assembled` mode the draft is the short part, and the records file goes in as
+context, as that step says. Write the draft and dispatch the `goldfish`
 agent. Then triage its reply and apply every FIX to the draft. The agent runs
 in the background, and its reply arrives only after a turn ends. So this step
 may take a turn of its own.
@@ -85,15 +98,24 @@ the moment `/clear` finishes, before he types anything. No model turn runs then,
 so these lines are all he sees until he writes. Open with the words you would
 use to continue. When he writes Russian, that is "Продолжаю с того места, где
 остановились: ...". Then say where the work stopped, then the next step. Do not
-write paths: the hook adds the handoff path itself. The hook shows only the
-first three non-blank lines. Never put a pinned item here; pins travel verbatim
-in their own section.
+write paths: the hook adds the handoff path itself, and the working file's two
+paths from `## Working file`. The hook shows only the first three non-blank
+lines. Never put a pinned item here; pins travel verbatim in their own section.
+
+Add a `## Working file` section when the operator acts on a main file next
+(drafts, a deliverable, a report). Write one line in it: the full Linux path.
+After `/clear` the hook shows it and its Windows path after the line that says
+where the work stopped. Leave the section out when there is no such file.
 
 <!-- Russian on purpose: the Russian resume lines the operator reads after /clear. -->
 ```bash
 .venv/bin/python scripts/checkpoint-paths.py --write --kind clear <<'HANDOFF'
 # Handoff - clear-handover
 ...the sections from the template...
+
+## Working file
+
+<the full Linux path of the file the operator acts on next; leave this section out when there is none>
 
 ## Resume
 
@@ -119,13 +141,13 @@ Reply with ONE line: the full path of the archive. Then stop. Do not start any
 other work: the Stop hook runs when this turn ends, checks the files, and sends
 `/clear`.
 
-The hook reports the outcome itself. If it says `/clear NOT sent`, nothing was
-lost. It names what is missing on disk, or the `/loop`, `/goal`, agent or
-monitor that `/clear` would stop. In the second case type `/clear` to proceed
+The hook reports the outcome itself. If it says "not sent", nothing was
+lost. The hook's log line names the cause. It is a check of the files on disk,
+or a `/loop`, `/goal`, agent or monitor that `/clear` would stop. In the
+second case type `/clear` to proceed
 anyway, or `/second-wind` to keep the work running. The handoff needs a
-`## Safe resume` block; the template has it. If it says "handover verified,
-now type /clear", this session is not reachable through HERDR, and the operator
-types `/clear` by hand. The next session receives the handoff either way.
+`## Safe resume` block; the template has it. If it says "not sent; type /clear
+yourself", the operator types `/clear` by hand. The next session receives the handoff either way.
 
 ## NEVER
 

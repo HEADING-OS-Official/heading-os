@@ -2,6 +2,7 @@
 Description=Encrypted off-machine copies of the Hindsight snapshot and the machine config to Google Drive (HOS-210, HOS-219)
 After=network-online.target hindsight-snapshot.service
 Wants=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot

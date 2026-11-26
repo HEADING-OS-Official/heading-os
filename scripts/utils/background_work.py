@@ -79,23 +79,80 @@ def _task_name(task: dict) -> str:
     return f"{kind} {label!r}" if label else kind
 
 
+# A shell task whose command names one of these is a send to a yard still
+# pending, or a reviewer running: the threshold menu waits for it (HOS-387).
+# Waits on yards (`herdr-wait.py`, `lific-board.py wait`, `yard-status.py wait`)
+# and monitors are not here, by the issue's own text.
+SEND_COMMANDS = ("herdr-relay.py", "herdr-brief.py")
+REVIEW_COMMANDS = ("review-branch.py", "chatgpt-consult.py")
+
+
+def _kind(task: dict) -> str:
+    """"agent", "send", "review", "shell", "monitor" or "other", from the documented fields."""
+    kind = str(task.get("type") or "").strip().lower()
+    if kind == "shell":
+        command = str(task.get("command") or "")
+        if any(name in command for name in SEND_COMMANDS):
+            return "send"
+        if any(name in command for name in REVIEW_COMMANDS):
+            return "review"
+        return "shell"
+    if kind in ("subagent", "workflow"):
+        return "agent"
+    if kind == "monitor":
+        return "monitor"
+    return "other"
+
+
+def _in_flight(payload: dict) -> list[tuple[dict | None, str]] | None:
+    """Every `background_tasks` record not in a terminal state, as (task, kind).
+
+    None when the field is absent or not a list; a record that is not an object
+    comes back as (None, "malformed"). The one pass both callers below read.
+    """
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list):
+        return None
+    found: list[tuple[dict | None, str]] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            found.append((None, "malformed"))
+            continue
+        status = str(task.get("status") or "").strip().lower()
+        if status in AU.TERMINAL_TASK_STATES:
+            continue
+        found.append((task, _kind(task)))
+    return found
+
+
+def pause_blockers(payload: dict) -> list[str]:
+    """What makes this Stop no pause for the threshold menu: names, or [] for a pause.
+
+    A running subagent or workflow, a pending send to a yard, a reviewer. An
+    absent or malformed `background_tasks` is a pause: a hold is a courtesy and
+    must never be caused by a payload that cannot be read (HOS-387). Reads no file.
+    """
+    tasks = _in_flight(payload)
+    if tasks is None:
+        return []
+    return [_task_name(task) for task, kind in tasks
+            if task is not None and kind in ("agent", "send", "review")]
+
+
 def background_state(payload: dict, project: Path | None = None) -> tuple[str, list[str]]:
     """("none" | "running" | "unknown", names) for this Stop payload."""
     names: list[str] = []
     unknown = False
 
-    tasks = payload.get("background_tasks")
-    if not isinstance(tasks, list):
+    tasks = _in_flight(payload)
+    if tasks is None:
         unknown = True
     else:
-        for task in tasks:
-            if not isinstance(task, dict):
+        for task, kind in tasks:
+            if task is None:
                 unknown = True
                 continue
-            status = str(task.get("status") or "").strip().lower()
-            if status in AU.TERMINAL_TASK_STATES:
-                continue
-            if str(task.get("type") or "").lower() == "shell":
+            if kind in ("shell", "send", "review"):
                 continue
             names.append(_task_name(task))
 

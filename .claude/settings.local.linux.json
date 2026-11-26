@@ -62,7 +62,7 @@
           {
             "type": "command",
             "command": "python3 -c \"import sys,runpy;from pathlib import Path;n='recall-inject.py';p=next((str(d/'.claude'/'hooks'/n) for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/n).is_file()),None)\nif p: sys.argv=[p]+sys.argv[1:]; runpy.run_path(p,run_name='__main__')\"",
-            "timeout": 12
+            "timeout": 20
           },
           {
             "type": "command",
@@ -187,6 +187,16 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import os,runpy;from pathlib import Path;p=next((str(d/'.claude'/'hooks'/'yard-marker-wall.py') for d in [Path.cwd(),*Path.cwd().parents] if (d/'.claude'/'hooks'/'yard-marker-wall.py').is_file()),None);p and runpy.run_path(p,run_name='__main__')\"",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [

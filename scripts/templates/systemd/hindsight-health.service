@@ -1,6 +1,7 @@
 [Unit]
 Description=Hindsight deployment health check (hindsight-health.py check)
 After=network-online.target
+OnFailure=unit-failure-alert@%n.service
 
 [Service]
 Type=oneshot
